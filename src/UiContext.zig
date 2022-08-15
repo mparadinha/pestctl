@@ -1,0 +1,929 @@
+const std = @import("std");
+const Allocator = std.mem.Allocator;
+const gl = @import("gl_4v3.zig");
+const c = @import("c.zig");
+const gfx = @import("graphics.zig");
+const math = @import("math.zig");
+const vec2 = math.vec2;
+const vec3 = math.vec3;
+const vec4 = math.vec4;
+const mat4 = math.mat4;
+const Font = @import("Font.zig");
+const window = @import("window.zig");
+
+const UiContext = @This();
+
+allocator: Allocator,
+generic_shader: gfx.Shader,
+font: Font,
+string_arena: std.heap.ArenaAllocator,
+node_table: std.StringHashMap(Node),
+stale_nodes: std.ArrayList(Node),
+
+window_ptr: *window.Window, // only used for setting the cursor
+
+// to prevent having error return in all the functions, we ignore the errors during the
+// ui building phase, and return one only at the end of the building phase.
+// so we store the stack trace of the first error that occurred here
+first_error_trace: ?*std.builtin.StackTrace,
+first_error_name: []const u8,
+
+// per-frame data
+parent_stack: Stack(*Node),
+root_node: *Node,
+screen_size: vec2,
+mouse_pos: vec2, // in pixels
+events: *window.EventQueue,
+
+// cross-frame data
+frame_idx: usize,
+hot_node_key: ?NodeKey,
+active_node_key: ?NodeKey,
+
+const NodeKey = std.StringHashMap(Node).Hash;
+
+// call `deinit` to cleanup resources
+pub fn init(allocator: Allocator, font_path: []const u8, window_ptr: *window.Window) !UiContext {
+    var self = UiContext{
+        .allocator = allocator,
+        .generic_shader = gfx.Shader.from_srcs(allocator, "ui_generic", .{
+            .vertex = vertex_shader_src,
+            .geometry = geometry_shader_src,
+            .fragment = fragment_shader_src,
+        }),
+        .font = try Font.from_ttf(allocator, font_path, 19),
+        .string_arena = std.heap.ArenaAllocator.init(allocator),
+        .node_table = std.StringHashMap(Node).init(allocator),
+        .stale_nodes = std.ArrayList(Node).init(allocator),
+
+        .window_ptr = window_ptr,
+
+        .first_error_trace = null,
+        .first_error_name = "",
+
+        .parent_stack = Stack(*Node).init(allocator),
+        .root_node = undefined,
+        .screen_size = undefined,
+        .mouse_pos = undefined,
+        .events = undefined,
+
+        .frame_idx = 0,
+        .hot_node_key = null,
+        .active_node_key = null,
+    };
+    return self;
+}
+
+pub fn deinit(self: *UiContext) void {
+    self.parent_stack.deinit();
+    self.stale_nodes.deinit();
+    self.node_table.deinit();
+    self.string_arena.deinit();
+    self.font.deinit();
+    self.generic_shader.deinit();
+}
+
+pub const Flags = packed struct {
+    clickable: bool = false,
+    draw_text: bool = false,
+    draw_border: bool = false,
+    draw_background: bool = false,
+    draw_hot_effects: bool = false,
+    draw_active_effects: bool = false,
+};
+
+pub const Node = struct {
+    // tree links (updated every frame)
+    first: ?*Node,
+    last: ?*Node,
+    next: ?*Node,
+    prev: ?*Node,
+    parent: ?*Node,
+    child_count: usize,
+
+    // per-frame params
+    flags: Flags,
+    string: []const u8,
+    bg_color: vec4,
+    border_color: vec4,
+    text_color: vec4,
+    corner_roundness: f32,
+    border_thickness: f32,
+    pref_size: [2]Size,
+    child_layout_axis: Axis,
+    hover_cursor: window.CursorType,
+
+    // post-size-determination data
+    calc_size: vec2,
+    calc_rel_pos: vec2, // relative to bottom left (0, 0) corner of the parent
+
+    // post-layout data
+    rect: Rect,
+
+    // persistent cross-frame state
+    hot_trans: f32,
+    active_trans: f32,
+    first_frame_touched: usize,
+    last_frame_touched: usize,
+
+    pub const Axis = enum { x, y };
+};
+
+pub const Size = union(enum) {
+    pixels: struct { value: f32, strictness: f32 },
+    text_dim: struct { strictness: f32 },
+    percent: struct { value: f32, strictness: f32 },
+    by_children: struct { strictness: f32 },
+
+    pub fn pixels(value: f32, strictness: f32) Size {
+        return Size{ .pixels = .{ .value = value, .strictness = strictness } };
+    }
+    pub fn text_dim(strictness: f32) Size {
+        return Size{ .text_dim = .{ .strictness = strictness } };
+    }
+    pub fn percent(value: f32, strictness: f32) Size {
+        return Size{ .percent = .{ .value = value, .strictness = strictness } };
+    }
+    pub fn by_children(strictness: f32) Size {
+        return Size{ .by_children = .{ .strictness = strictness } };
+    }
+};
+
+pub const Rect = struct {
+    min: vec2,
+    max: vec2,
+
+    pub fn size(self: Rect) vec2 {
+        return self.max - self.min;
+    }
+
+    pub fn contains(self: Rect, pos: vec2) bool {
+        return pos[0] < self.max[0] and pos[0] > self.min[0] and
+            pos[1] < self.max[1] and pos[1] > self.min[1];
+    }
+};
+
+pub const Signal = struct {
+    clicked: bool,
+    pressed: bool,
+    released: bool,
+    hovering: bool,
+    held_down: bool,
+};
+
+pub fn button(self: *UiContext, string: []const u8) Signal {
+    const node = self.addNode(.{
+        .clickable = true,
+        .draw_text = true,
+        .draw_border = true,
+        .draw_background = true,
+        .draw_hot_effects = true,
+        .draw_active_effects = true,
+    }, string, .{
+        .hover_cursor = .hand,
+    }) catch |e| blk: {
+        self.first_error_trace = @errorReturnTrace();
+        self.first_error_name = @errorName(e);
+        break :blk self.root_node;
+    };
+    return self.getNodeSignal(node);
+}
+
+pub fn buttonF(self: *UiContext, comptime fmt: []const u8, args: anytype) Signal {
+    const str = std.fmt.allocPrint(self.string_arena.allocator(), fmt, args) catch |e| blk: {
+        self.first_error_trace = @errorReturnTrace();
+        self.first_error_name = @errorName(e);
+        break :blk "";
+    };
+    return self.button(str);
+}
+
+pub fn startFrame(self: *UiContext, screen_w: u32, screen_h: u32, mouse_pos: vec2, events: *window.EventQueue) !void {
+    const screen_size = vec2{ @intToFloat(f32, screen_w), @intToFloat(f32, screen_h) };
+
+    self.screen_size = screen_size;
+    self.mouse_pos = mouse_pos;
+    self.events = events;
+
+    const root_pref_sizes = [2]Size{ Size.pixels(screen_size[0], 1), Size.pixels(screen_size[1], 1) };
+    self.root_node = try self.addNode(.{}, "###INTERNAL_ROOT_NODE", .{
+        .first = null,
+        .last = null,
+        .next = null,
+        .prev = null,
+        .parent = null,
+        .child_count = 0,
+        .pref_size = root_pref_sizes,
+    });
+
+    std.debug.assert(self.parent_stack.len() == 0);
+    try self.parent_stack.push(self.root_node);
+
+    self.first_error_trace = null;
+
+    self.window_ptr.set_cursor(.arrow);
+}
+
+pub fn endFrame(self: *UiContext, dt: f32) void {
+    if (self.first_error_trace) |error_trace| {
+        std.debug.print("{}\n", .{error_trace});
+        std.debug.panic("An error occurred during the UI building phase: {s}", .{self.first_error_name});
+    }
+
+    _ = self.parent_stack.pop().?;
+    std.debug.assert(self.parent_stack.len() == 0);
+
+    self.frame_idx += 1;
+
+    // TODO: node pruning
+
+    // update transition/animation value
+    const fast_rate = 1 - std.math.pow(f32, 2, -20.0 * dt);
+    var node_iter = self.node_table.valueIterator();
+    while (node_iter.next()) |node_ptr| {
+        const node_key = self.keyFromNode(node_ptr);
+        const is_hot = (self.hot_node_key == node_key);
+        const is_active = (self.active_node_key == node_key);
+        const hot_target = if (is_hot) @as(f32, 1) else @as(f32, 0);
+        const active_target = if (is_active) @as(f32, 1) else @as(f32, 0);
+        node_ptr.hot_trans += (hot_target - node_ptr.hot_trans) * fast_rate;
+        node_ptr.active_trans += (active_target - node_ptr.active_trans) * fast_rate;
+    }
+}
+
+pub fn addNode(self: *UiContext, flags: Flags, string: []const u8, init_args: anytype) !*Node {
+    // if a node already exists that matches this one we just use that one
+    // this way the persistant cross-frame data is possible
+    const lookup_result = try self.node_table.getOrPut(hashPartOfString(string));
+    var node = lookup_result.value_ptr;
+    if (!lookup_result.found_existing) {
+        node.first_frame_touched = self.frame_idx;
+    }
+
+    // link node into the tree
+    var parent = self.parent_stack.top() orelse null;
+    node.first = null;
+    node.last = null;
+    node.next = null;
+    node.prev = if (parent) |parent_node| parent_node.last else null;
+    node.parent = parent;
+    node.child_count = 0;
+    if (node.prev) |prev| prev.next = node;
+    if (parent) |parent_node| {
+        if (parent_node.child_count == 0) parent_node.first = node;
+        parent_node.child_count += 1;
+        parent_node.last = node;
+    }
+
+    // set per-frame data
+    node.flags = flags;
+    node.string = string;
+    node.bg_color = vec4{ 0, 0, 0, 0.5 };
+    node.border_color = vec4{ 0.5, 0.5, 0.5, 1 };
+    node.text_color = vec4{ 1, 1, 1, 1 };
+    node.corner_roundness = 0;
+    node.border_thickness = 2;
+    node.pref_size = .{ Size.text_dim(1), Size.text_dim(1) };
+    node.child_layout_axis = .x;
+    node.hover_cursor = .arrow;
+
+    // reset layout data (but not the final screen rect which we need for signal stuff)
+    node.calc_size = vec2{ 0, 0 };
+    node.calc_rel_pos = vec2{ 0, 0 };
+
+    // update cross-frame (persistant) data
+    node.last_frame_touched = self.frame_idx;
+
+    inline for (@typeInfo(@TypeOf(init_args)).Struct.fields) |field_type_info| {
+        const field_name = field_type_info.name;
+        if (!@hasField(Node, field_name)) {
+            @compileError("Node does not have a field named '" ++ field_name ++ "");
+        }
+        @field(node, field_name) = @field(init_args, field_name);
+    }
+
+    return node;
+}
+
+pub fn addNodeF(self: *UiContext, flags: Flags, comptime fmt: []const u8, args: anytype, init_args: anytype) !*Node {
+    const str = try std.fmt.allocPrint(self.string_arena.allocator(), fmt, args);
+    return try self.addNode(flags, str, init_args);
+}
+
+pub fn getNodeSignal(self: *UiContext, node: *Node) Signal {
+    var signal = Signal{
+        .clicked = false,
+        .pressed = false,
+        .released = false,
+        .hovering = false,
+        .held_down = false,
+    };
+
+    const mouse_is_over = node.rect.contains(self.mouse_pos);
+    const node_key = self.keyFromNode(node);
+
+    if (node.flags.clickable) {
+        const hot_key_matches = if (self.hot_node_key) |key| key == node_key else false;
+        const active_key_matches = if (self.active_node_key) |key| key == node_key else false;
+
+        if (hot_key_matches and !mouse_is_over) {
+            self.hot_node_key = null;
+        } else if (mouse_is_over) {
+            self.hot_node_key = node_key;
+            signal.hovering = true;
+        }
+
+        const mouse_pressed = if (self.searchForEvent(.MouseDown)) |ev|
+            ev.MouseDown == c.GLFW_MOUSE_BUTTON_LEFT
+        else
+            false;
+        const mouse_released = if (self.searchForEvent(.MouseUp)) |ev|
+            ev.MouseUp == c.GLFW_MOUSE_BUTTON_LEFT
+        else
+            false;
+
+        // begin/end a click if there was a mouse down/up event on this node
+        if (mouse_is_over and hot_key_matches and self.active_node_key == null and mouse_pressed) {
+            self.active_node_key = node_key;
+        } else if (mouse_is_over and active_key_matches and mouse_released) {
+            self.active_node_key = null;
+            signal.clicked = true;
+        }
+
+        signal.pressed = mouse_is_over and mouse_pressed;
+        signal.released = mouse_is_over and mouse_released;
+        signal.held_down = active_key_matches;
+    }
+
+    if (signal.hovering) self.window_ptr.set_cursor(node.hover_cursor);
+
+    return signal;
+}
+
+pub fn render(self: *UiContext) !void {
+    // do the whole layout right before rendering
+    self.solveIndependentSizes(self.root_node, .x);
+    self.solveIndependentSizes(self.root_node, .y);
+    self.solveUpwardDependent(self.root_node, .x);
+    self.solveUpwardDependent(self.root_node, .y);
+    self.solveDownwardDependent(self.root_node, .x);
+    self.solveDownwardDependent(self.root_node, .y);
+    self.solveViolations(self.root_node, .x);
+    self.solveViolations(self.root_node, .y);
+
+    // this struct must have the exact layout expected by the shader
+    const ShaderInput = packed struct {
+        bottom_left_pos: [2]f32,
+        top_right_pos: [2]f32,
+        bottom_left_uv: [2]f32,
+        top_right_uv: [2]f32,
+        top_color: [4]f32,
+        bottom_color: [4]f32,
+        corner_roundness: f32,
+        border_thickness: f32,
+    };
+    var shader_inputs = std.ArrayList(ShaderInput).init(self.allocator);
+    defer shader_inputs.deinit();
+
+    var node_iterator = DepthFirstNodeIterator{ .cur_node = self.root_node };
+    while (node_iterator.next()) |node| {
+        const base_rect = ShaderInput{
+            .bottom_left_pos = node.rect.min,
+            .top_right_pos = node.rect.max,
+            .bottom_left_uv = vec2{ 0, 0 },
+            .top_right_uv = vec2{ 0, 0 },
+            .top_color = vec4{ 0, 0, 0, 0 },
+            .bottom_color = vec4{ 0, 0, 0, 0 },
+            .corner_roundness = node.corner_roundness,
+            .border_thickness = node.border_thickness,
+        };
+
+        // draw background
+        if (node.flags.draw_background) {
+            var rect = base_rect;
+            rect.top_color = node.bg_color;
+            rect.bottom_color = node.bg_color;
+            rect.border_thickness = 0;
+            try shader_inputs.append(rect);
+
+            const hot_remove_factor = if (node.flags.draw_active_effects) node.active_trans else 0;
+            const effective_hot_trans = node.hot_trans * (1 - hot_remove_factor);
+
+            if (node.flags.draw_hot_effects) {
+                rect = base_rect;
+                rect.border_thickness = 0;
+                rect.top_color = vec4{ 1, 1, 1, 0.1 * effective_hot_trans };
+                try shader_inputs.append(rect);
+            }
+            if (node.flags.draw_active_effects) {
+                rect = base_rect;
+                rect.border_thickness = 0;
+                rect.bottom_color = vec4{ 1, 1, 1, 0.1 * node.active_trans };
+                try shader_inputs.append(rect);
+            }
+        }
+
+        // draw border
+        if (node.flags.draw_border) {
+            var rect = base_rect;
+            rect.top_color = node.border_color;
+            rect.bottom_color = node.border_color;
+            try shader_inputs.append(rect);
+
+            if (node.flags.draw_hot_effects) {
+                rect = base_rect;
+                rect.top_color = vec4{ 1, 1, 1, 0.2 * node.hot_trans };
+                rect.bottom_color = vec4{ 1, 1, 1, 0.2 * node.hot_trans };
+                try shader_inputs.append(rect);
+            }
+        }
+
+        // draw text
+        if (node.flags.draw_text) {
+            var text_pos = self.textPosFromNode(node);
+            if (node.flags.draw_active_effects) {
+                text_pos[1] -= 0.1 * self.font.pixel_size * node.active_trans;
+            }
+
+            const display_text = displayPartOfString(node.string);
+            const quads = try self.font.buildQuads(self.allocator, display_text);
+            defer self.allocator.free(quads);
+            for (quads) |quad| {
+                try shader_inputs.append(.{
+                    .bottom_left_pos = quad.points[0].pos + text_pos,
+                    .top_right_pos = quad.points[2].pos + text_pos,
+                    .bottom_left_uv = quad.points[0].uv,
+                    .top_right_uv = quad.points[2].uv,
+                    .top_color = node.text_color,
+                    .bottom_color = node.text_color,
+                    .corner_roundness = 0,
+                    .border_thickness = 0,
+                });
+            }
+        }
+    }
+
+    // create vertex buffer
+    var inputs_vao: u32 = 0;
+    gl.genVertexArrays(1, &inputs_vao);
+    defer gl.deleteVertexArrays(1, &inputs_vao);
+    gl.bindVertexArray(inputs_vao);
+    var inputs_vbo: u32 = 0;
+    gl.genBuffers(1, &inputs_vbo);
+    defer gl.deleteBuffers(1, &inputs_vbo);
+    gl.bindBuffer(gl.ARRAY_BUFFER, inputs_vbo);
+    const stride = @sizeOf(ShaderInput);
+    gl.bufferData(gl.ARRAY_BUFFER, @intCast(isize, shader_inputs.items.len * stride), shader_inputs.items.ptr, gl.STATIC_DRAW);
+    var field_offset: usize = 0;
+    inline for (@typeInfo(ShaderInput).Struct.fields) |field, i| {
+        const elems = switch (@typeInfo(field.field_type)) {
+            .Float => 1,
+            .Array => |array| array.len,
+            else => @compileError("new type in ShaderInput struct: " ++ @typeName(field.field_type)),
+        };
+        const child_type = switch (@typeInfo(field.field_type)) {
+            .Array => |array| array.child,
+            else => field.field_type,
+        };
+        const gl_type = switch (@typeInfo(child_type)) {
+            .Float => gl.FLOAT,
+            else => @compileError("new type in ShaderInput struct: " ++ @typeName(child_type)),
+        };
+        const offset_ptr = if (field_offset == 0) null else @intToPtr(*const anyopaque, field_offset);
+        gl.vertexAttribPointer(i, elems, gl_type, gl.FALSE, stride, offset_ptr);
+        gl.enableVertexAttribArray(i);
+        field_offset += @sizeOf(field.field_type);
+    }
+
+    // always draw on top of whatever was on screen, no matter what
+    var saved_depth_func: c_int = undefined;
+    gl.getIntegerv(gl.DEPTH_FUNC, &saved_depth_func);
+    defer gl.depthFunc(@intCast(c_uint, saved_depth_func));
+    gl.depthFunc(gl.ALWAYS);
+
+    self.generic_shader.bind();
+    self.generic_shader.set("screen_size", self.screen_size);
+    self.generic_shader.set("text_atlas", @as(i32, 0));
+    self.font.texture.bind(0);
+    gl.bindVertexArray(inputs_vao);
+    gl.drawArrays(gl.POINTS, 0, @intCast(i32, shader_inputs.items.len));
+}
+
+const vertex_shader_src =
+    \\#version 330 core
+    \\
+    \\layout (location = 0) in vec2 attrib_bottom_left_pos;
+    \\layout (location = 1) in vec2 attrib_top_right_pos;
+    \\layout (location = 2) in vec2 attrib_bottom_left_uv;
+    \\layout (location = 3) in vec2 attrib_top_right_uv;
+    \\layout (location = 4) in vec4 attrib_top_color;
+    \\layout (location = 5) in vec4 attrib_bottom_color;
+    \\layout (location = 6) in float attrib_corner_roundness;
+    \\layout (location = 7) in float attrib_border_thickness;
+    \\
+    \\uniform vec2 screen_size; // in pixels
+    \\
+    \\out VS_Out {
+    \\    vec2 bottom_left_pos;
+    \\    vec2 top_right_pos;
+    \\    vec2 bottom_left_uv;
+    \\    vec2 top_right_uv;
+    \\    vec4 top_color;
+    \\    vec4 bottom_color;
+    \\    float corner_roundness;
+    \\    vec2 border_thickness;
+    \\} vs_out;
+    \\
+    \\void main() {
+    \\    // the input position coordinates come in pixel screen space (which goes from
+    \\    // (0, 0) at the bottom left of the screen, to (screen_size.x, screen_size.y) at
+    \\    // the top right of the screen) so we need to transform them into NDC (which goes
+    \\    // from (-1, -1) to (1, 1))
+    \\    vs_out.bottom_left_pos = (attrib_bottom_left_pos / screen_size) * 2 - vec2(1);
+    \\    vs_out.top_right_pos = (attrib_top_right_pos / screen_size) * 2 - vec2(1);
+    \\    vs_out.bottom_left_uv = attrib_bottom_left_uv;
+    \\    vs_out.top_right_uv = attrib_top_right_uv;
+    \\    vs_out.top_color = attrib_top_color;
+    \\    vs_out.bottom_color = attrib_bottom_color;
+    \\    vs_out.corner_roundness = attrib_corner_roundness;
+    \\    vs_out.border_thickness = vec2(attrib_border_thickness) / (attrib_top_right_pos - attrib_bottom_left_pos);
+    \\}
+    \\
+;
+const geometry_shader_src =
+    \\#version 330 core
+    \\
+    \\layout (points) in;
+    \\layout (triangle_strip, max_vertices = 6) out;
+    \\
+    \\uniform vec2 screen_size; // in pixels
+    \\
+    \\in VS_Out {
+    \\    vec2 bottom_left_pos;
+    \\    vec2 top_right_pos;
+    \\    vec2 bottom_left_uv;
+    \\    vec2 top_right_uv;
+    \\    vec4 top_color;
+    \\    vec4 bottom_color;
+    \\    float corner_roundness;
+    \\    vec2 border_thickness;
+    \\} gs_in[];
+    \\
+    \\out GS_Out {
+    \\    vec2 uv;
+    \\    vec4 color;
+    \\    vec2 quad_coords;
+    \\    float quad_size_ratio;
+    \\    float corner_roundness;
+    \\    vec2 border_thickness;
+    \\} gs_out;
+    \\
+    \\void main() {
+    \\    vec4 bottom_left_pos  = vec4(gs_in[0].bottom_left_pos, 0, 1);
+    \\    vec2 bottom_left_uv   = gs_in[0].bottom_left_uv;
+    \\    vec4 top_right_pos    = vec4(gs_in[0].top_right_pos, 0, 1);
+    \\    vec2 top_right_uv     = gs_in[0].top_right_uv;
+    \\    vec4 bottom_right_pos = vec4(top_right_pos.x, bottom_left_pos.y, 0, 1);
+    \\    vec2 bottom_right_uv  = vec2(top_right_uv.x,  bottom_left_uv.y);
+    \\    vec4 top_left_pos     = vec4(bottom_left_pos.x, top_right_pos.y, 0, 1);
+    \\    vec2 top_left_uv      = vec2(bottom_left_uv.x,  top_right_uv.y);
+    \\
+    \\    vec2 quad_size = gs_in[0].top_right_pos - gs_in[0].bottom_left_pos;
+    \\
+    \\    // some things are the same for all verts of the quad
+    \\    gs_out.corner_roundness = gs_in[0].corner_roundness;
+    \\    gs_out.border_thickness = gs_in[0].border_thickness;
+    \\    gs_out.quad_size_ratio = (quad_size.x / quad_size.y) * (screen_size.x / screen_size.y);
+    \\
+    \\    gl_Position        = bottom_left_pos;
+    \\    gs_out.uv          = bottom_left_uv;
+    \\    gs_out.color       = gs_in[0].bottom_color;
+    \\    gs_out.quad_coords = vec2(0, 0);
+    \\    EmitVertex();
+    \\    gl_Position        = bottom_right_pos;
+    \\    gs_out.uv          = bottom_right_uv;
+    \\    gs_out.color       = gs_in[0].bottom_color;
+    \\    gs_out.quad_coords = vec2(1, 0);
+    \\    EmitVertex();
+    \\    gl_Position        = top_right_pos;
+    \\    gs_out.uv          = top_right_uv;
+    \\    gs_out.color       = gs_in[0].top_color;
+    \\    gs_out.quad_coords = vec2(1, 1);
+    \\    EmitVertex();
+    \\    EndPrimitive();
+    \\
+    \\    gl_Position        = bottom_left_pos;
+    \\    gs_out.uv          = bottom_left_uv;
+    \\    gs_out.color       = gs_in[0].bottom_color;
+    \\    gs_out.quad_coords = vec2(0, 0);
+    \\    EmitVertex();
+    \\    gl_Position        = top_right_pos;
+    \\    gs_out.uv          = top_right_uv;
+    \\    gs_out.color       = gs_in[0].top_color;
+    \\    gs_out.quad_coords = vec2(1, 1);
+    \\    EmitVertex();
+    \\    gl_Position        = top_left_pos;
+    \\    gs_out.uv          = top_left_uv;
+    \\    gs_out.color       = gs_in[0].top_color;
+    \\    gs_out.quad_coords = vec2(0, 1);
+    \\    EmitVertex();
+    \\    EndPrimitive();
+    \\}
+    \\
+;
+const fragment_shader_src =
+    \\#version 330 core
+    \\
+    \\in GS_Out {
+    \\    vec2 uv;
+    \\    vec4 color;
+    \\    vec2 quad_coords;
+    \\
+    \\    float quad_size_ratio;
+    \\    float corner_roundness; // 0 is square quad, 1 is full circle
+    \\    vec2 border_thickness; // 0 is no border, 1 is "oops! all border!"
+    \\} fs_in;
+    \\
+    \\uniform vec2 screen_size; // in pixels
+    \\uniform sampler2D text_atlas;
+    \\
+    \\out vec4 FragColor;
+    \\
+    \\float distance_to_edge(vec2 quad_coords) {
+    \\    // because this calculation is identical for all 4 corners we can do some mirroring
+    \\    // to simplify the maths and only worry about one corner
+    \\    vec2 coords = abs((quad_coords * 2) - vec2(1));
+    \\
+    \\    // turn the `quad_coords` (which go from (0, 0) to (1, 1)) into a "scaled" quad coords
+    \\    // for example: if our quad has a ratio of 2, our scaled coords would go from (0, 0) to
+    \\    // (2, 1). this way the calculation on the corner is still a "distance from circle" type
+    \\    // calculation and not the more general (and complicated) "distance from ellipse" one.
+    \\    coords = coords * vec2(fs_in.quad_size_ratio, 1);
+    \\
+    \\    float corner_radius = min(fs_in.quad_size_ratio, 1) * fs_in.corner_roundness;
+    \\    vec2 circle_center = vec2(fs_in.quad_size_ratio, 1) - vec2(corner_radius);
+    \\    vec2 diff_from_center = max(coords - circle_center, 0);
+    \\
+    \\    float corner_dist = corner_radius - length(diff_from_center);
+    \\    vec2 edge_dist = vec2(fs_in.quad_size_ratio, 1) - coords;
+    \\
+    \\    float dist = min(edge_dist.x, edge_dist.y);
+    \\    if (fs_in.corner_roundness != 0) dist = min(dist, corner_dist);
+    \\
+    \\    // this dist is in this "mirrored" space so we have to get it back to the scaled quad space
+    \\    return dist / 2;
+    \\}
+    \\
+    \\void main() {
+    \\    vec2 uv = fs_in.uv;
+    \\    vec4 color = fs_in.color;
+    \\    vec2 quad_coords = fs_in.quad_coords;
+    \\
+    \\    float alpha = texture(text_atlas, uv).r;
+    \\    if (uv == vec2(0, 0)) alpha = 1;
+    \\
+    \\    float border_size = fs_in.border_thickness.y;
+    \\    float edge_dist = distance_to_edge(quad_coords);
+    \\    if (edge_dist < 0) alpha = 0;
+    \\    if (edge_dist > border_size && fs_in.border_thickness != vec2(0)) alpha = 0;
+    \\
+    \\    FragColor = color * vec4(1, 1, 1, alpha);
+    \\}
+    \\
+;
+
+fn solveIndependentSizes(in_self: *UiContext, in_node: *Node, in_axis: Node.Axis) void {
+    // zig fmt: off
+    const work_fn = (struct { pub fn work(self: *UiContext, node: *Node, axis: Node.Axis) void {
+        const axis_idx: usize = @enumToInt(axis);
+        switch (node.pref_size[axis_idx]) {
+            .pixels => |pixels| node.calc_size[axis_idx] = pixels.value,
+            .text_dim => {
+                const display_string = displayPartOfString(node.string);
+                const text_rect = self.font.textRect(display_string) catch |e| switch (e) {
+                    error.InvalidUtf8 => unreachable, // we already check this on the render pass
+                };
+                const text_size = text_rect.max - text_rect.min;
+                node.calc_size[axis_idx] = text_size[axis_idx] + 2 * text_padding;
+            },
+            else => {},
+        }
+    } }).work;
+    // zig fmt: on
+    layoutRecurseHelperPre(work_fn, .{ .self = in_self, .node = in_node, .axis = in_axis });
+}
+
+fn solveUpwardDependent(in_self: *UiContext, in_node: *Node, in_axis: Node.Axis) void {
+    // zig fmt: off
+    const work_fn = (struct { pub fn work(self: *UiContext, node: *Node, axis: Node.Axis) void {
+        _ = self;
+        const axis_idx: usize = @enumToInt(axis);
+        switch (node.pref_size[axis_idx]) {
+            .percent => |percent| {
+                // look for the first ancestor with a fixed size
+                var ancestor: ?*Node = null;
+                var search = node.parent;
+                while (search) |search_node| : (search = search_node.parent) {
+                    if (std.meta.activeTag(search_node.pref_size[axis_idx]) == .by_children) {
+                        ancestor = search_node;
+                        break;
+                    }
+                }
+
+                if (ancestor) |ancestor_node| {
+                    node.calc_size[axis_idx] = ancestor_node.calc_size[axis_idx] * percent.value;
+                }
+            },
+            else => {},
+        }
+    } }).work;
+    // zig fmt: on
+    layoutRecurseHelperPre(work_fn, .{ .self = in_self, .node = in_node, .axis = in_axis });
+}
+
+fn solveDownwardDependent(in_self: *UiContext, in_node: *Node, in_axis: Node.Axis) void {
+    // zig fmt: off
+    const work_fn = (struct { pub fn work(self: *UiContext, node: *Node, axis: Node.Axis) void {
+        _ = self;
+        const axis_idx: usize = @enumToInt(axis);
+        switch (node.pref_size[axis_idx]) {
+            .by_children => {
+                var value: f32 = 0;
+                var child = node.first;
+                while (child) |child_node| : (child = child_node.next) {
+                    if (axis == node.child_layout_axis) {
+                        value += child_node.calc_size[axis_idx];
+                    } else {
+                        value = std.math.max(value, child_node.calc_size[axis_idx]);
+                    }
+                }
+                node.calc_size[axis_idx] = value;
+            },
+            else => {},
+        }
+    } }).work;
+    // zig fmt: on
+    layoutRecurseHelperPost(work_fn, .{ .self = in_self, .node = in_node, .axis = in_axis });
+}
+
+fn solveViolations(in_self: *UiContext, in_node: *Node, in_axis: Node.Axis) void {
+    // zig fmt: off
+    const work_fn = (struct { pub fn work(self: *UiContext, node: *Node, axis: Node.Axis) void {
+        _ = self;
+        const axis_idx: usize = @enumToInt(axis);
+
+        // advancing on the x axis means adding, on the y axis you subtract
+        const axis_advance_factor: f32 = switch (axis) {
+            .x => 1,
+            .y => -1,
+        };
+        // start layout at the top left
+        const start_rel_pos: f32 = switch (axis) {
+            .x => 0,
+            .y => node.calc_size[1],
+        };
+
+        // position all the children
+        var rel_pos: f32 = start_rel_pos;
+        var child = node.first;
+        while (child) |child_node| : (child = child_node.next) {
+            if (axis == node.child_layout_axis) {
+                const rel_pos_advance = axis_advance_factor * child_node.calc_size[axis_idx];
+                switch (axis) {
+                    .x => {
+                        child_node.calc_rel_pos[axis_idx] = rel_pos;
+                        rel_pos += rel_pos_advance;
+                    },
+                    .y =>{
+                        rel_pos += rel_pos_advance;
+                        child_node.calc_rel_pos[axis_idx] = rel_pos;
+                    },
+                }
+            } else {
+                child_node.calc_rel_pos[axis_idx] = start_rel_pos - child_node.calc_size[axis_idx];
+            }
+        }
+
+        // TODO: actually solve size violations
+
+        // calculate the final screen pixel rect
+        child = node.first;
+        while (child) |child_node| : (child = child_node.next) {
+            child_node.rect.min[axis_idx] = node.rect.min[axis_idx] + child_node.calc_rel_pos[axis_idx];
+            child_node.rect.max[axis_idx] = child_node.rect.min[axis_idx] + child_node.calc_size[axis_idx];
+        }
+    } }).work;
+    // zig fmt: on
+    layoutRecurseHelperPre(work_fn, .{ .self = in_self, .node = in_node, .axis = in_axis });
+}
+
+const LayoutWorkFn = fn (*UiContext, *Node, Node.Axis) void;
+const LayoutWorkFnArgs = struct { self: *UiContext, node: *Node, axis: Node.Axis };
+/// do the work before recursing
+fn layoutRecurseHelperPre(work_fn: LayoutWorkFn, args: LayoutWorkFnArgs) void {
+    work_fn(args.self, args.node, args.axis);
+    var child = args.node.first;
+    while (child) |child_node| : (child = child_node.next) {
+        layoutRecurseHelperPre(work_fn, .{ .self = args.self, .node = child_node, .axis = args.axis });
+    }
+}
+/// do the work after recursing
+fn layoutRecurseHelperPost(work_fn: LayoutWorkFn, args: LayoutWorkFnArgs) void {
+    var child = args.node.first;
+    while (child) |child_node| : (child = child_node.next) {
+        layoutRecurseHelperPost(work_fn, .{ .self = args.self, .node = child_node, .axis = args.axis });
+    }
+    work_fn(args.self, args.node, args.axis);
+}
+
+const text_padding: f32 = 8;
+
+fn textPosFromNode(self: UiContext, node: *Node) vec2 {
+    const font_metrics = self.font.getScaledMetrics();
+    const font_height = font_metrics.ascent + font_metrics.descent;
+
+    const box_middle_y = (node.rect.min[1] + node.rect.max[1]) / 2;
+    return vec2{
+        node.rect.min[0] + text_padding,
+        box_middle_y - font_height / 2,
+    };
+}
+
+fn keyFromNode(self: UiContext, node: *Node) NodeKey {
+    return self.node_table.ctx.hash(hashPartOfString(node.string));
+}
+
+fn displayPartOfString(string: []const u8) []const u8 {
+    if (std.mem.indexOf(u8, string, "###")) |idx| {
+        return string[0..idx];
+    } else return string;
+}
+
+fn hashPartOfString(string: []const u8) []const u8 {
+    if (std.mem.indexOf(u8, string, "###")) |idx| {
+        return string[idx + 3 ..];
+    } else return string;
+}
+
+// TODO: this should really be in the EventQueue type
+fn searchForEvent(self: *UiContext, event_type: std.meta.Tag(window.InputEvent)) ?window.InputEvent {
+    for (self.events.events.items) |ev| {
+        if (std.meta.activeTag(ev) == event_type) return ev;
+    }
+    return null;
+}
+
+const DepthFirstNodeIterator = struct {
+    cur_node: *Node,
+    parent_level: usize = 0, // how many times have we gone down the hierarchy
+
+    pub fn next(self: *DepthFirstNodeIterator) ?*Node {
+        if (self.cur_node.child_count > 0) {
+            self.parent_level += 1;
+            self.cur_node = self.cur_node.first.?;
+        } else if (self.cur_node.next) |next_sibling| {
+            self.cur_node = next_sibling;
+        } else {
+            while (self.cur_node.next == null) {
+                self.cur_node = self.cur_node.parent orelse return null;
+                self.parent_level -= 1;
+                if (self.parent_level == 0) return null;
+            }
+        }
+        return self.cur_node;
+    }
+};
+
+/// very small wrapper around std.ArrayList that provides push, pop, and top functions
+pub fn Stack(comptime T: type) type {
+    return struct {
+        array_list: std.ArrayList(T),
+
+        const Self = @This();
+
+        pub fn init(allocator: Allocator) Self {
+            return Self{ .array_list = std.ArrayList(T).init(allocator) };
+        }
+
+        pub fn deinit(self: Self) void {
+            self.array_list.deinit();
+        }
+
+        pub fn push(self: *Self, item: T) !void {
+            try self.array_list.append(item);
+        }
+
+        pub fn pop(self: *Self) ?T {
+            return self.array_list.popOrNull();
+        }
+
+        pub fn top(self: Self) ?T {
+            if (self.array_list.items.len == 0) return null;
+            return self.array_list.items[self.array_list.items.len - 1];
+        }
+
+        pub fn len(self: Self) usize {
+            return self.array_list.items.len;
+        }
+    };
+}
