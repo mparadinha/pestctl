@@ -6,6 +6,7 @@ const gl = @import("gl_4v3.zig");
 const gfx = @import("graphics.zig");
 const math = @import("math.zig");
 const vec2 = math.vec2;
+const vec4 = math.vec4;
 const Font = @import("Font.zig");
 const UiContext = @import("UiContext.zig");
 
@@ -44,10 +45,6 @@ pub fn main() !void {
     var last_mouse_pos = vec2{ 0, 0 };
     var last_time = @floatCast(f32, c.glfwGetTime());
 
-    var presses = @as(u32, 0);
-    var dummy_node: UiContext.Node = undefined;
-    var node: *UiContext.Node = &dummy_node;
-
     while (!window.should_close()) {
         window.framebuffer_size(&width, &height);
         gl.viewport(0, 0, @intCast(i32, width), @intCast(i32, height));
@@ -68,12 +65,53 @@ pub fn main() !void {
             _ = event;
         }
 
-        if (ui.buttonF("Hej (Olá), world! \u{252b} \u{1f600}, count={}, presses={}, hot={d:.2}, active={d:.2}###label", .{
-            ui.node_table.count(), presses, node.hot_trans, node.active_trans,
-        }).clicked) {
-            presses += 1;
+        ui.root_node.child_layout_axis = .y;
+        //const size1 = [2]UiContext.Size{ UiContext.Size.pixels(100, 1), UiContext.Size.text_dim(1) };
+        const size075 = [2]UiContext.Size{ UiContext.Size.pixels(100, 0.75), UiContext.Size.text_dim(1) };
+        const size05 = [2]UiContext.Size{ UiContext.Size.pixels(100, 0.5), UiContext.Size.text_dim(1) };
+        const size025 = [2]UiContext.Size{ UiContext.Size.pixels(100, 0.25), UiContext.Size.text_dim(1) };
+        const size_space = [2]UiContext.Size{ UiContext.Size.percent(1, 0), UiContext.Size.text_dim(0) };
+        {
+            //const sizes = [2]UiContext.Size{ UiContext.Size.pixels(500 * (@sin(cur_time) + 1), 1), UiContext.Size.pixels(100, 1) };
+            const sizes = [2]UiContext.Size{ UiContext.Size.pixels(mouse_pos[0], 1), UiContext.Size.pixels(50, 1) };
+            const parent_node = try ui.addNode(.{ .draw_background = true, .draw_border = true }, "parent", .{
+                .child_layout_axis = .x,
+                .pref_size = sizes,
+            });
+            try ui.pushParent(parent_node);
+            defer _ = ui.popParent();
+
+            //_ = ui.spacer(.x, 1);
+            ui.pushStyle(.{ .pref_size = size_space });
+            _ = ui.button("S");
+            ui.pushStyle(.{ .pref_size = size05 });
+            _ = ui.button("A");
+            ui.pushStyle(.{ .pref_size = size075 });
+            _ = ui.button("B");
+            ui.pushStyle(.{ .pref_size = size025 });
+            _ = ui.button("C");
+            ui.pushStyle(.{ .pref_size = size025 });
+            _ = ui.button("D");
         }
-        _ = ui.button("YEP ROCK");
+        {
+            const sizes = [2]UiContext.Size{ UiContext.Size.pixels(mouse_pos[0], 1), UiContext.Size.pixels(50, 1) };
+            const parent_node = try ui.addNode(.{ .draw_background = true, .draw_border = true }, "parent1", .{
+                .child_layout_axis = .x,
+                .pref_size = sizes,
+            });
+            try ui.pushParent(parent_node);
+            defer _ = ui.popParent();
+
+            //_ = ui.spacer(.x, 1);
+            ui.pushStyle(.{ .pref_size = size_space });
+            _ = ui.button("S1");
+            ui.pushStyle(.{ .pref_size = size05 });
+            _ = ui.button("A1");
+            ui.pushStyle(.{ .pref_size = size025 });
+            _ = ui.button("C1");
+            ui.pushStyle(.{ .pref_size = size025 });
+            _ = ui.button("D1");
+        }
 
         gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
         try ui.render();

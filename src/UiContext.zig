@@ -17,8 +17,9 @@ allocator: Allocator,
 generic_shader: gfx.Shader,
 font: Font,
 string_arena: std.heap.ArenaAllocator,
-node_table: std.StringHashMap(Node),
-stale_nodes: std.ArrayList(Node),
+node_table: NodeTable,
+prng: PRNG,
+//stale_nodes: std.ArrayList(Node),
 
 window_ptr: *window.Window, // only used for setting the cursor
 
@@ -30,6 +31,7 @@ first_error_name: []const u8,
 
 // per-frame data
 parent_stack: Stack(*Node),
+style_stack: Stack(Style),
 root_node: *Node,
 screen_size: vec2,
 mouse_pos: vec2, // in pixels
@@ -53,8 +55,9 @@ pub fn init(allocator: Allocator, font_path: []const u8, window_ptr: *window.Win
         }),
         .font = try Font.from_ttf(allocator, font_path, 19),
         .string_arena = std.heap.ArenaAllocator.init(allocator),
-        .node_table = std.StringHashMap(Node).init(allocator),
-        .stale_nodes = std.ArrayList(Node).init(allocator),
+        .node_table = NodeTable.init(allocator),
+        .prng = PRNG.init(0),
+        //.stale_nodes = std.ArrayList(Node).init(allocator),
 
         .window_ptr = window_ptr,
 
@@ -62,6 +65,7 @@ pub fn init(allocator: Allocator, font_path: []const u8, window_ptr: *window.Win
         .first_error_name = "",
 
         .parent_stack = Stack(*Node).init(allocator),
+        .style_stack = Stack(Style).init(allocator),
         .root_node = undefined,
         .screen_size = undefined,
         .mouse_pos = undefined,
@@ -75,8 +79,9 @@ pub fn init(allocator: Allocator, font_path: []const u8, window_ptr: *window.Win
 }
 
 pub fn deinit(self: *UiContext) void {
+    self.style_stack.deinit();
     self.parent_stack.deinit();
-    self.stale_nodes.deinit();
+    //self.stale_nodes.deinit();
     self.node_table.deinit();
     self.string_arena.deinit();
     self.font.deinit();
@@ -84,6 +89,7 @@ pub fn deinit(self: *UiContext) void {
 }
 
 pub const Flags = packed struct {
+    no_id: bool = false,
     clickable: bool = false,
     draw_text: bool = false,
     draw_border: bool = false,
@@ -103,7 +109,8 @@ pub const Node = struct {
 
     // per-frame params
     flags: Flags,
-    string: []const u8,
+    display_string: []const u8,
+    hash_string: []const u8,
     bg_color: vec4,
     border_color: vec4,
     text_color: vec4,
@@ -125,8 +132,19 @@ pub const Node = struct {
     active_trans: f32,
     first_frame_touched: usize,
     last_frame_touched: usize,
+};
 
-    pub const Axis = enum { x, y };
+pub const Axis = enum { x, y };
+
+pub const Style = struct {
+    bg_color: vec4 = vec4{ 0, 0, 0, 0.5 },
+    border_color: vec4 = vec4{ 0.5, 0.5, 0.5, 0.5 },
+    text_color: vec4 = vec4{ 1, 1, 1, 1 },
+    corner_roundness: f32 = 0,
+    border_thickness: f32 = 2,
+    pref_size: [2]Size = .{ Size.text_dim(0), Size.text_dim(1) },
+    child_layout_axis: Axis = .y,
+    hover_cursor: window.CursorType = .arrow,
 };
 
 pub const Size = union(enum) {
@@ -146,6 +164,15 @@ pub const Size = union(enum) {
     }
     pub fn by_children(strictness: f32) Size {
         return Size{ .by_children = .{ .strictness = strictness } };
+    }
+
+    pub fn getStrictness(self: Size) f32 {
+        return switch (self) {
+            .pixels => |pixels| pixels.strictness,
+            .text_dim => |text_dim| text_dim.strictness,
+            .percent => |percent| percent.strictness,
+            .by_children => |by_children| by_children.strictness,
+        };
     }
 };
 
@@ -171,6 +198,34 @@ pub const Signal = struct {
     held_down: bool,
 };
 
+pub fn spacer(self: *UiContext, axis: Axis, value: f32) Signal {
+    const sizes = switch (axis) {
+        .x => [2]Size{ Size.percent(value, 0), Size.percent(0, 0) },
+        .y => [2]Size{ Size.percent(0, 0), Size.percent(value, 0) },
+    };
+    const node = self.addNode(.{ .no_id = true }, "", .{ .pref_size = sizes }) catch |e| blk: {
+        self.setErrorInfo(@errorReturnTrace(), @errorName(e));
+        break :blk self.root_node;
+    };
+    return self.getNodeSignal(node);
+}
+
+pub fn label(self: *UiContext, string: []const u8) Signal {
+    const node = self.addNode(.{ .no_id = true, .draw_text = true }, string, .{}) catch |e| blk: {
+        self.setErrorInfo(@errorReturnTrace(), @errorName(e));
+        break :blk self.root_node;
+    };
+    return self.getNodeSignal(node);
+}
+
+pub fn labelF(self: *UiContext, comptime fmt: []const u8, args: anytype) Signal {
+    const str = std.fmt.allocPrint(self.string_arena.allocator(), fmt, args) catch |e| blk: {
+        self.setErrorInfo(@errorReturnTrace(), @errorName(e));
+        break :blk "";
+    };
+    return self.label(str);
+}
+
 pub fn button(self: *UiContext, string: []const u8) Signal {
     const node = self.addNode(.{
         .clickable = true,
@@ -182,8 +237,7 @@ pub fn button(self: *UiContext, string: []const u8) Signal {
     }, string, .{
         .hover_cursor = .hand,
     }) catch |e| blk: {
-        self.first_error_trace = @errorReturnTrace();
-        self.first_error_name = @errorName(e);
+        self.setErrorInfo(@errorReturnTrace(), @errorName(e));
         break :blk self.root_node;
     };
     return self.getNodeSignal(node);
@@ -191,81 +245,35 @@ pub fn button(self: *UiContext, string: []const u8) Signal {
 
 pub fn buttonF(self: *UiContext, comptime fmt: []const u8, args: anytype) Signal {
     const str = std.fmt.allocPrint(self.string_arena.allocator(), fmt, args) catch |e| blk: {
-        self.first_error_trace = @errorReturnTrace();
-        self.first_error_name = @errorName(e);
+        self.setErrorInfo(@errorReturnTrace(), @errorName(e));
         break :blk "";
     };
     return self.button(str);
 }
 
-pub fn startFrame(self: *UiContext, screen_w: u32, screen_h: u32, mouse_pos: vec2, events: *window.EventQueue) !void {
-    const screen_size = vec2{ @intToFloat(f32, screen_w), @intToFloat(f32, screen_h) };
-
-    self.screen_size = screen_size;
-    self.mouse_pos = mouse_pos;
-    self.events = events;
-
-    const root_pref_sizes = [2]Size{ Size.pixels(screen_size[0], 1), Size.pixels(screen_size[1], 1) };
-    self.root_node = try self.addNode(.{}, "###INTERNAL_ROOT_NODE", .{
-        .first = null,
-        .last = null,
-        .next = null,
-        .prev = null,
-        .parent = null,
-        .child_count = 0,
-        .pref_size = root_pref_sizes,
-    });
-
-    std.debug.assert(self.parent_stack.len() == 0);
-    try self.parent_stack.push(self.root_node);
-
-    self.first_error_trace = null;
-
-    self.window_ptr.set_cursor(.arrow);
-}
-
-pub fn endFrame(self: *UiContext, dt: f32) void {
-    if (self.first_error_trace) |error_trace| {
-        std.debug.print("{}\n", .{error_trace});
-        std.debug.panic("An error occurred during the UI building phase: {s}", .{self.first_error_name});
-    }
-
-    _ = self.parent_stack.pop().?;
-    std.debug.assert(self.parent_stack.len() == 0);
-
-    self.frame_idx += 1;
-
-    // TODO: node pruning
-
-    // update transition/animation value
-    const fast_rate = 1 - std.math.pow(f32, 2, -20.0 * dt);
-    var node_iter = self.node_table.valueIterator();
-    while (node_iter.next()) |node_ptr| {
-        const node_key = self.keyFromNode(node_ptr);
-        const is_hot = (self.hot_node_key == node_key);
-        const is_active = (self.active_node_key == node_key);
-        const hot_target = if (is_hot) @as(f32, 1) else @as(f32, 0);
-        const active_target = if (is_active) @as(f32, 1) else @as(f32, 0);
-        node_ptr.hot_trans += (hot_target - node_ptr.hot_trans) * fast_rate;
-        node_ptr.active_trans += (active_target - node_ptr.active_trans) * fast_rate;
-    }
-}
-
 pub fn addNode(self: *UiContext, flags: Flags, string: []const u8, init_args: anytype) !*Node {
+    const display_string = displayPartOfString(string);
+    const hash_string = if (flags.no_id) blk: {
+        // for `no_id` nodes we use a random number as the hash string, so they don't clobber each other
+        break :blk hashPartOfString(&randomString(&self.prng));
+    } else hashPartOfString(string);
+
     // if a node already exists that matches this one we just use that one
     // this way the persistant cross-frame data is possible
-    const lookup_result = try self.node_table.getOrPut(hashPartOfString(string));
+    const lookup_result = try self.node_table.getOrPut(hash_string);
     var node = lookup_result.value_ptr;
     if (!lookup_result.found_existing) {
         node.first_frame_touched = self.frame_idx;
     }
 
     // link node into the tree
-    var parent = self.parent_stack.top() orelse null;
+    var parent = self.parent_stack.top();
     node.first = null;
     node.last = null;
     node.next = null;
-    node.prev = if (parent) |parent_node| parent_node.last else null;
+    node.prev = if (parent) |parent_node| blk: {
+        break :blk if (parent_node.last == node) null else parent_node.last;
+    } else null;
     node.parent = parent;
     node.child_count = 0;
     if (node.prev) |prev| prev.next = node;
@@ -277,15 +285,17 @@ pub fn addNode(self: *UiContext, flags: Flags, string: []const u8, init_args: an
 
     // set per-frame data
     node.flags = flags;
-    node.string = string;
-    node.bg_color = vec4{ 0, 0, 0, 0.5 };
-    node.border_color = vec4{ 0.5, 0.5, 0.5, 1 };
-    node.text_color = vec4{ 1, 1, 1, 1 };
-    node.corner_roundness = 0;
-    node.border_thickness = 2;
-    node.pref_size = .{ Size.text_dim(1), Size.text_dim(1) };
-    node.child_layout_axis = .x;
-    node.hover_cursor = .arrow;
+    node.display_string = display_string;
+    node.hash_string = hash_string;
+    const style = self.style_stack.top().?;
+    node.bg_color = style.bg_color;
+    node.border_color = style.border_color;
+    node.text_color = style.text_color;
+    node.corner_roundness = style.corner_roundness;
+    node.border_thickness = style.border_thickness;
+    node.pref_size = style.pref_size;
+    node.child_layout_axis = style.child_layout_axis;
+    node.hover_cursor = style.hover_cursor;
 
     // reset layout data (but not the final screen rect which we need for signal stuff)
     node.calc_size = vec2{ 0, 0 };
@@ -297,7 +307,7 @@ pub fn addNode(self: *UiContext, flags: Flags, string: []const u8, init_args: an
     inline for (@typeInfo(@TypeOf(init_args)).Struct.fields) |field_type_info| {
         const field_name = field_type_info.name;
         if (!@hasField(Node, field_name)) {
-            @compileError("Node does not have a field named '" ++ field_name ++ "");
+            @compileError("Node does not have a field named '" ++ field_name ++ "'");
         }
         @field(node, field_name) = @field(init_args, field_name);
     }
@@ -308,6 +318,36 @@ pub fn addNode(self: *UiContext, flags: Flags, string: []const u8, init_args: an
 pub fn addNodeF(self: *UiContext, flags: Flags, comptime fmt: []const u8, args: anytype, init_args: anytype) !*Node {
     const str = try std.fmt.allocPrint(self.string_arena.allocator(), fmt, args);
     return try self.addNode(flags, str, init_args);
+}
+
+pub fn pushParent(self: *UiContext, node: *Node) !void {
+    try self.parent_stack.push(node);
+}
+pub fn popParent(self: *UiContext) *Node {
+    return self.parent_stack.pop().?;
+}
+pub fn topParent(self: *UiContext) *Node {
+    return self.parent_stack.top().?;
+}
+
+pub fn pushStyle(self: *UiContext, partial_style: anytype) void {
+    var style = self.style_stack.top().?;
+    inline for (@typeInfo(@TypeOf(partial_style)).Struct.fields) |field_type_info| {
+        const field_name = field_type_info.name;
+        if (!@hasField(Node, field_name)) {
+            @compileError("Style does not have a field named '" ++ field_name ++ "'");
+        }
+        @field(style, field_name) = @field(partial_style, field_name);
+    }
+    self.style_stack.push(style) catch |e| {
+        self.setErrorInfo(@errorReturnTrace(), @errorName(e));
+    };
+}
+pub fn popStyle(self: *UiContext) Style {
+    return self.style_stack.pop().?;
+}
+pub fn topStyle(self: *UiContext) Style {
+    return self.style_stack.top().?;
 }
 
 pub fn getNodeSignal(self: *UiContext, node: *Node) Signal {
@@ -360,6 +400,72 @@ pub fn getNodeSignal(self: *UiContext, node: *Node) Signal {
     return signal;
 }
 
+pub fn startFrame(self: *UiContext, screen_w: u32, screen_h: u32, mouse_pos: vec2, events: *window.EventQueue) !void {
+    // remove the `no_id` nodes from the hash table before starting this new frame
+    var node_iter = self.node_table.valueIterator();
+    while (node_iter.next()) |node| {
+        if (node.flags.no_id) try node_iter.removeCurrent();
+    }
+
+    const screen_size = vec2{ @intToFloat(f32, screen_w), @intToFloat(f32, screen_h) };
+    self.screen_size = screen_size;
+    self.mouse_pos = mouse_pos;
+    self.events = events;
+
+    std.debug.assert(self.parent_stack.len() == 0);
+
+    self.style_stack.clear();
+    const default_style = Style{};
+    try self.style_stack.push(default_style);
+
+    const root_pref_sizes = [2]Size{ Size.pixels(screen_size[0], 1), Size.pixels(screen_size[1], 1) };
+    self.root_node = try self.addNode(.{}, "###INTERNAL_ROOT_NODE", .{
+        .first = null,
+        .last = null,
+        .next = null,
+        .prev = null,
+        .parent = null,
+        .child_count = 0,
+        .pref_size = root_pref_sizes,
+        // @debug
+        .child_layout_axis = .x,
+    });
+    try self.parent_stack.push(self.root_node);
+
+    self.first_error_trace = null;
+
+    self.window_ptr.set_cursor(.arrow);
+}
+
+pub fn endFrame(self: *UiContext, dt: f32) void {
+    if (self.first_error_trace) |error_trace| {
+        std.debug.print("{}\n", .{error_trace});
+        std.debug.panic("An error occurred during the UI building phase: {s}", .{self.first_error_name});
+    }
+
+    _ = self.parent_stack.pop().?;
+    _ = self.style_stack.pop().?;
+
+    std.debug.assert(self.parent_stack.len() == 0);
+
+    // TODO: stale node pruning (I don't get what the point of that is?)
+
+    // update the transition/animation values
+    const fast_rate = 1 - std.math.pow(f32, 2, -20.0 * dt);
+    var node_iter = self.node_table.valueIterator();
+    while (node_iter.next()) |node_ptr| {
+        const node_key = self.keyFromNode(node_ptr);
+        const is_hot = (self.hot_node_key == node_key);
+        const is_active = (self.active_node_key == node_key);
+        const hot_target = if (is_hot) @as(f32, 1) else @as(f32, 0);
+        const active_target = if (is_active) @as(f32, 1) else @as(f32, 0);
+        node_ptr.hot_trans += (hot_target - node_ptr.hot_trans) * fast_rate;
+        node_ptr.active_trans += (active_target - node_ptr.active_trans) * fast_rate;
+    }
+
+    self.frame_idx += 1;
+}
+
 pub fn render(self: *UiContext) !void {
     // do the whole layout right before rendering
     self.solveIndependentSizes(self.root_node, .x);
@@ -385,8 +491,11 @@ pub fn render(self: *UiContext) !void {
     var shader_inputs = std.ArrayList(ShaderInput).init(self.allocator);
     defer shader_inputs.deinit();
 
+    var count: u32 = 0;
     var node_iterator = DepthFirstNodeIterator{ .cur_node = self.root_node };
     while (node_iterator.next()) |node| {
+        //std.debug.print("count={}, #nodes={}\n", .{ count, self.node_table.key_mappings.items.len });
+        count += 1;
         const base_rect = ShaderInput{
             .bottom_left_pos = node.rect.min,
             .top_right_pos = node.rect.max,
@@ -445,7 +554,7 @@ pub fn render(self: *UiContext) !void {
                 text_pos[1] -= 0.1 * self.font.pixel_size * node.active_trans;
             }
 
-            const display_text = displayPartOfString(node.string);
+            const display_text = displayPartOfString(node.display_string);
             const quads = try self.font.buildQuads(self.allocator, display_text);
             defer self.allocator.free(quads);
             for (quads) |quad| {
@@ -692,18 +801,21 @@ const fragment_shader_src =
     \\
 ;
 
-fn solveIndependentSizes(in_self: *UiContext, in_node: *Node, in_axis: Node.Axis) void {
+fn solveIndependentSizes(in_self: *UiContext, in_node: *Node, in_axis: Axis) void {
     // zig fmt: off
-    const work_fn = (struct { pub fn work(self: *UiContext, node: *Node, axis: Node.Axis) void {
+    const work_fn = (struct { pub fn work(self: *UiContext, node: *Node, axis: Axis) void {
         const axis_idx: usize = @enumToInt(axis);
         switch (node.pref_size[axis_idx]) {
             .pixels => |pixels| node.calc_size[axis_idx] = pixels.value,
             .text_dim => {
-                const display_string = displayPartOfString(node.string);
-                const text_rect = self.font.textRect(display_string) catch |e| switch (e) {
+                const text_rect = self.font.textRect(node.display_string) catch |e| switch (e) {
                     error.InvalidUtf8 => unreachable, // we already check this on the render pass
                 };
                 const text_size = text_rect.max - text_rect.min;
+                const text_padding = switch (axis) {
+                    .x => text_hpadding,
+                    .y => text_vpadding,
+                };
                 node.calc_size[axis_idx] = text_size[axis_idx] + 2 * text_padding;
             },
             else => {},
@@ -713,18 +825,21 @@ fn solveIndependentSizes(in_self: *UiContext, in_node: *Node, in_axis: Node.Axis
     layoutRecurseHelperPre(work_fn, .{ .self = in_self, .node = in_node, .axis = in_axis });
 }
 
-fn solveUpwardDependent(in_self: *UiContext, in_node: *Node, in_axis: Node.Axis) void {
+fn solveUpwardDependent(in_self: *UiContext, in_node: *Node, in_axis: Axis) void {
+    std.debug.print("[solveUpward... ({})]\n", .{in_axis});
     // zig fmt: off
-    const work_fn = (struct { pub fn work(self: *UiContext, node: *Node, axis: Node.Axis) void {
+    const work_fn = (struct { pub fn work(self: *UiContext, node: *Node, axis: Axis) void {
         _ = self;
         const axis_idx: usize = @enumToInt(axis);
+        std.debug.print("['{s}'] doing upward\n", .{node.display_string});
         switch (node.pref_size[axis_idx]) {
             .percent => |percent| {
                 // look for the first ancestor with a fixed size
                 var ancestor: ?*Node = null;
                 var search = node.parent;
+                std.debug.print("['{s}'] looking for ancestor\n", .{node.display_string});
                 while (search) |search_node| : (search = search_node.parent) {
-                    if (std.meta.activeTag(search_node.pref_size[axis_idx]) == .by_children) {
+                    if (std.meta.activeTag(search_node.pref_size[axis_idx]) != .by_children) {
                         ancestor = search_node;
                         break;
                     }
@@ -732,6 +847,7 @@ fn solveUpwardDependent(in_self: *UiContext, in_node: *Node, in_axis: Node.Axis)
 
                 if (ancestor) |ancestor_node| {
                     node.calc_size[axis_idx] = ancestor_node.calc_size[axis_idx] * percent.value;
+                    std.debug.print("!!!!!!!!! ['{s}'] ancestor size = {d}, calc size = {d}\n", .{ node.display_string,  ancestor_node.calc_size[axis_idx],  node.calc_size[axis_idx] });
                 }
             },
             else => {},
@@ -741,9 +857,9 @@ fn solveUpwardDependent(in_self: *UiContext, in_node: *Node, in_axis: Node.Axis)
     layoutRecurseHelperPre(work_fn, .{ .self = in_self, .node = in_node, .axis = in_axis });
 }
 
-fn solveDownwardDependent(in_self: *UiContext, in_node: *Node, in_axis: Node.Axis) void {
+fn solveDownwardDependent(in_self: *UiContext, in_node: *Node, in_axis: Axis) void {
     // zig fmt: off
-    const work_fn = (struct { pub fn work(self: *UiContext, node: *Node, axis: Node.Axis) void {
+    const work_fn = (struct { pub fn work(self: *UiContext, node: *Node, axis: Axis) void {
         _ = self;
         const axis_idx: usize = @enumToInt(axis);
         switch (node.pref_size[axis_idx]) {
@@ -766,45 +882,90 @@ fn solveDownwardDependent(in_self: *UiContext, in_node: *Node, in_axis: Node.Axi
     layoutRecurseHelperPost(work_fn, .{ .self = in_self, .node = in_node, .axis = in_axis });
 }
 
-fn solveViolations(in_self: *UiContext, in_node: *Node, in_axis: Node.Axis) void {
+fn solveViolations(in_self: *UiContext, in_node: *Node, in_axis: Axis) void {
     // zig fmt: off
-    const work_fn = (struct { pub fn work(self: *UiContext, node: *Node, axis: Node.Axis) void {
+    const work_fn = (struct { pub fn work(self: *UiContext, node: *Node, axis: Axis) void {
         _ = self;
         const axis_idx: usize = @enumToInt(axis);
 
-        // advancing on the x axis means adding, on the y axis you subtract
-        const axis_advance_factor: f32 = switch (axis) {
-            .x => 1,
-            .y => -1,
-        };
+        if (node.child_count == 0) return;
+
         // start layout at the top left
         const start_rel_pos: f32 = switch (axis) {
             .x => 0,
             .y => node.calc_size[1],
         };
 
+        var child: ?*Node = undefined;
+
+        // solve size violations
+        var total_children_size: f32 = 0;
+        child = node.first;
+        while (child) |child_node| : (child = child_node.next) {
+            if (axis == node.child_layout_axis)
+                total_children_size += child_node.calc_size[axis_idx]
+            else 
+                total_children_size = std.math.max(total_children_size, child_node.calc_size[axis_idx]);
+        }
+
+        var overflow = total_children_size - node.calc_size[axis_idx];
+
+        var total_leeway: f32 = 0;
+        child = node.first;
+        while (child) |child_node| : (child = child_node.next) {
+            const strictness = child_node.pref_size[axis_idx].getStrictness();
+            const leeway = 1 - strictness;
+            if (axis == node.child_layout_axis) {
+                // for the special case where we have 0 strictness, because of spacers
+                // (if we don't do this here, then even a 100% leeway value will still
+                // be a small percentage of the total remove take, if there are other
+                // nodes in the axis)
+                if (leeway == 1) {
+                    const remove_size = std.math.min(overflow, child_node.calc_size[axis_idx]);
+                    child_node.calc_size[axis_idx] -= remove_size;
+                    overflow -= remove_size;
+                } else {
+                    total_leeway += leeway;
+                }
+            } else {
+                total_leeway = std.math.min(total_leeway, leeway);
+            }
+        }
+
+        if (overflow > 0) {
+            child = node.first;
+            while (child) |child_node| : (child = child_node.next) {
+                const strictness = child_node.pref_size[axis_idx].getStrictness();
+                if (strictness == 0) continue; // already handled before
+                const remove_weight = (1 - strictness) / total_leeway;
+                const max_remove_budget = child_node.calc_size[axis_idx] * (1 - strictness);
+                child_node.calc_size[axis_idx] -= std.math.min(overflow * remove_weight, max_remove_budget);
+            }
+        }
+
         // position all the children
         var rel_pos: f32 = start_rel_pos;
-        var child = node.first;
+        child = node.first;
         while (child) |child_node| : (child = child_node.next) {
             if (axis == node.child_layout_axis) {
-                const rel_pos_advance = axis_advance_factor * child_node.calc_size[axis_idx];
+                const rel_pos_advance = child_node.calc_size[axis_idx];
                 switch (axis) {
                     .x => {
                         child_node.calc_rel_pos[axis_idx] = rel_pos;
                         rel_pos += rel_pos_advance;
                     },
                     .y =>{
-                        rel_pos += rel_pos_advance;
+                        rel_pos -= rel_pos_advance;
                         child_node.calc_rel_pos[axis_idx] = rel_pos;
                     },
                 }
             } else {
-                child_node.calc_rel_pos[axis_idx] = start_rel_pos - child_node.calc_size[axis_idx];
+                switch (axis) {
+                    .x => child_node.calc_rel_pos[axis_idx] = start_rel_pos,
+                    .y => child_node.calc_rel_pos[axis_idx] = start_rel_pos - child_node.calc_size[axis_idx],
+                }
             }
         }
-
-        // TODO: actually solve size violations
 
         // calculate the final screen pixel rect
         child = node.first;
@@ -817,8 +978,8 @@ fn solveViolations(in_self: *UiContext, in_node: *Node, in_axis: Node.Axis) void
     layoutRecurseHelperPre(work_fn, .{ .self = in_self, .node = in_node, .axis = in_axis });
 }
 
-const LayoutWorkFn = fn (*UiContext, *Node, Node.Axis) void;
-const LayoutWorkFnArgs = struct { self: *UiContext, node: *Node, axis: Node.Axis };
+const LayoutWorkFn = fn (*UiContext, *Node, Axis) void;
+const LayoutWorkFnArgs = struct { self: *UiContext, node: *Node, axis: Axis };
 /// do the work before recursing
 fn layoutRecurseHelperPre(work_fn: LayoutWorkFn, args: LayoutWorkFnArgs) void {
     work_fn(args.self, args.node, args.axis);
@@ -836,7 +997,8 @@ fn layoutRecurseHelperPost(work_fn: LayoutWorkFn, args: LayoutWorkFnArgs) void {
     work_fn(args.self, args.node, args.axis);
 }
 
-const text_padding: f32 = 8;
+const text_hpadding: f32 = 8;
+const text_vpadding: f32 = 4;
 
 fn textPosFromNode(self: UiContext, node: *Node) vec2 {
     const font_metrics = self.font.getScaledMetrics();
@@ -844,13 +1006,18 @@ fn textPosFromNode(self: UiContext, node: *Node) vec2 {
 
     const box_middle_y = (node.rect.min[1] + node.rect.max[1]) / 2;
     return vec2{
-        node.rect.min[0] + text_padding,
+        node.rect.min[0] + text_hpadding,
         box_middle_y - font_height / 2,
     };
 }
 
+fn setErrorInfo(self: *UiContext, trace: ?*std.builtin.StackTrace, name: []const u8) void {
+    self.first_error_trace = trace;
+    self.first_error_name = name;
+}
+
 fn keyFromNode(self: UiContext, node: *Node) NodeKey {
-    return self.node_table.ctx.hash(hashPartOfString(node.string));
+    return self.node_table.ctx.hash(hashPartOfString(node.hash_string));
 }
 
 fn displayPartOfString(string: []const u8) []const u8 {
@@ -889,13 +1056,14 @@ const DepthFirstNodeIterator = struct {
                 self.parent_level -= 1;
                 if (self.parent_level == 0) return null;
             }
+            self.cur_node = self.cur_node.next.?;
         }
         return self.cur_node;
     }
 };
 
 /// very small wrapper around std.ArrayList that provides push, pop, and top functions
-pub fn Stack(comptime T: type) type {
+fn Stack(comptime T: type) type {
     return struct {
         array_list: std.ArrayList(T),
 
@@ -925,5 +1093,148 @@ pub fn Stack(comptime T: type) type {
         pub fn len(self: Self) usize {
             return self.array_list.items.len;
         }
+
+        pub fn clear(self: *Self) void {
+            self.array_list.clearRetainingCapacity();
+        }
     };
+}
+
+/// Hash map where pointers to entries remains stable when adding new ones.
+/// Supports removing entries while iterating over them.
+/// Uses an arena allocator under the hood to allocate new entries, which is not great
+/// if we have a *lot* of entries. (1000 is not a lot btw)
+const NodeTable = struct {
+    arena: std.heap.ArenaAllocator,
+    ctx: HashContext,
+
+    key_mappings: KeyMap,
+
+    const K = []const u8;
+    const V = Node;
+    const KeyHash = u64;
+
+    // note: this makes lookups O(n). if that start to become a problem
+    // we can just switch this to a HashMap and NodeTable because
+    // essentially a wrapper around std.HashMap
+    const KeyMap = std.ArrayList(struct { key_hash: KeyHash, value_ptr: *V });
+
+    const HashContext = struct {
+        pub fn hash(self: @This(), key: K) u64 {
+            _ = self;
+            return std.hash_map.hashString(key);
+        }
+        pub fn eql(self: @This(), key_a: K, key_b: K) bool {
+            _ = self;
+            return std.mem.eql(u8, key_a, key_b);
+        }
+    };
+
+    pub fn init(allocator: Allocator) NodeTable {
+        return .{
+            .arena = std.heap.ArenaAllocator.init(allocator),
+            .ctx = HashContext{},
+            .key_mappings = KeyMap.init(allocator),
+        };
+    }
+
+    pub fn deinit(self: *NodeTable) void {
+        self.key_mappings.deinit();
+        self.arena.deinit();
+    }
+
+    pub const GetOrPutResult = struct { found_existing: bool, value_ptr: *V };
+
+    pub fn getOrPut(self: *NodeTable, key: K) !GetOrPutResult {
+        const key_hash = self.ctx.hash(key);
+        for (self.key_mappings.items) |key_map| {
+            if (key_map.key_hash == key_hash) {
+                return GetOrPutResult{ .found_existing = true, .value_ptr = key_map.value_ptr };
+            }
+        }
+
+        const value_ptr = try self.arena.allocator().create(V);
+        try self.key_mappings.append(.{ .key_hash = key_hash, .value_ptr = value_ptr });
+
+        return GetOrPutResult{ .found_existing = false, .value_ptr = value_ptr };
+    }
+
+    /// does nothing if the key doesn't exist
+    pub fn remove(self: *NodeTable, key: K) void {
+        const key_hash = self.ctx.hash(key);
+        for (self.key_mapping.items) |key_map, i| {
+            if (key_map.key_hash == key_hash) {
+                self.key_mapping.swapRemove(i);
+                return;
+            }
+        }
+    }
+
+    pub fn valueIterator(self: *NodeTable) ValueIterator {
+        return ValueIterator{ .key_mappings = &self.key_mappings, .iter_idx = null };
+    }
+
+    pub const ValueIterator = struct {
+        key_mappings: *KeyMap,
+        iter_idx: ?usize, // non-null while iterating
+
+        pub fn next(self: *ValueIterator) ?*V {
+            const idx = if (self.iter_idx) |idx| idx else blk: {
+                self.iter_idx = 0;
+                break :blk 0;
+            };
+            self.iter_idx.? += 1;
+
+            if (idx >= self.key_mappings.items.len) return null;
+
+            return self.key_mappings.items[idx].value_ptr;
+        }
+
+        pub const RemoveError = error{NotIterating};
+
+        /// remove the thing that was last return by `next` from the table
+        /// sets the removed entry to undefined memory
+        pub fn removeCurrent(self: *ValueIterator) RemoveError!void {
+            const idx = if (self.iter_idx) |idx| idx else return RemoveError.NotIterating;
+            if (idx > self.key_mappings.items.len) return RemoveError.NotIterating;
+
+            _ = self.key_mappings.swapRemove(idx - 1);
+            self.iter_idx.? -= 1;
+        }
+    };
+};
+
+pub const PRNG = struct {
+    state: u64,
+
+    pub fn init(seed: u64) PRNG {
+        return .{ .state = seed };
+    }
+
+    pub fn next(self: *PRNG) u64 {
+        // 3 random primes I generated online
+        self.state = ((self.state * 2676693499) + 5223158351) % 4150081079;
+        return self.state;
+    }
+};
+
+fn randomString(prng: *PRNG) [32]u8 {
+    var buf: [32]u8 = undefined;
+    _ = std.fmt.bufPrint(&buf, "{x:0>16}{x:0>16}", .{ prng.next(), prng.next() }) catch unreachable;
+    return buf;
+}
+
+pub fn dumpNodeTree(self: *UiContext) void {
+    var node_iter = self.node_table.valueIterator();
+    while (node_iter.next()) |node| {
+        std.debug.print("{*} :: first=0x{x:0>15}, last=0x{x:0>15}, next=0x{x:0>15}, prev=0x{x:0>15}, parent=0x{x:0>15}, child_count={}\n", .{
+            node,
+            if (node.first) |ptr| @ptrToInt(ptr) else 0,
+            if (node.last) |ptr| @ptrToInt(ptr) else 0,
+            if (node.next) |ptr| @ptrToInt(ptr) else 0,
+            if (node.prev) |ptr| @ptrToInt(ptr) else 0,
+            if (node.parent) |ptr| @ptrToInt(ptr) else 0,
+            node.child_count,
+        });
+    }
 }
