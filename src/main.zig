@@ -9,6 +9,7 @@ const vec2 = math.vec2;
 const vec4 = math.vec4;
 const Font = @import("Font.zig");
 const UiContext = @import("UiContext.zig");
+const Size = UiContext.Size;
 
 pub fn main() !void {
     var general_purpose_allocator = std.heap.GeneralPurposeAllocator(.{
@@ -65,53 +66,25 @@ pub fn main() !void {
             _ = event;
         }
 
-        ui.root_node.child_layout_axis = .y;
-        //const size1 = [2]UiContext.Size{ UiContext.Size.pixels(100, 1), UiContext.Size.text_dim(1) };
-        const size075 = [2]UiContext.Size{ UiContext.Size.pixels(100, 0.75), UiContext.Size.text_dim(1) };
-        const size05 = [2]UiContext.Size{ UiContext.Size.pixels(100, 0.5), UiContext.Size.text_dim(1) };
-        const size025 = [2]UiContext.Size{ UiContext.Size.pixels(100, 0.25), UiContext.Size.text_dim(1) };
-        const size_space = [2]UiContext.Size{ UiContext.Size.percent(1, 0), UiContext.Size.text_dim(0) };
-        {
-            //const sizes = [2]UiContext.Size{ UiContext.Size.pixels(500 * (@sin(cur_time) + 1), 1), UiContext.Size.pixels(100, 1) };
-            const sizes = [2]UiContext.Size{ UiContext.Size.pixels(mouse_pos[0], 1), UiContext.Size.pixels(50, 1) };
-            const parent_node = try ui.addNode(.{ .draw_background = true, .draw_border = true }, "parent", .{
-                .child_layout_axis = .x,
-                .pref_size = sizes,
-            });
-            try ui.pushParent(parent_node);
-            defer _ = ui.popParent();
-
-            //_ = ui.spacer(.x, 1);
-            ui.pushStyle(.{ .pref_size = size_space });
-            _ = ui.button("S");
-            ui.pushStyle(.{ .pref_size = size05 });
-            _ = ui.button("A");
-            ui.pushStyle(.{ .pref_size = size075 });
-            _ = ui.button("B");
-            ui.pushStyle(.{ .pref_size = size025 });
-            _ = ui.button("C");
-            ui.pushStyle(.{ .pref_size = size025 });
-            _ = ui.button("D");
-        }
-        {
-            const sizes = [2]UiContext.Size{ UiContext.Size.pixels(mouse_pos[0], 1), UiContext.Size.pixels(50, 1) };
-            const parent_node = try ui.addNode(.{ .draw_background = true, .draw_border = true }, "parent1", .{
-                .child_layout_axis = .x,
-                .pref_size = sizes,
-            });
-            try ui.pushParent(parent_node);
-            defer _ = ui.popParent();
-
-            //_ = ui.spacer(.x, 1);
-            ui.pushStyle(.{ .pref_size = size_space });
-            _ = ui.button("S1");
-            ui.pushStyle(.{ .pref_size = size05 });
-            _ = ui.button("A1");
-            ui.pushStyle(.{ .pref_size = size025 });
-            _ = ui.button("C1");
-            ui.pushStyle(.{ .pref_size = size025 });
-            _ = ui.button("D1");
-        }
+        const parent_size = [2]Size{ Size.pixels(500, 1), Size.pixels(150, 1) };
+        const parent_color = vec4{ 0, 0, 0, 1 };
+        const parent = try ui.addNode(.{ .clip_children = true, .draw_border = true, .draw_background = true }, "test_parent", .{
+            .bg_color = parent_color,
+            .pref_size = parent_size,
+        });
+        try ui.pushParent(parent);
+        _ = ui.button("The missile knows where it is, because it knows where it isn't.");
+        _ = ui.button(
+            \\The missile knows where it is,
+            \\because it knows where it isn't.
+            \\
+        );
+        _ = ui.button(
+            \\The missile knows where it is,
+            \\because it knows where it isn't.
+            \\###other button
+        );
+        _ = ui.popParent();
 
         gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
         try ui.render();

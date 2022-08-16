@@ -85,15 +85,25 @@ pub fn buildQuads(self: *Font, allocator: Allocator, str: []const u8) ![]Quad {
 
 /// caller owns returned memory
 pub fn buildQuadsAt(self: *Font, allocator: Allocator, str: []const u8, start_pos: vec2) ![]Quad {
-    var quads = try allocator.alloc(Quad, try std.unicode.utf8CountCodepoints(str));
+    var quads = try std.ArrayList(Quad).initCapacity(allocator, try std.unicode.utf8CountCodepoints(str));
+    const metrics = self.getScaledMetrics();
+
     var cursor = @as([2]f32, start_pos);
     var utf8_iter = std.unicode.Utf8View.initUnchecked(str).iterator();
-    var i: usize = 0;
-    while (utf8_iter.nextCodepoint()) |codepoint| : (i += 1) {
+    while (utf8_iter.nextCodepoint()) |codepoint| {
+        if (codepoint == '\n') {
+            if (utf8_iter.peek(1).len > 0) {
+                cursor[0] = start_pos[0];
+                cursor[1] += metrics.line_advance; // stb uses +y up
+            }
+            continue;
+        }
+
         const quad = try self.buildQuad(codepoint, &cursor);
-        quads[i] = quad;
+        quads.append(quad) catch unreachable;
     }
-    return quads;
+
+    return quads.toOwnedSlice();
 }
 
 pub fn buildQuad(self: *Font, codepoint: u21, cursor: *[2]f32) !Quad {
@@ -126,28 +136,44 @@ pub const Rect = struct { min: vec2, max: vec2 };
 
 pub fn textRect(self: Font, str: []const u8) !Rect {
     var x_advance: f32 = 0;
+    var max_x: f32 = 0;
+
+    var newlines: u32 = 0;
 
     var utf8_iter = (try std.unicode.Utf8View.init(str)).iterator();
     while (utf8_iter.nextCodepoint()) |codepoint| {
+        const next_codepoint: ?u21 = if (utf8_iter.peek(1).len > 0)
+            std.unicode.utf8Decode(utf8_iter.peek(1)) catch unreachable // Utf8View already validated the input
+        else
+            null;
+
+        if (codepoint == '\n') {
+            if (next_codepoint != null) {
+                max_x = std.math.max(max_x, x_advance);
+                x_advance = 0;
+                newlines += 1;
+            }
+            continue;
+        }
+
         var advance_width: i32 = 0;
         c.stbtt_GetCodepointHMetrics(&self.font_info, codepoint, &advance_width, null);
         x_advance += @intToFloat(f32, advance_width);
 
-        const next_codepoint_slice = utf8_iter.peek(1);
-        if (next_codepoint_slice.len > 0) {
-            const next_codepoint = std.unicode.utf8Decode(next_codepoint_slice) catch
-                unreachable; // Utf8View already validated the input
-            const kern = c.stbtt_GetCodepointKernAdvance(&self.font_info, codepoint, next_codepoint);
+        if (next_codepoint) |n_codepoint| {
+            const kern = c.stbtt_GetCodepointKernAdvance(&self.font_info, codepoint, n_codepoint);
             x_advance += @intToFloat(f32, kern);
         }
     }
+
+    max_x = std.math.max(max_x, x_advance);
 
     const metrics = self.getScaledMetrics();
     const scale = c.stbtt_ScaleForPixelHeight(&self.font_info, self.pixel_size);
 
     return Rect{
-        .min = vec2{ 0, metrics.descent },
-        .max = vec2{ x_advance * scale, metrics.ascent },
+        .min = vec2{ 0, @intToFloat(f32, newlines) * -metrics.line_advance + metrics.descent },
+        .max = vec2{ max_x * scale, metrics.ascent },
     };
 }
 

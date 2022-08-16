@@ -53,7 +53,7 @@ pub fn init(allocator: Allocator, font_path: []const u8, window_ptr: *window.Win
             .geometry = geometry_shader_src,
             .fragment = fragment_shader_src,
         }),
-        .font = try Font.from_ttf(allocator, font_path, 19),
+        .font = try Font.from_ttf(allocator, font_path, 25),
         .string_arena = std.heap.ArenaAllocator.init(allocator),
         .node_table = NodeTable.init(allocator),
         .prng = PRNG.init(0),
@@ -90,7 +90,10 @@ pub fn deinit(self: *UiContext) void {
 
 pub const Flags = packed struct {
     no_id: bool = false,
+
     clickable: bool = false,
+
+    clip_children: bool = false,
     draw_text: bool = false,
     draw_border: bool = false,
     draw_background: bool = false,
@@ -487,15 +490,19 @@ pub fn render(self: *UiContext) !void {
         bottom_color: [4]f32,
         corner_roundness: f32,
         border_thickness: f32,
+        clip_rect_min: [2]f32,
+        clip_rect_max: [2]f32,
     };
     var shader_inputs = std.ArrayList(ShaderInput).init(self.allocator);
     defer shader_inputs.deinit();
 
-    var count: u32 = 0;
     var node_iterator = DepthFirstNodeIterator{ .cur_node = self.root_node };
     while (node_iterator.next()) |node| {
-        //std.debug.print("count={}, #nodes={}\n", .{ count, self.node_table.key_mappings.items.len });
-        count += 1;
+        var clip_rect: Rect = .{ .min = vec2{ 0, 0 }, .max = self.screen_size };
+        if (node.parent) |parent| {
+            if (parent.flags.clip_children) clip_rect = parent.rect;
+        }
+
         const base_rect = ShaderInput{
             .bottom_left_pos = node.rect.min,
             .top_right_pos = node.rect.max,
@@ -505,6 +512,8 @@ pub fn render(self: *UiContext) !void {
             .bottom_color = vec4{ 0, 0, 0, 0 },
             .corner_roundness = node.corner_roundness,
             .border_thickness = node.border_thickness,
+            .clip_rect_min = clip_rect.min,
+            .clip_rect_max = clip_rect.max,
         };
 
         // draw background
@@ -554,7 +563,7 @@ pub fn render(self: *UiContext) !void {
                 text_pos[1] -= 0.1 * self.font.pixel_size * node.active_trans;
             }
 
-            const display_text = displayPartOfString(node.display_string);
+            const display_text = node.display_string;
             const quads = try self.font.buildQuads(self.allocator, display_text);
             defer self.allocator.free(quads);
             for (quads) |quad| {
@@ -567,6 +576,8 @@ pub fn render(self: *UiContext) !void {
                     .bottom_color = node.text_color,
                     .corner_roundness = 0,
                     .border_thickness = 0,
+                    .clip_rect_min = base_rect.clip_rect_min,
+                    .clip_rect_max = base_rect.clip_rect_max,
                 });
             }
         }
@@ -629,6 +640,8 @@ const vertex_shader_src =
     \\layout (location = 5) in vec4 attrib_bottom_color;
     \\layout (location = 6) in float attrib_corner_roundness;
     \\layout (location = 7) in float attrib_border_thickness;
+    \\layout (location = 8) in vec2 attrib_clip_rect_min;
+    \\layout (location = 9) in vec2 attrib_clip_rect_max;
     \\
     \\uniform vec2 screen_size; // in pixels
     \\
@@ -641,6 +654,8 @@ const vertex_shader_src =
     \\    vec4 bottom_color;
     \\    float corner_roundness;
     \\    vec2 border_thickness;
+    \\    vec2 clip_rect_min;
+    \\    vec2 clip_rect_max;
     \\} vs_out;
     \\
     \\void main() {
@@ -656,6 +671,8 @@ const vertex_shader_src =
     \\    vs_out.bottom_color = attrib_bottom_color;
     \\    vs_out.corner_roundness = attrib_corner_roundness;
     \\    vs_out.border_thickness = vec2(attrib_border_thickness) / (attrib_top_right_pos - attrib_bottom_left_pos);
+    \\    vs_out.clip_rect_min = attrib_clip_rect_min;
+    \\    vs_out.clip_rect_max = attrib_clip_rect_max;
     \\}
     \\
 ;
@@ -676,6 +693,8 @@ const geometry_shader_src =
     \\    vec4 bottom_color;
     \\    float corner_roundness;
     \\    vec2 border_thickness;
+    \\    vec2 clip_rect_min;
+    \\    vec2 clip_rect_max;
     \\} gs_in[];
     \\
     \\out GS_Out {
@@ -685,6 +704,8 @@ const geometry_shader_src =
     \\    float quad_size_ratio;
     \\    float corner_roundness;
     \\    vec2 border_thickness;
+    \\    vec2 clip_rect_min;
+    \\    vec2 clip_rect_max;
     \\} gs_out;
     \\
     \\void main() {
@@ -703,6 +724,8 @@ const geometry_shader_src =
     \\    gs_out.corner_roundness = gs_in[0].corner_roundness;
     \\    gs_out.border_thickness = gs_in[0].border_thickness;
     \\    gs_out.quad_size_ratio = (quad_size.x / quad_size.y) * (screen_size.x / screen_size.y);
+    \\    gs_out.clip_rect_min = gs_in[0].clip_rect_min;
+    \\    gs_out.clip_rect_max = gs_in[0].clip_rect_max;
     \\
     \\    gl_Position        = bottom_left_pos;
     \\    gs_out.uv          = bottom_left_uv;
@@ -743,6 +766,8 @@ const geometry_shader_src =
 const fragment_shader_src =
     \\#version 330 core
     \\
+    \\in vec4 gl_FragCoord;
+    \\
     \\in GS_Out {
     \\    vec2 uv;
     \\    vec4 color;
@@ -751,6 +776,8 @@ const fragment_shader_src =
     \\    float quad_size_ratio;
     \\    float corner_roundness; // 0 is square quad, 1 is full circle
     \\    vec2 border_thickness; // 0 is no border, 1 is "oops! all border!"
+    \\    vec2 clip_rect_min;
+    \\    vec2 clip_rect_max;
     \\} fs_in;
     \\
     \\uniform vec2 screen_size; // in pixels
@@ -783,7 +810,18 @@ const fragment_shader_src =
     \\    return dist / 2;
     \\}
     \\
+    \\bool rectContains(vec2 rect_min, vec2 rect_max, vec2 point) {
+    \\    return (rect_min.x <= point.x && point.x <= rect_max.x) &&
+    \\           (rect_min.y <= point.y && point.y <= rect_max.y);
+    \\}
+    \\
     \\void main() {
+    \\    vec2 pixel_coord = gl_FragCoord.xy - vec2(0.5);
+    \\    if (!rectContains(fs_in.clip_rect_min, fs_in.clip_rect_max, pixel_coord)) {
+    \\        FragColor = vec4(0);
+    \\        return;
+    \\    }
+    \\
     \\    vec2 uv = fs_in.uv;
     \\    vec4 color = fs_in.color;
     \\    vec2 quad_coords = fs_in.quad_coords;
@@ -826,18 +864,15 @@ fn solveIndependentSizes(in_self: *UiContext, in_node: *Node, in_axis: Axis) voi
 }
 
 fn solveUpwardDependent(in_self: *UiContext, in_node: *Node, in_axis: Axis) void {
-    std.debug.print("[solveUpward... ({})]\n", .{in_axis});
     // zig fmt: off
     const work_fn = (struct { pub fn work(self: *UiContext, node: *Node, axis: Axis) void {
         _ = self;
         const axis_idx: usize = @enumToInt(axis);
-        std.debug.print("['{s}'] doing upward\n", .{node.display_string});
         switch (node.pref_size[axis_idx]) {
             .percent => |percent| {
                 // look for the first ancestor with a fixed size
                 var ancestor: ?*Node = null;
                 var search = node.parent;
-                std.debug.print("['{s}'] looking for ancestor\n", .{node.display_string});
                 while (search) |search_node| : (search = search_node.parent) {
                     if (std.meta.activeTag(search_node.pref_size[axis_idx]) != .by_children) {
                         ancestor = search_node;
@@ -847,7 +882,6 @@ fn solveUpwardDependent(in_self: *UiContext, in_node: *Node, in_axis: Axis) void
 
                 if (ancestor) |ancestor_node| {
                     node.calc_size[axis_idx] = ancestor_node.calc_size[axis_idx] * percent.value;
-                    std.debug.print("!!!!!!!!! ['{s}'] ancestor size = {d}, calc size = {d}\n", .{ node.display_string,  ancestor_node.calc_size[axis_idx],  node.calc_size[axis_idx] });
                 }
             },
             else => {},
@@ -908,7 +942,7 @@ fn solveViolations(in_self: *UiContext, in_node: *Node, in_axis: Axis) void {
                 total_children_size = std.math.max(total_children_size, child_node.calc_size[axis_idx]);
         }
 
-        var overflow = total_children_size - node.calc_size[axis_idx];
+        var overflow = std.math.max(0, total_children_size - node.calc_size[axis_idx]);
 
         var total_leeway: f32 = 0;
         child = node.first;
@@ -1001,13 +1035,14 @@ const text_hpadding: f32 = 8;
 const text_vpadding: f32 = 4;
 
 fn textPosFromNode(self: UiContext, node: *Node) vec2 {
-    const font_metrics = self.font.getScaledMetrics();
-    const font_height = font_metrics.ascent + font_metrics.descent;
-
+    const text_rect = self.font.textRect(node.display_string) catch
+        unreachable; // input is already checked in render pass
+    const text_size_y = text_rect.max[1] - text_rect.min[1];
     const box_middle_y = (node.rect.min[1] + node.rect.max[1]) / 2;
+
     return vec2{
         node.rect.min[0] + text_hpadding,
-        box_middle_y - font_height / 2,
+        box_middle_y + (text_size_y / 2) - text_rect.max[1],
     };
 }
 
