@@ -52,7 +52,7 @@ pub fn init(allocator: Allocator, font_path: []const u8, window_ptr: *window.Win
             .geometry = geometry_shader_src,
             .fragment = fragment_shader_src,
         }),
-        .font = try Font.from_ttf(allocator, font_path, 20),
+        .font = try Font.from_ttf(allocator, font_path, 18),
         .string_arena = std.heap.ArenaAllocator.init(allocator),
         .node_table = NodeTable.init(allocator),
         .prng = PRNG.init(0),
@@ -90,6 +90,7 @@ pub const Flags = packed struct {
 
     clickable: bool = false,
     selectable: bool = false, // maintains focus when clicked
+    scrollable: bool = false, // makes it so scroll wheel updates the Node.scroll_offset
 
     clip_children: bool = false,
     draw_text: bool = false,
@@ -127,13 +128,15 @@ pub const Node = struct {
 
     // post-layout data
     rect: Rect,
+    clip_rect: Rect,
 
     // persistent cross-frame state
     hot_trans: f32,
     active_trans: f32,
     first_frame_touched: usize,
     last_frame_touched: usize,
-    text_cursor: f32, // used for text input
+    text_cursor: f32, // used for text input // TODO: make this an int
+    scroll_offset: vec2,
 };
 
 pub const Axis = enum { x, y };
@@ -190,6 +193,10 @@ pub const Rect = struct {
         return pos[0] < self.max[0] and pos[0] > self.min[0] and
             pos[1] < self.max[1] and pos[1] > self.min[1];
     }
+
+    pub fn containsRect(self: Rect, other: Rect) bool {
+        return self.contains(other.min) and self.contains(other.max);
+    }
 };
 
 pub const Signal = struct {
@@ -199,6 +206,8 @@ pub const Signal = struct {
     hovering: bool,
     held_down: bool,
     enter_pressed: bool,
+
+    scroll_offset: vec2,
 };
 
 pub fn spacer(self: *UiContext, axis: Axis, size: Size) Signal {
@@ -211,7 +220,10 @@ pub fn spacer(self: *UiContext, axis: Axis, size: Size) Signal {
 }
 
 pub fn label(self: *UiContext, string: []const u8) Signal {
-    const node = self.addNode(.{ .no_id = true, .draw_text = true }, string, .{});
+    const label_size = [2]Size{ Size.text_dim(1), Size.text_dim(1) };
+    const node = self.addNode(.{ .no_id = true, .draw_text = true }, string, .{
+        .pref_size = label_size,
+    });
     return self.getNodeSignal(node);
 }
 
@@ -245,6 +257,92 @@ pub fn buttonF(self: *UiContext, comptime fmt: []const u8, args: anytype) Signal
     return self.button(str);
 }
 
+/// pushes itself as the parent. make sure to use popParent later
+pub fn scrollableRegion(self: *UiContext, string: []const u8, axis: Axis) Signal {
+    //const percent_sizes = switch (axis) {
+    //    .x => [2]Size{ Size.percent(1, 0), Size.percent(1, 0) },
+    //    .y => [2]Size{ Size.percent(1, 0), Size.percent(1, 0) },
+    //};
+    const percent_sizes = [2]Size{ Size.percent(1, 0), Size.percent(1, 0) };
+
+    const node = self.addNode(.{
+        .clickable = true,
+        .scrollable = true,
+    }, string, .{ .pref_size = percent_sizes, .child_layout_axis = axis });
+    self.pushParent(node);
+
+    const axis_idx: usize = switch (axis) {
+        .x => 0,
+        .y => 1,
+    };
+    _ = self.spacer(axis, Size.pixels(node.scroll_offset[axis_idx], 1));
+
+    return self.getNodeSignal(node);
+}
+
+pub fn scrollableRegionF(self: *UiContext, comptime fmt: []const u8, args: anytype, axis: Axis) Signal {
+    const str = std.fmt.allocPrint(self.string_arena.allocator(), fmt, args) catch |e| blk: {
+        self.setErrorInfo(@errorReturnTrace(), @errorName(e));
+        break :blk "";
+    };
+    return self.scrollableRegion(str, axis);
+}
+
+pub fn scrollableText(self: *UiContext, hash_string: []const u8, string: []const u8) Signal {
+    // * parent widget (layout in x)
+    // | * scrollable in y (x size percent(1, 0))
+    // | | * scrollable in x (y size percent(1, 0))
+    // | | | * text
+    // | | | * x scrollbar parent (layout in x) (x size percent(1, 0), y size by_children(1))
+    // | | | | * spacer(x, pixels(scroll_value, 1))
+    // | | | | * scroolbar grabber thingy
+    // | | | | * spacer(x, percent(1, 0))
+    // | | * y scrollbar parent (layout in y) (x size bychildren(1), y size percent(1, 0))
+    // | | | * spacer(y, pixels(scroll_value, 1))
+    // | | | * scroolbar grabber thingy
+    // | | | * spacer(y, percent(1, 0))
+
+    const top_node = self.addNodeF(.{ .clip_children = true, .draw_border = true, .draw_background = true }, "{s}::top_node", .{hash_string}, .{ .child_layout_axis = .x });
+    self.pushParent(top_node);
+    defer _ = self.popParent();
+
+    const scrollable_y_sig = self.scrollableRegionF("{s}::scrollable_y", .{hash_string}, .y);
+
+    const scrollable_x_sig = self.scrollableRegionF("{s}::scrollable_x", .{hash_string}, .x);
+
+    const text_node = self.addNode(.{ .draw_text = true }, string, .{});
+    _ = text_node;
+
+    _ = scrollable_x_sig;
+    //const x_scrollbar = self.addNode(.{ .no_id = true }, "", .{ .child_layout_axis = .x });
+    //x_scrollbar.pref_size = [2]Size{ Size.percent(1, 0), Size.by_children(1) };
+    //self.pushParent(x_scrollbar);
+    //{
+    //    _ = self.spacer(.x, Size.pixels(scrollable_x_sig.scroll_offset[0], 1));
+    //    const x_scrollbar_grabber = self.addNodeF(.{ .clickable = true, .draw_background = true }, "{s}::x_grabber", .{hash_string}, .{});
+    //    x_scrollbar_grabber.pref_size = [2]Size{ Size.pixels(10, 1), Size.pixels(10, 1) };
+    //    _ = self.spacer(.x, Size.percent(1, 0));
+    //}
+    //_ = self.popParent(); // pop x_scrollbar
+
+    _ = self.popParent(); // pop scrollable region x
+
+    const y_scrollbar = self.addNode(.{ .no_id = true }, "", .{ .child_layout_axis = .y });
+    y_scrollbar.pref_size = [2]Size{ Size.by_children(1), Size.percent(1, 0) };
+    self.pushParent(y_scrollbar);
+    {
+        _ = self.spacer(.y, Size.pixels(scrollable_y_sig.scroll_offset[1], 1));
+        const y_scrollbar_grabber = self.addNodeF(.{ .clickable = true, .draw_background = true }, "{s}::y_grabber", .{hash_string}, .{});
+        y_scrollbar_grabber.pref_size = [2]Size{ Size.pixels(10, 1), Size.pixels(10, 1) };
+        _ = self.spacer(.y, Size.percent(1, 0));
+    }
+    _ = self.popParent(); // pop y_scrollbar
+
+    _ = self.popParent(); // pop scrollable region y
+
+    return self.getNodeSignal(top_node);
+}
+
 /// if `buf` runs out of space input is truncated 
 /// unlike other widgets, the string here is only used for the hash and not display
 pub fn textInput(self: *UiContext, hash_string: []const u8, buf: []u8, buf_len: *usize) Signal {
@@ -276,12 +374,22 @@ pub fn textInput(self: *UiContext, hash_string: []const u8, buf: []u8, buf_len: 
 
     const node_key = self.keyFromNode(widget_node);
     var sig = self.getNodeSignal(widget_node);
+
     // make input box darker when not in focus
     if (self.active_node_key != node_key)
         widget_node.bg_color = math.times(widget_node.bg_color, 0.85);
 
     self.pushParent(widget_node);
     defer _ = self.popParent();
+
+    // text until the cursor
+    const partial_text_buf = Utf8Viewer.init(display_buf).bytesRange(0, @floatToInt(usize, widget_node.text_cursor));
+    const partial_text_rect = self.font.textRect(partial_text_buf) catch unreachable;
+
+    const cursor_rel_pos = partial_text_rect.max[0] + text_hpadding;
+    const max_cursor_rel_pos = widget_node.rect.size()[0] - text_hpadding;
+    const cursor_overflow = std.math.max(0, cursor_rel_pos - max_cursor_rel_pos);
+    _ = self.spacer(.x, Size.pixels(-cursor_overflow, 1));
 
     const text_node = self.addNode(.{ .no_id = true, .draw_text = true }, display_buf, .{
         .text_color = vec4{ 0, 0, 0, 1 },
@@ -290,8 +398,6 @@ pub fn textInput(self: *UiContext, hash_string: []const u8, buf: []u8, buf_len: 
     self.pushParent(text_node);
     defer _ = self.popParent();
 
-    const partial_text_buf = Utf8Viewer.init(display_buf).bytesRange(0, @floatToInt(usize, widget_node.text_cursor));
-    const partial_text_rect = self.font.textRect(partial_text_buf) catch unreachable;
     _ = self.spacer(.x, Size.pixels(partial_text_rect.max[0], 1));
     _ = self.spacer(.x, Size.pixels(text_hpadding, 1)); // TODO: implement general padding and the we can remove the ad-hoc text padding
     {
@@ -418,9 +524,6 @@ pub fn addNodeRaw(self: *UiContext, flags: Flags, string: []const u8, init_args:
     // this way the persistant cross-frame data is possible
     const lookup_result = try self.node_table.getOrPut(hash_string);
     var node = lookup_result.value_ptr;
-    if (!lookup_result.found_existing) {
-        node.first_frame_touched = self.frame_idx;
-    }
 
     // link node into the tree
     var parent = self.parent_stack.top();
@@ -459,6 +562,10 @@ pub fn addNodeRaw(self: *UiContext, flags: Flags, string: []const u8, init_args:
 
     // update cross-frame (persistant) data
     node.last_frame_touched = self.frame_idx;
+    if (!lookup_result.found_existing) {
+        node.first_frame_touched = self.frame_idx;
+        node.scroll_offset = vec2{ 0, 0 };
+    }
 
     inline for (@typeInfo(@TypeOf(init_args)).Struct.fields) |field_type_info| {
         const field_name = field_type_info.name;
@@ -518,6 +625,7 @@ pub fn getNodeSignal(self: *UiContext, node: *Node) Signal {
         .hovering = false,
         .held_down = false,
         .enter_pressed = false,
+        .scroll_offset = vec2{ 0, 0 },
     };
 
     const mouse_is_over = node.rect.contains(self.mouse_pos);
@@ -570,11 +678,25 @@ pub fn getNodeSignal(self: *UiContext, node: *Node) Signal {
             }
         }
         // if we click anywhere else remove focus
-        if (self.events.searchAndRemove(.MouseDown, c.GLFW_MOUSE_BUTTON_LEFT)) {
+        else if (self.events.searchAndRemove(.MouseDown, c.GLFW_MOUSE_BUTTON_LEFT)) {
             signal.released = true;
             self.active_node_key = null;
         }
         signal.hovering = is_hot;
+    }
+
+    if (node.flags.scrollable) {
+        const is_hot = mouse_is_over;
+        if (is_hot) {
+            // HACK for scrollable regions. we should remove the event when consuming it
+            // I prob need to implement "floating" (whatever that is)
+            if (self.events.fetch(.MouseScroll, null)) |ev| {
+                var scroll_off = vec2{ ev.x, ev.y };
+                if (ev.shift_held) scroll_off = vec2{ ev.y, ev.x };
+                node.scroll_offset += math.times(scroll_off, 50);
+            }
+        }
+        signal.scroll_offset = node.scroll_offset;
     }
 
     if (signal.hovering) self.window_ptr.set_cursor(node.hover_cursor);
@@ -601,7 +723,8 @@ pub fn startFrame(self: *UiContext, screen_w: u32, screen_h: u32, mouse_pos: vec
     try self.style_stack.push(default_style);
 
     const root_pref_sizes = [2]Size{ Size.pixels(screen_size[0], 1), Size.pixels(screen_size[1], 1) };
-    self.root_node = try self.addNodeRaw(.{}, "###INTERNAL_ROOT_NODE", .{
+    const whole_screen_rect = Rect{ .min = vec2{ 0, 0 }, .max = screen_size };
+    self.root_node = try self.addNodeRaw(.{ .clip_children = true }, "###INTERNAL_ROOT_NODE", .{
         .first = null,
         .last = null,
         .next = null,
@@ -609,6 +732,8 @@ pub fn startFrame(self: *UiContext, screen_w: u32, screen_h: u32, mouse_pos: vec
         .parent = null,
         .child_count = 0,
         .pref_size = root_pref_sizes,
+        .rect = whole_screen_rect,
+        .clip_rect = whole_screen_rect,
     });
     try self.parent_stack.push(self.root_node);
 
@@ -675,11 +800,6 @@ pub fn render(self: *UiContext) !void {
 
     var node_iterator = DepthFirstNodeIterator{ .cur_node = self.root_node };
     while (node_iterator.next()) |node| {
-        var clip_rect: Rect = .{ .min = vec2{ 0, 0 }, .max = self.screen_size };
-        if (node.parent) |parent| {
-            if (parent.flags.clip_children) clip_rect = parent.rect;
-        }
-
         const base_rect = ShaderInput{
             .bottom_left_pos = node.rect.min,
             .top_right_pos = node.rect.max,
@@ -689,8 +809,8 @@ pub fn render(self: *UiContext) !void {
             .bottom_color = vec4{ 0, 0, 0, 0 },
             .corner_roundness = node.corner_roundness,
             .border_thickness = node.border_thickness,
-            .clip_rect_min = clip_rect.min,
-            .clip_rect_max = clip_rect.max,
+            .clip_rect_min = node.clip_rect.min,
+            .clip_rect_max = node.clip_rect.max,
         };
 
         // draw background
@@ -748,9 +868,13 @@ pub fn render(self: *UiContext) !void {
             const quads = try self.font.buildQuads(self.allocator, display_text);
             defer self.allocator.free(quads);
             for (quads) |quad| {
+                var quad_rect = Rect{ .min = quad.points[0].pos, .max = quad.points[2].pos };
+                quad_rect.min += text_pos;
+                quad_rect.max += text_pos;
+
                 try shader_inputs.append(.{
-                    .bottom_left_pos = quad.points[0].pos + text_pos,
-                    .top_right_pos = quad.points[2].pos + text_pos,
+                    .bottom_left_pos = quad_rect.min,
+                    .top_right_pos = quad_rect.max,
                     .bottom_left_uv = quad.points[0].uv,
                     .top_right_uv = quad.points[2].uv,
                     .top_color = node.text_color,
@@ -1187,6 +1311,8 @@ fn solveViolations(in_self: *UiContext, in_node: *Node, in_axis: Axis) void {
         while (child) |child_node| : (child = child_node.next) {
             child_node.rect.min[axis_idx] = node.rect.min[axis_idx] + child_node.calc_rel_pos[axis_idx];
             child_node.rect.max[axis_idx] = child_node.rect.min[axis_idx] + child_node.calc_size[axis_idx];
+            // propagate the clipping to children
+            child_node.clip_rect = if (node.flags.clip_children) node.rect else node.clip_rect;
         }
     } }).work;
     // zig fmt: on
@@ -1212,8 +1338,8 @@ fn layoutRecurseHelperPost(work_fn: LayoutWorkFn, args: LayoutWorkFnArgs) void {
     work_fn(args.self, args.node, args.axis);
 }
 
-const text_hpadding: f32 = 8;
-const text_vpadding: f32 = 4;
+pub const text_hpadding: f32 = 4;
+pub const text_vpadding: f32 = 4;
 
 fn textPosFromNode(self: UiContext, node: *Node) vec2 {
     const text_rect = self.font.textRect(node.display_string) catch

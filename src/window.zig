@@ -11,7 +11,7 @@ pub const InputEvent = union(enum) {
     KeyRepeat: KeyEvent,
     MouseUp: i32,
     MouseDown: i32,
-    MouseScroll: struct { x: f32, y: f32 },
+    MouseScroll: struct { x: f32, y: f32, shift_held: bool },
     GamepadUp: usize,
     GamepadDown: usize,
     Char: u32, // unicode codepoint
@@ -86,6 +86,9 @@ pub const EventQueue = struct {
     }
 
     const EventTag = std.meta.Tag(InputEvent);
+    pub fn EventPayload(comptime ev_type: EventTag) type {
+        return std.meta.TagPayload(InputEvent, ev_type);
+    }
 
     /// if an event matches, remove it from the queue and return it,
     // or return null, if there are no matches
@@ -93,11 +96,19 @@ pub const EventQueue = struct {
     pub fn fetchAndRemove(
         self: *EventQueue,
         comptime ev_type: EventTag,
-        match_ev_content: ?std.meta.TagPayload(InputEvent, ev_type),
-    ) ?std.meta.TagPayload(InputEvent, ev_type) {
+        match_ev_content: ?EventPayload(ev_type),
+    ) ?EventPayload(ev_type) {
         const found_idx = self.find(ev_type, match_ev_content);
         if (found_idx) |idx| {
             return self.removeAt(idx).payload(ev_type);
+        } else return null;
+    }
+
+    /// like `fetchAndRemove`, but don't remove
+    pub fn fetch(self: *EventQueue, comptime ev_type: EventTag, match_ev_content: ?EventPayload(ev_type)) ?EventPayload(ev_type) {
+        const found_idx = self.find(ev_type, match_ev_content);
+        if (found_idx) |idx| {
+            return self.events.items[idx].payload(ev_type);
         } else return null;
     }
 
@@ -106,7 +117,7 @@ pub const EventQueue = struct {
     pub fn searchAndRemove(
         self: *EventQueue,
         comptime ev_type: EventTag,
-        match_ev_content: ?std.meta.TagPayload(InputEvent, ev_type),
+        match_ev_content: ?EventPayload(ev_type),
     ) bool {
         const found_idx = self.find(ev_type, match_ev_content);
         if (found_idx) |idx| _ = self.removeAt(idx);
@@ -118,7 +129,7 @@ pub const EventQueue = struct {
     pub fn find(
         self: *EventQueue,
         comptime ev_type: EventTag,
-        match_ev_content: ?std.meta.TagPayload(InputEvent, ev_type),
+        match_ev_content: ?EventPayload(ev_type),
     ) ?usize {
         for (self.events.items) |ev, i| {
             if (std.meta.activeTag(ev) != ev_type) continue;
@@ -402,6 +413,7 @@ pub const Window = struct {
         self.event_queue.append(.{ .MouseScroll = .{
             .x = @floatCast(f32, xoffset),
             .y = @floatCast(f32, yoffset),
+            .shift_held = self.key_pressed(c.GLFW_KEY_LEFT_SHIFT) or self.key_pressed(c.GLFW_KEY_RIGHT_SHIFT),
         } }) catch unreachable;
     }
 
