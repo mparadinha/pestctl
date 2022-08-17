@@ -6,13 +6,41 @@ const math = @import("math.zig");
 const vec2 = math.vec2;
 
 pub const InputEvent = union(enum) {
-    KeyUp: i32,
-    KeyDown: i32,
+    KeyUp: KeyEvent,
+    KeyDown: KeyEvent,
+    KeyRepeat: KeyEvent,
     MouseUp: i32,
     MouseDown: i32,
     MouseScroll: struct { x: f32, y: f32 },
     GamepadUp: usize,
     GamepadDown: usize,
+    Char: u32, // unicode codepoint
+
+    const KeyEvent = struct {
+        key: i32,
+        mods: struct {
+            shift: bool,
+            control: bool,
+            alt: bool,
+            super: bool,
+            caps_lock: bool,
+            num_lock: bool,
+        },
+    };
+
+    pub fn payload(self: InputEvent, comptime E: std.meta.Tag(InputEvent)) std.meta.TagPayload(InputEvent, E) {
+        return switch (E) {
+            .KeyUp => self.KeyUp,
+            .KeyDown => self.KeyDown,
+            .KeyRepeat => self.KeyRelease,
+            .MouseUp => self.MouseUp,
+            .MouseDown => self.MouseDown,
+            .MouseScroll => self.MouseScroll,
+            .GamepadUp => self.GamepadUp,
+            .GamepadDown => self.GamepadDown,
+            .Char => self.Char,
+        };
+    }
 };
 
 pub const EventQueue = struct {
@@ -34,7 +62,7 @@ pub const EventQueue = struct {
 
     pub fn next(self: *EventQueue) ?InputEvent {
         if (self.iter_idx == null) self.iter_idx = 0;
-        if (self.iter_idx == self.events.items.len) return null;
+        if (self.iter_idx.? >= self.events.items.len) return null;
         defer self.iter_idx.? += 1;
         return self.events.items[self.iter_idx.?];
     }
@@ -45,6 +73,61 @@ pub const EventQueue = struct {
             _ = self.events.orderedRemove(iter_idx - 1);
             self.iter_idx.? -= 1;
         }
+    }
+
+    /// remove event at index `idx` in the queue.
+    /// works while iterating
+    pub fn removeAt(self: *EventQueue, idx: usize) InputEvent {
+        const ev = self.events.orderedRemove(idx);
+        if (self.iter_idx) |*iter_idx| {
+            if (idx < iter_idx.*) iter_idx.* -= 1;
+        }
+        return ev;
+    }
+
+    const EventTag = std.meta.Tag(InputEvent);
+
+    /// if an event matches, remove it from the queue and return it,
+    // or return null, if there are no matches
+    /// (if multiple events match, only the first one is returned/removed)
+    pub fn fetchAndRemove(
+        self: *EventQueue,
+        comptime ev_type: EventTag,
+        match_ev_content: ?std.meta.TagPayload(InputEvent, ev_type),
+    ) ?std.meta.TagPayload(InputEvent, ev_type) {
+        const found_idx = self.find(ev_type, match_ev_content);
+        if (found_idx) |idx| {
+            return self.removeAt(idx).payload(ev_type);
+        } else return null;
+    }
+
+    /// like `fetchAndRemove` but don't return the event
+    /// returns true if found, false otherwise
+    pub fn searchAndRemove(
+        self: *EventQueue,
+        comptime ev_type: EventTag,
+        match_ev_content: ?std.meta.TagPayload(InputEvent, ev_type),
+    ) bool {
+        const found_idx = self.find(ev_type, match_ev_content);
+        if (found_idx) |idx| _ = self.removeAt(idx);
+        return found_idx != null;
+    }
+
+    /// find the index in the queue for an event that matches the input
+    /// returns `null` if no event matches
+    pub fn find(
+        self: *EventQueue,
+        comptime ev_type: EventTag,
+        match_ev_content: ?std.meta.TagPayload(InputEvent, ev_type),
+    ) ?usize {
+        for (self.events.items) |ev, i| {
+            if (std.meta.activeTag(ev) != ev_type) continue;
+            if (match_ev_content) |match| {
+                if (!std.meta.eql(match, ev.payload(ev_type))) continue;
+            }
+            return i;
+        }
+        return null;
     }
 
     pub fn append(self: *EventQueue, new: InputEvent) !void {
@@ -148,6 +231,7 @@ pub const Window = struct {
         _ = c.glfwSetMouseButtonCallback(self.handle, glfw_mouse_button_callback);
         //_ = c.glfwSetCursorPosCallback(self.handle, glfw_mouse_pos_callback);
         _ = c.glfwSetScrollCallback(self.handle, glfw_scroll_callback);
+        _ = c.glfwSetCharCallback(self.handle, glfw_char_callback);
 
         // setup gamepads
         for (self.gamepads) |*pad, i| {
@@ -284,13 +368,24 @@ pub const Window = struct {
 
     fn glfw_key_callback(glfw_window: ?*c.GLFWwindow, key: i32, scancode: i32, action: i32, mods: i32) callconv(.C) void {
         const self = @ptrCast(*Window, @alignCast(8, c.glfwGetWindowUserPointer(glfw_window).?));
+
+        if (key == c.GLFW_KEY_UNKNOWN) return;
+        const key_ev = InputEvent.KeyEvent{ .key = key, .mods = .{
+            .shift = (mods & c.GLFW_MOD_SHIFT) != 0,
+            .control = (mods & c.GLFW_MOD_CONTROL) != 0,
+            .alt = (mods & c.GLFW_MOD_ALT) != 0,
+            .super = (mods & c.GLFW_MOD_SUPER) != 0,
+            .caps_lock = (mods & c.GLFW_MOD_CAPS_LOCK) != 0,
+            .num_lock = (mods & c.GLFW_MOD_NUM_LOCK) != 0,
+        } };
         if (action == c.GLFW_PRESS)
-            self.event_queue.append(.{ .KeyDown = key }) catch unreachable;
+            self.event_queue.append(.{ .KeyDown = key_ev }) catch unreachable;
         if (action == c.GLFW_RELEASE)
-            self.event_queue.append(.{ .KeyUp = key }) catch unreachable;
+            self.event_queue.append(.{ .KeyUp = key_ev }) catch unreachable;
+        if (action == c.GLFW_REPEAT)
+            self.event_queue.append(.{ .KeyRepeat = key_ev }) catch unreachable;
 
         _ = scancode;
-        _ = mods;
     }
 
     fn glfw_mouse_button_callback(glfw_window: ?*c.GLFWwindow, button: i32, action: i32, mods: i32) callconv(.C) void {
@@ -299,7 +394,6 @@ pub const Window = struct {
             self.event_queue.append(.{ .MouseDown = button }) catch unreachable;
         if (action == c.GLFW_RELEASE)
             self.event_queue.append(.{ .MouseUp = button }) catch unreachable;
-
         _ = mods;
     }
 
@@ -309,8 +403,11 @@ pub const Window = struct {
             .x = @floatCast(f32, xoffset),
             .y = @floatCast(f32, yoffset),
         } }) catch unreachable;
+    }
 
-        _ = yoffset;
+    fn glfw_char_callback(glfw_window: ?*c.GLFWwindow, codepoint: u32) callconv(.C) void {
+        const self = @ptrCast(*Window, @alignCast(8, c.glfwGetWindowUserPointer(glfw_window).?));
+        self.event_queue.append(.{ .Char = codepoint }) catch unreachable;
     }
 };
 

@@ -19,7 +19,6 @@ font: Font,
 string_arena: std.heap.ArenaAllocator,
 node_table: NodeTable,
 prng: PRNG,
-//stale_nodes: std.ArrayList(Node),
 
 window_ptr: *window.Window, // only used for setting the cursor
 
@@ -42,7 +41,7 @@ frame_idx: usize,
 hot_node_key: ?NodeKey,
 active_node_key: ?NodeKey,
 
-const NodeKey = std.StringHashMap(Node).Hash;
+const NodeKey = NodeTable.Hash;
 
 // call `deinit` to cleanup resources
 pub fn init(allocator: Allocator, font_path: []const u8, window_ptr: *window.Window) !UiContext {
@@ -53,11 +52,10 @@ pub fn init(allocator: Allocator, font_path: []const u8, window_ptr: *window.Win
             .geometry = geometry_shader_src,
             .fragment = fragment_shader_src,
         }),
-        .font = try Font.from_ttf(allocator, font_path, 25),
+        .font = try Font.from_ttf(allocator, font_path, 20),
         .string_arena = std.heap.ArenaAllocator.init(allocator),
         .node_table = NodeTable.init(allocator),
         .prng = PRNG.init(0),
-        //.stale_nodes = std.ArrayList(Node).init(allocator),
 
         .window_ptr = window_ptr,
 
@@ -81,7 +79,6 @@ pub fn init(allocator: Allocator, font_path: []const u8, window_ptr: *window.Win
 pub fn deinit(self: *UiContext) void {
     self.style_stack.deinit();
     self.parent_stack.deinit();
-    //self.stale_nodes.deinit();
     self.node_table.deinit();
     self.string_arena.deinit();
     self.font.deinit();
@@ -92,6 +89,7 @@ pub const Flags = packed struct {
     no_id: bool = false,
 
     clickable: bool = false,
+    selectable: bool = false, // maintains focus when clicked
 
     clip_children: bool = false,
     draw_text: bool = false,
@@ -135,6 +133,7 @@ pub const Node = struct {
     active_trans: f32,
     first_frame_touched: usize,
     last_frame_touched: usize,
+    text_cursor: f32, // used for text input
 };
 
 pub const Axis = enum { x, y };
@@ -145,7 +144,7 @@ pub const Style = struct {
     text_color: vec4 = vec4{ 1, 1, 1, 1 },
     corner_roundness: f32 = 0,
     border_thickness: f32 = 2,
-    pref_size: [2]Size = .{ Size.text_dim(0), Size.text_dim(1) },
+    pref_size: [2]Size = .{ Size.text_dim(1), Size.text_dim(1) },
     child_layout_axis: Axis = .y,
     hover_cursor: window.CursorType = .arrow,
 };
@@ -199,25 +198,20 @@ pub const Signal = struct {
     released: bool,
     hovering: bool,
     held_down: bool,
+    enter_pressed: bool,
 };
 
-pub fn spacer(self: *UiContext, axis: Axis, value: f32) Signal {
+pub fn spacer(self: *UiContext, axis: Axis, size: Size) Signal {
     const sizes = switch (axis) {
-        .x => [2]Size{ Size.percent(value, 0), Size.percent(0, 0) },
-        .y => [2]Size{ Size.percent(0, 0), Size.percent(value, 0) },
+        .x => [2]Size{ size, Size.percent(0, 0) },
+        .y => [2]Size{ Size.percent(0, 0), size },
     };
-    const node = self.addNode(.{ .no_id = true }, "", .{ .pref_size = sizes }) catch |e| blk: {
-        self.setErrorInfo(@errorReturnTrace(), @errorName(e));
-        break :blk self.root_node;
-    };
+    const node = self.addNode(.{ .no_id = true }, "", .{ .pref_size = sizes });
     return self.getNodeSignal(node);
 }
 
 pub fn label(self: *UiContext, string: []const u8) Signal {
-    const node = self.addNode(.{ .no_id = true, .draw_text = true }, string, .{}) catch |e| blk: {
-        self.setErrorInfo(@errorReturnTrace(), @errorName(e));
-        break :blk self.root_node;
-    };
+    const node = self.addNode(.{ .no_id = true, .draw_text = true }, string, .{});
     return self.getNodeSignal(node);
 }
 
@@ -239,10 +233,7 @@ pub fn button(self: *UiContext, string: []const u8) Signal {
         .draw_active_effects = true,
     }, string, .{
         .hover_cursor = .hand,
-    }) catch |e| blk: {
-        self.setErrorInfo(@errorReturnTrace(), @errorName(e));
-        break :blk self.root_node;
-    };
+    });
     return self.getNodeSignal(node);
 }
 
@@ -254,7 +245,169 @@ pub fn buttonF(self: *UiContext, comptime fmt: []const u8, args: anytype) Signal
     return self.button(str);
 }
 
-pub fn addNode(self: *UiContext, flags: Flags, string: []const u8, init_args: anytype) !*Node {
+/// if `buf` runs out of space input is truncated 
+/// unlike other widgets, the string here is only used for the hash and not display
+pub fn textInput(self: *UiContext, hash_string: []const u8, buf: []u8, buf_len: *usize) Signal {
+    // * widget/parent node (layout in x)
+    // | * text node (layout in x)
+    // | | * cursor node
+
+    const display_buf = buf[0..buf_len.*];
+
+    // this is a really hacky way to see if this is the first time we using this node
+    // (we need to initialize the cursor on first use)
+    const first_time = !self.node_table.hasKey(hash_string);
+
+    // NOTE: the text_cursor is in characters/codepoints *not* bytes into buf
+    // (this will still be wrong for glyphs/graphemes that are several codepoints
+    // long, like emoji with modifiers, for example)
+
+    const widget_node = self.addNodeF(.{
+        .clip_children = true,
+        .selectable = true,
+        .draw_background = true,
+        .draw_border = true,
+    }, "###{s}", .{hash_string}, .{
+        .child_layout_axis = .x,
+        .hover_cursor = .ibeam,
+    });
+    widget_node.pref_size[0] = Size.percent(1, 0);
+    if (first_time) widget_node.text_cursor = @intToFloat(f32, std.unicode.utf8CountCodepoints(display_buf) catch unreachable);
+
+    const node_key = self.keyFromNode(widget_node);
+    var sig = self.getNodeSignal(widget_node);
+    // make input box darker when not in focus
+    if (self.active_node_key != node_key)
+        widget_node.bg_color = math.times(widget_node.bg_color, 0.85);
+
+    self.pushParent(widget_node);
+    defer _ = self.popParent();
+
+    const text_node = self.addNode(.{ .no_id = true, .draw_text = true }, display_buf, .{
+        .text_color = vec4{ 0, 0, 0, 1 },
+        .child_layout_axis = .x,
+    });
+    self.pushParent(text_node);
+    defer _ = self.popParent();
+
+    const partial_text_buf = Utf8Viewer.init(display_buf).bytesRange(0, @floatToInt(usize, widget_node.text_cursor));
+    const partial_text_rect = self.font.textRect(partial_text_buf) catch unreachable;
+    _ = self.spacer(.x, Size.pixels(partial_text_rect.max[0], 1));
+    _ = self.spacer(.x, Size.pixels(text_hpadding, 1)); // TODO: implement general padding and the we can remove the ad-hoc text padding
+    {
+        const v_pad_node = self.addNode(.{ .no_id = true }, "", .{ .child_layout_axis = .y });
+        self.pushParent(v_pad_node);
+        defer _ = self.popParent();
+        _ = self.spacer(.y, Size.pixels(text_vpadding, 1)); // TODO: implement general padding and the we can remove the ad-hoc text padding
+
+        const cursor_node = self.addNode(.{ .no_id = true, .draw_background = true }, "", .{
+            .bg_color = vec4{ 0.2, 0.2, 0.2, 1 },
+        });
+        cursor_node.pref_size[0] = Size.pixels(2, 1);
+        cursor_node.pref_size[1] = Size.percent(0.75, 1);
+    }
+
+    if (self.active_node_key != node_key) return sig;
+
+    self.events.iter_idx = null;
+    var next_event = self.events.next();
+    while (next_event) |ev| : (next_event = self.events.next()) {
+        var remove_ev = true;
+        const cur_buf = buf[0..buf_len.*];
+        const view = Utf8Viewer.init(cur_buf);
+        var cur_buf_len = buf_len.*;
+        switch (ev) {
+            // for control type key presses (backspace, ctrl+arrows, etc)
+            // actual text is handled with the Char inputs
+            .KeyDown, .KeyRepeat => |key_ev| switch (key_ev.key) {
+                c.GLFW_KEY_ENTER => {
+                    sig.enter_pressed = true;
+                    self.active_node_key = null;
+                },
+                c.GLFW_KEY_BACKSPACE => {
+                    const old_cursor = @floatToInt(usize, widget_node.text_cursor);
+                    const new_cursor = if (key_ev.mods.control) blk: {
+                        if (view.findLast(' ')) |space_pos| {
+                            break :blk if (space_pos < old_cursor) space_pos + 1 else 0;
+                        } else break :blk 0;
+                    } else blk: {
+                        break :blk if (old_cursor == 0) 0 else old_cursor - 1;
+                    };
+                    const old_bytes_cursor = view.charPosIntoBytes(old_cursor);
+                    const new_bytes_cursor = view.charPosIntoBytes(new_cursor);
+
+                    widget_node.text_cursor = @intToFloat(f32, new_cursor);
+
+                    std.debug.assert(new_bytes_cursor <= old_bytes_cursor);
+                    // erase buf[new_bytes_cursor .. old_bytes_cursor]
+                    // move buf[old_bytes_cursor ..] to buf[new_bytes_cursor ..]
+                    for (cur_buf[old_bytes_cursor..]) |b, i| {
+                        buf[new_bytes_cursor + i] = b;
+                    }
+                    cur_buf_len -= (old_bytes_cursor - new_bytes_cursor);
+                },
+                c.GLFW_KEY_DELETE => {
+                    const n_chars = std.unicode.utf8CountCodepoints(cur_buf) catch unreachable;
+                    const cur_cursor = @floatToInt(usize, widget_node.text_cursor);
+                    if (cur_cursor >= n_chars) continue;
+
+                    const old_byte_cursor = view.charPosIntoBytes(cur_cursor);
+                    const new_byte_cursor = old_byte_cursor + view.byteSizeAt(cur_cursor);
+
+                    // note: cursor stays in the same place
+
+                    // erase the character at cursor. move everything back one char's worth
+                    // (i.e move buf[new_byte_cursor ..] to  buf[old_byte_cursor ..])
+                    for (cur_buf[new_byte_cursor..]) |b, i| {
+                        buf[old_byte_cursor + i] = b;
+                    }
+                    cur_buf_len -= (new_byte_cursor - old_byte_cursor);
+                },
+                c.GLFW_KEY_LEFT => {
+                    if (widget_node.text_cursor > 0) widget_node.text_cursor -= 1;
+                },
+                c.GLFW_KEY_RIGHT => {
+                    const max_cursor = std.unicode.utf8CountCodepoints(cur_buf) catch unreachable;
+                    if (widget_node.text_cursor != @intToFloat(f32, max_cursor)) widget_node.text_cursor += 1;
+                },
+                c.GLFW_KEY_HOME => {},
+                c.GLFW_KEY_END => {},
+                else => remove_ev = false,
+            },
+            .Char => |codepoint| {
+                const unicode_pt = @intCast(u21, codepoint);
+                const buf_space_left = buf.len - buf_len.*;
+                const codepoint_len = std.unicode.utf8CodepointSequenceLength(unicode_pt) catch
+                    unreachable; // it was broken when I got here officer. it's GLFW's fault, I swear!
+                if (codepoint_len > buf_space_left) break;
+                var write_buf = buf[buf_len.*..];
+                cur_buf_len += std.unicode.utf8Encode(unicode_pt, write_buf) catch
+                    unreachable; // maybe we're all at fault here??? no, it is GLFW who is wrong.
+                widget_node.text_cursor += 1;
+            },
+            else => remove_ev = false,
+        }
+        buf_len.* = cur_buf_len;
+        if (remove_ev) self.events.removeCurrent();
+    }
+
+    return sig;
+}
+
+pub fn addNode(self: *UiContext, flags: Flags, string: []const u8, init_args: anytype) *Node {
+    if (!std.unicode.utf8ValidateSlice(string)) {
+        std.debug.panic("`string` passed in for Node is not valid utf8:\nstring={}", .{
+            std.fmt.fmtSliceEscapeLower(string),
+        });
+    }
+    const node = self.addNodeRaw(flags, string, init_args) catch |e| blk: {
+        self.setErrorInfo(@errorReturnTrace(), @errorName(e));
+        break :blk self.root_node;
+    };
+    return node;
+}
+
+pub fn addNodeRaw(self: *UiContext, flags: Flags, string: []const u8, init_args: anytype) !*Node {
     const display_string = displayPartOfString(string);
     const hash_string = if (flags.no_id) blk: {
         // for `no_id` nodes we use a random number as the hash string, so they don't clobber each other
@@ -318,13 +471,17 @@ pub fn addNode(self: *UiContext, flags: Flags, string: []const u8, init_args: an
     return node;
 }
 
-pub fn addNodeF(self: *UiContext, flags: Flags, comptime fmt: []const u8, args: anytype, init_args: anytype) !*Node {
-    const str = try std.fmt.allocPrint(self.string_arena.allocator(), fmt, args);
-    return try self.addNode(flags, str, init_args);
+pub fn addNodeF(self: *UiContext, flags: Flags, comptime fmt: []const u8, args: anytype, init_args: anytype) *Node {
+    const str = std.fmt.allocPrint(self.string_arena.allocator(), fmt, args) catch |e| blk: {
+        self.setErrorInfo(@errorReturnTrace(), @errorName(e));
+        break :blk "";
+    };
+    return self.addNode(flags, str, init_args);
 }
 
-pub fn pushParent(self: *UiContext, node: *Node) !void {
-    try self.parent_stack.push(node);
+pub fn pushParent(self: *UiContext, node: *Node) void {
+    self.parent_stack.push(node) catch |e|
+        self.setErrorInfo(@errorReturnTrace(), @errorName(e));
 }
 pub fn popParent(self: *UiContext) *Node {
     return self.parent_stack.pop().?;
@@ -360,42 +517,64 @@ pub fn getNodeSignal(self: *UiContext, node: *Node) Signal {
         .released = false,
         .hovering = false,
         .held_down = false,
+        .enter_pressed = false,
     };
 
     const mouse_is_over = node.rect.contains(self.mouse_pos);
     const node_key = self.keyFromNode(node);
 
-    if (node.flags.clickable) {
-        const hot_key_matches = if (self.hot_node_key) |key| key == node_key else false;
-        const active_key_matches = if (self.active_node_key) |key| key == node_key else false;
+    const hot_key_matches = if (self.hot_node_key) |key| key == node_key else false;
+    const active_key_matches = if (self.active_node_key) |key| key == node_key else false;
 
-        if (hot_key_matches and !mouse_is_over) {
-            self.hot_node_key = null;
-        } else if (mouse_is_over) {
+    if (node.flags.clickable) {
+        const is_hot = mouse_is_over;
+        const is_active = active_key_matches;
+
+        if (hot_key_matches and !is_hot) self.hot_node_key = null;
+        if (!hot_key_matches and is_hot) {
+            self.hot_node_key = node_key;
+        }
+
+        // begin/end a click if there was a mouse down/up event on this node
+        if (is_hot) {
+            if (!is_active and self.events.searchAndRemove(.MouseDown, c.GLFW_MOUSE_BUTTON_LEFT)) {
+                signal.pressed = true;
+                self.active_node_key = node_key;
+            }
+            if (is_active and self.events.searchAndRemove(.MouseUp, c.GLFW_MOUSE_BUTTON_LEFT)) {
+                signal.released = true;
+                signal.clicked = true;
+                self.active_node_key = null;
+            }
+        }
+
+        signal.hovering = is_hot;
+        signal.held_down = active_key_matches;
+    }
+
+    if (node.flags.selectable) {
+        const is_hot = mouse_is_over;
+        const is_active = active_key_matches;
+
+        if (hot_key_matches and !is_hot) self.hot_node_key = null;
+        if (!hot_key_matches and is_hot) {
             self.hot_node_key = node_key;
             signal.hovering = true;
         }
 
-        const mouse_pressed = if (self.searchForEvent(.MouseDown)) |ev|
-            ev.MouseDown == c.GLFW_MOUSE_BUTTON_LEFT
-        else
-            false;
-        const mouse_released = if (self.searchForEvent(.MouseUp)) |ev|
-            ev.MouseUp == c.GLFW_MOUSE_BUTTON_LEFT
-        else
-            false;
-
-        // begin/end a click if there was a mouse down/up event on this node
-        if (mouse_is_over and hot_key_matches and self.active_node_key == null and mouse_pressed) {
-            self.active_node_key = node_key;
-        } else if (mouse_is_over and active_key_matches and mouse_released) {
-            self.active_node_key = null;
-            signal.clicked = true;
+        // give focus if we click down on the node
+        if (is_hot) {
+            if (!is_active and self.events.searchAndRemove(.MouseDown, c.GLFW_MOUSE_BUTTON_LEFT)) {
+                signal.pressed = true;
+                self.active_node_key = node_key;
+            }
         }
-
-        signal.pressed = mouse_is_over and mouse_pressed;
-        signal.released = mouse_is_over and mouse_released;
-        signal.held_down = active_key_matches;
+        // if we click anywhere else remove focus
+        if (self.events.searchAndRemove(.MouseDown, c.GLFW_MOUSE_BUTTON_LEFT)) {
+            signal.released = true;
+            self.active_node_key = null;
+        }
+        signal.hovering = is_hot;
     }
 
     if (signal.hovering) self.window_ptr.set_cursor(node.hover_cursor);
@@ -422,7 +601,7 @@ pub fn startFrame(self: *UiContext, screen_w: u32, screen_h: u32, mouse_pos: vec
     try self.style_stack.push(default_style);
 
     const root_pref_sizes = [2]Size{ Size.pixels(screen_size[0], 1), Size.pixels(screen_size[1], 1) };
-    self.root_node = try self.addNode(.{}, "###INTERNAL_ROOT_NODE", .{
+    self.root_node = try self.addNodeRaw(.{}, "###INTERNAL_ROOT_NODE", .{
         .first = null,
         .last = null,
         .next = null,
@@ -430,8 +609,6 @@ pub fn startFrame(self: *UiContext, screen_w: u32, screen_h: u32, mouse_pos: vec
         .parent = null,
         .child_count = 0,
         .pref_size = root_pref_sizes,
-        // @debug
-        .child_layout_axis = .x,
     });
     try self.parent_stack.push(self.root_node);
 
@@ -562,6 +739,10 @@ pub fn render(self: *UiContext) !void {
             if (node.flags.draw_active_effects) {
                 text_pos[1] -= 0.1 * self.font.pixel_size * node.active_trans;
             }
+
+            // TODO: manually clip text rectangles that are completly off the clip rect
+            // as an optimization for large text rendering. (like rendering a whole 10k
+            // line file)
 
             const display_text = node.display_string;
             const quads = try self.font.buildQuads(self.allocator, display_text);
@@ -847,7 +1028,7 @@ fn solveIndependentSizes(in_self: *UiContext, in_node: *Node, in_axis: Axis) voi
             .pixels => |pixels| node.calc_size[axis_idx] = pixels.value,
             .text_dim => {
                 const text_rect = self.font.textRect(node.display_string) catch |e| switch (e) {
-                    error.InvalidUtf8 => unreachable, // we already check this on the render pass
+                    error.InvalidUtf8 => unreachable, // we already check this on node creation
                 };
                 const text_size = text_rect.max - text_rect.min;
                 const text_padding = switch (axis) {
@@ -1067,14 +1248,6 @@ fn hashPartOfString(string: []const u8) []const u8 {
     } else return string;
 }
 
-// TODO: this should really be in the EventQueue type
-fn searchForEvent(self: *UiContext, event_type: std.meta.Tag(window.InputEvent)) ?window.InputEvent {
-    for (self.events.events.items) |ev| {
-        if (std.meta.activeTag(ev) == event_type) return ev;
-    }
-    return null;
-}
-
 const DepthFirstNodeIterator = struct {
     cur_node: *Node,
     parent_level: usize = 0, // how many times have we gone down the hierarchy
@@ -1147,12 +1320,12 @@ const NodeTable = struct {
 
     const K = []const u8;
     const V = Node;
-    const KeyHash = u64;
+    const Hash = u64;
 
     // note: this makes lookups O(n). if that start to become a problem
     // we can just switch this to a HashMap and NodeTable because
     // essentially a wrapper around std.HashMap
-    const KeyMap = std.ArrayList(struct { key_hash: KeyHash, value_ptr: *V });
+    const KeyMap = std.ArrayList(struct { key_hash: Hash, value_ptr: *V });
 
     const HashContext = struct {
         pub fn hash(self: @This(), key: K) u64 {
@@ -1197,12 +1370,20 @@ const NodeTable = struct {
     /// does nothing if the key doesn't exist
     pub fn remove(self: *NodeTable, key: K) void {
         const key_hash = self.ctx.hash(key);
-        for (self.key_mapping.items) |key_map, i| {
+        for (self.key_mappings.items) |key_map, i| {
             if (key_map.key_hash == key_hash) {
-                self.key_mapping.swapRemove(i);
+                self.key_mappings.swapRemove(i);
                 return;
             }
         }
+    }
+
+    pub fn hasKey(self: *NodeTable, key: K) bool {
+        const hash = self.ctx.hash(key);
+        for (self.key_mappings.items) |key_map| {
+            if (key_map.key_hash == hash) return true;
+        }
+        return false;
     }
 
     pub fn valueIterator(self: *NodeTable) ValueIterator {
@@ -1258,6 +1439,78 @@ fn randomString(prng: *PRNG) [32]u8 {
     _ = std.fmt.bufPrint(&buf, "{x:0>16}{x:0>16}", .{ prng.next(), prng.next() }) catch unreachable;
     return buf;
 }
+
+const Utf8Viewer = struct {
+    bytes: []const u8,
+
+    pub fn init(bytes: []const u8) Utf8Viewer {
+        std.debug.assert(std.unicode.utf8ValidateSlice(bytes));
+        return .{ .bytes = bytes };
+    }
+
+    /// number of bytes occupied by the last character
+    pub fn lastCharByteSize(self: Utf8Viewer) u3 {
+        const len = self.bytes.len;
+        var size = std.math.min(4, len);
+        while (size > 0) : (size -= 1) {
+            const slice = self.bytes[len - size .. len];
+            if (std.unicode.utf8ValidateSlice(slice)) {
+                const codepoint_bytes = std.unicode.utf8ByteSequenceLength(slice[0]) catch unreachable;
+                if (codepoint_bytes == size) return codepoint_bytes;
+            }
+        }
+        unreachable;
+    }
+
+    /// number of bytes occupied by character at a character index
+    pub fn byteSizeAt(self: Utf8Viewer, pos: usize) usize {
+        var idx: usize = 0;
+        var utf8_iter = std.unicode.Utf8View.initUnchecked(self.bytes).iterator();
+        while (utf8_iter.nextCodepointSlice()) |codepoint_slice| : (idx += 1) {
+            if (idx == pos) return codepoint_slice.len;
+        }
+        unreachable;
+    }
+
+    pub fn charPosIntoBytes(self: Utf8Viewer, pos: usize) usize {
+        var idx: usize = 0;
+        var bytes: usize = 0;
+        var utf8_iter = std.unicode.Utf8View.initUnchecked(self.bytes).iterator();
+        while (utf8_iter.nextCodepointSlice()) |codepoint_slice| : (idx += 1) {
+            if (idx == pos) break;
+            bytes += codepoint_slice.len;
+        }
+        return bytes;
+    }
+
+    /// return the index of the match in codepoints, *not* bytes
+    pub fn findLast(self: Utf8Viewer, to_match: u21) ?usize {
+        var idx: usize = 0;
+        var match_idx: ?usize = null;
+        var utf8_iter = std.unicode.Utf8View.initUnchecked(self.bytes).iterator();
+        while (utf8_iter.nextCodepoint()) |codepoint| : (idx += 1) {
+            if (codepoint == to_match) match_idx = idx;
+        }
+        return match_idx;
+    }
+
+    /// convert a character index based range into the bytes range
+    pub fn bytesRange(self: Utf8Viewer, start: usize, end: usize) []const u8 {
+        var start_byte_idx: usize = 0;
+
+        var idx: usize = 0;
+        var bytes: usize = 0;
+        var utf8_iter = std.unicode.Utf8View.initUnchecked(self.bytes).iterator();
+        while (utf8_iter.nextCodepointSlice()) |codepoint_slice| : (idx += 1) {
+            if (idx == start) start_byte_idx = bytes;
+            if (idx == end) break;
+            bytes += codepoint_slice.len;
+        }
+
+        const end_byte_idx = bytes;
+        return self.bytes[start_byte_idx..end_byte_idx];
+    }
+};
 
 pub fn dumpNodeTree(self: *UiContext) void {
     var node_iter = self.node_table.valueIterator();
