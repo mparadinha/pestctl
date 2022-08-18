@@ -41,6 +41,9 @@ frame_idx: usize,
 hot_node_key: ?NodeKey,
 active_node_key: ?NodeKey,
 
+// hack!
+pop_up_key: ?NodeKey,
+
 const NodeKey = NodeTable.Hash;
 
 // call `deinit` to cleanup resources
@@ -72,6 +75,8 @@ pub fn init(allocator: Allocator, font_path: []const u8, window_ptr: *window.Win
         .frame_idx = 0,
         .hot_node_key = null,
         .active_node_key = null,
+
+        .pop_up_key = null,
     };
     return self;
 }
@@ -86,11 +91,10 @@ pub fn deinit(self: *UiContext) void {
 }
 
 pub const Flags = packed struct {
-    no_id: bool = false,
-
     clickable: bool = false,
     selectable: bool = false, // maintains focus when clicked
     scrollable: bool = false, // makes it so scroll wheel updates the Node.scroll_offset
+    closeable: bool = false, // hack for pop ups! pressing escape closes it
 
     clip_children: bool = false,
     draw_text: bool = false,
@@ -98,6 +102,11 @@ pub const Flags = packed struct {
     draw_background: bool = false,
     draw_hot_effects: bool = false,
     draw_active_effects: bool = false,
+
+    special_error_pop_up_layout: bool = false,
+
+    no_id: bool = false,
+    ignore_hash_sep: bool = false,
 };
 
 pub const Node = struct {
@@ -142,7 +151,7 @@ pub const Node = struct {
 pub const Axis = enum { x, y };
 
 pub const Style = struct {
-    bg_color: vec4 = vec4{ 0, 0, 0, 0.5 },
+    bg_color: vec4 = vec4{ 0.24, 0.27, 0.31, 1 },
     border_color: vec4 = vec4{ 0.5, 0.5, 0.5, 0.5 },
     text_color: vec4 = vec4{ 1, 1, 1, 1 },
     corner_roundness: f32 = 0,
@@ -197,6 +206,11 @@ pub const Rect = struct {
     pub fn containsRect(self: Rect, other: Rect) bool {
         return self.contains(other.min) and self.contains(other.max);
     }
+
+    pub fn format(value: Rect, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
+        _ = options;
+        try writer.print("{{ .min={" ++ fmt ++ "}, .max={" ++ fmt ++ "}}}", .{ value.min, value.max });
+    }
 };
 
 pub const Signal = struct {
@@ -221,7 +235,11 @@ pub fn spacer(self: *UiContext, axis: Axis, size: Size) Signal {
 
 pub fn label(self: *UiContext, string: []const u8) Signal {
     const label_size = [2]Size{ Size.text_dim(1), Size.text_dim(1) };
-    const node = self.addNode(.{ .no_id = true, .draw_text = true }, string, .{
+    const node = self.addNode(.{
+        .no_id = true,
+        .ignore_hash_sep = true,
+        .draw_text = true,
+    }, string, .{
         .pref_size = label_size,
     });
     return self.getNodeSignal(node);
@@ -233,6 +251,23 @@ pub fn labelF(self: *UiContext, comptime fmt: []const u8, args: anytype) Signal 
         break :blk "";
     };
     return self.label(str);
+}
+
+pub fn textBox(self: *UiContext, string: []const u8) Signal {
+    const node = self.addNode(.{
+        .draw_text = true,
+        .draw_border = true,
+        .draw_background = true,
+    }, string, .{});
+    return self.getNodeSignal(node);
+}
+
+pub fn textBoxF(self: *UiContext, comptime fmt: []const u8, args: anytype) Signal {
+    const str = std.fmt.allocPrint(self.string_arena.allocator(), fmt, args) catch |e| blk: {
+        self.setErrorInfo(@errorReturnTrace(), @errorName(e));
+        break :blk "";
+    };
+    return self.textBox(str);
 }
 
 pub fn button(self: *UiContext, string: []const u8) Signal {
@@ -348,7 +383,8 @@ pub fn scrollableText(self: *UiContext, hash_string: []const u8, string: []const
 pub fn textInput(self: *UiContext, hash_string: []const u8, buf: []u8, buf_len: *usize) Signal {
     // * widget/parent node (layout in x)
     // | * text node (layout in x)
-    // | | * cursor node
+    // | | * cursor node y padding node
+    // | | | * cursor node
 
     const display_buf = buf[0..buf_len.*];
 
@@ -514,11 +550,11 @@ pub fn addNode(self: *UiContext, flags: Flags, string: []const u8, init_args: an
 }
 
 pub fn addNodeRaw(self: *UiContext, flags: Flags, string: []const u8, init_args: anytype) !*Node {
-    const display_string = displayPartOfString(string);
+    const display_string = if (flags.ignore_hash_sep) string else displayPartOfString(string);
     const hash_string = if (flags.no_id) blk: {
         // for `no_id` nodes we use a random number as the hash string, so they don't clobber each other
         break :blk hashPartOfString(&randomString(&self.prng));
-    } else hashPartOfString(string);
+    } else if (flags.ignore_hash_sep) string else hashPartOfString(string);
 
     // if a node already exists that matches this one we just use that one
     // this way the persistant cross-frame data is possible
@@ -636,7 +672,7 @@ pub fn getNodeSignal(self: *UiContext, node: *Node) Signal {
 
     if (node.flags.clickable) {
         const is_hot = mouse_is_over;
-        const is_active = active_key_matches;
+        var is_active = active_key_matches;
 
         if (hot_key_matches and !is_hot) self.hot_node_key = null;
         if (!hot_key_matches and is_hot) {
@@ -645,19 +681,23 @@ pub fn getNodeSignal(self: *UiContext, node: *Node) Signal {
 
         // begin/end a click if there was a mouse down/up event on this node
         if (is_hot) {
-            if (!is_active and self.events.searchAndRemove(.MouseDown, c.GLFW_MOUSE_BUTTON_LEFT)) {
+            const mouse_down_ev = self.events.find(.MouseDown, c.GLFW_MOUSE_BUTTON_LEFT);
+            if (!is_active and mouse_down_ev != null) {
                 signal.pressed = true;
                 self.active_node_key = node_key;
+                _ = self.events.removeAt(mouse_down_ev.?);
             }
-            if (is_active and self.events.searchAndRemove(.MouseUp, c.GLFW_MOUSE_BUTTON_LEFT)) {
+            const mouse_up_ev = self.events.find(.MouseUp, c.GLFW_MOUSE_BUTTON_LEFT);
+            if (is_active and mouse_up_ev != null) {
                 signal.released = true;
                 signal.clicked = true;
                 self.active_node_key = null;
+                _ = self.events.removeAt(mouse_up_ev.?);
             }
         }
 
         signal.hovering = is_hot;
-        signal.held_down = active_key_matches;
+        signal.held_down = is_active;
     }
 
     if (node.flags.selectable) {
@@ -670,15 +710,17 @@ pub fn getNodeSignal(self: *UiContext, node: *Node) Signal {
             signal.hovering = true;
         }
 
+        const mouse_down_ev = self.events.find(.MouseDown, c.GLFW_MOUSE_BUTTON_LEFT);
         // give focus if we click down on the node
         if (is_hot) {
-            if (!is_active and self.events.searchAndRemove(.MouseDown, c.GLFW_MOUSE_BUTTON_LEFT)) {
+            if (!is_active and mouse_down_ev != null) {
                 signal.pressed = true;
                 self.active_node_key = node_key;
+                _ = self.events.removeAt(mouse_down_ev.?);
             }
         }
         // if we click anywhere else remove focus
-        else if (self.events.searchAndRemove(.MouseDown, c.GLFW_MOUSE_BUTTON_LEFT)) {
+        else if (mouse_down_ev != null) {
             signal.released = true;
             self.active_node_key = null;
         }
@@ -697,6 +739,19 @@ pub fn getNodeSignal(self: *UiContext, node: *Node) Signal {
             }
         }
         signal.scroll_offset = node.scroll_offset;
+    }
+
+    if (node.flags.special_error_pop_up_layout and node.flags.closeable) {
+        if (self.events.searchAndRemove(.KeyUp, .{ .key = c.GLFW_KEY_ESCAPE, .mods = .{
+            .shift = false,
+            .control = false,
+            .alt = false,
+            .super = false,
+            .caps_lock = false,
+            .num_lock = false,
+        } })) {
+            self.pop_up_key = null;
+        }
     }
 
     if (signal.hovering) self.window_ptr.set_cursor(node.hover_cursor);
@@ -740,6 +795,21 @@ pub fn startFrame(self: *UiContext, screen_w: u32, screen_h: u32, mouse_pos: vec
     self.first_error_trace = null;
 
     self.window_ptr.set_cursor(.arrow);
+
+    // pop up hack!
+    if (self.pop_up_key) |key| {
+        const pop_up_node: *Node = blk: {
+            for (self.node_table.key_mappings.items) |key_map| {
+                if (key_map.key_hash == key) break :blk key_map.value_ptr;
+            } else unreachable;
+        };
+        pop_up_node.parent = self.root_node;
+        pop_up_node.next = null;
+        pop_up_node.prev = null;
+        self.root_node.first = pop_up_node;
+        self.root_node.last = pop_up_node;
+        self.root_node.child_count += 1;
+    }
 }
 
 pub fn endFrame(self: *UiContext, dt: f32) void {
@@ -798,8 +868,20 @@ pub fn render(self: *UiContext) !void {
     var shader_inputs = std.ArrayList(ShaderInput).init(self.allocator);
     defer shader_inputs.deinit();
 
+    var start_swap_idx: ?usize = null;
+    var end_swap_idx: ?usize = null;
+
     var node_iterator = DepthFirstNodeIterator{ .cur_node = self.root_node };
     while (node_iterator.next()) |node| {
+        if (node.flags.special_error_pop_up_layout) {
+            start_swap_idx = shader_inputs.items.len;
+            const text_rect = try self.font.textRect(node.display_string);
+            const text_size = text_rect.max - text_rect.min;
+            const hsize = math.div(text_size, 2);
+            const center = math.div(self.screen_size, 2);
+            node.rect = .{ .min = center - hsize, .max = center + hsize };
+        }
+
         const base_rect = ShaderInput{
             .bottom_left_pos = node.rect.min,
             .top_right_pos = node.rect.max,
@@ -886,6 +968,20 @@ pub fn render(self: *UiContext) !void {
                 });
             }
         }
+
+        if (node.flags.special_error_pop_up_layout) {
+            end_swap_idx = shader_inputs.items.len;
+            _ = self.getNodeSignal(node);
+        }
+    }
+
+    if (start_swap_idx != null and end_swap_idx != null) {
+        const start_idx = start_swap_idx.?;
+        const end_idx = end_swap_idx.?;
+        const duped = try self.allocator.dupe(ShaderInput, shader_inputs.items[start_idx..end_idx]);
+        defer self.allocator.free(duped);
+        try shader_inputs.replaceRange(start_idx, end_idx - start_idx, &.{});
+        try shader_inputs.appendSlice(duped);
     }
 
     // create vertex buffer
@@ -1323,16 +1419,20 @@ const LayoutWorkFn = fn (*UiContext, *Node, Axis) void;
 const LayoutWorkFnArgs = struct { self: *UiContext, node: *Node, axis: Axis };
 /// do the work before recursing
 fn layoutRecurseHelperPre(work_fn: LayoutWorkFn, args: LayoutWorkFnArgs) void {
+    if (args.node.flags.special_error_pop_up_layout) return;
     work_fn(args.self, args.node, args.axis);
     var child = args.node.first;
     while (child) |child_node| : (child = child_node.next) {
+        if (child_node.flags.special_error_pop_up_layout) continue;
         layoutRecurseHelperPre(work_fn, .{ .self = args.self, .node = child_node, .axis = args.axis });
     }
 }
 /// do the work after recursing
 fn layoutRecurseHelperPost(work_fn: LayoutWorkFn, args: LayoutWorkFnArgs) void {
+    if (args.node.flags.special_error_pop_up_layout) return;
     var child = args.node.first;
     while (child) |child_node| : (child = child_node.next) {
+        if (child_node.flags.special_error_pop_up_layout) continue;
         layoutRecurseHelperPost(work_fn, .{ .self = args.self, .node = child_node, .axis = args.axis });
     }
     work_fn(args.self, args.node, args.axis);
@@ -1493,6 +1593,15 @@ const NodeTable = struct {
         return GetOrPutResult{ .found_existing = false, .value_ptr = value_ptr };
     }
 
+    pub fn getFromHash(self: *NodeTable, hash: Hash) ?*V {
+        for (self.key_mappings.items) |key_map| {
+            if (key_map.key_hash == hash) {
+                return key_map.value_ptr;
+            }
+        }
+        return null;
+    }
+
     /// does nothing if the key doesn't exist
     pub fn remove(self: *NodeTable, key: K) void {
         const key_hash = self.ctx.hash(key);
@@ -1637,6 +1746,21 @@ const Utf8Viewer = struct {
         return self.bytes[start_byte_idx..end_byte_idx];
     }
 };
+
+pub fn openErrorPopUpF(self: *UiContext, comptime fmt: []const u8, args: anytype) void {
+    self.pushParent(self.root_node);
+    defer _ = self.popParent();
+
+    var bg_color = self.topStyle().bg_color;
+    bg_color[3] = 1;
+    self.pushStyle(.{ .bg_color = bg_color });
+    _ = self.textBoxF(fmt, args);
+    const pop_up_node = self.root_node.last.?;
+    pop_up_node.flags.closeable = true;
+    pop_up_node.flags.special_error_pop_up_layout = true;
+
+    self.pop_up_key = self.keyFromNode(pop_up_node);
+}
 
 pub fn dumpNodeTree(self: *UiContext) void {
     var node_iter = self.node_table.valueIterator();
