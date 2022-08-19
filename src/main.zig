@@ -80,6 +80,9 @@ pub fn main() !void {
     var backing_buf: [0x1000]u8 = undefined;
     var text_buf: []u8 = &backing_buf;
     text_buf.len = 0;
+    var backing_buf_num: [0x1000]u8 = undefined;
+    var text_buf_num: []u8 = &backing_buf_num;
+    text_buf_num.len = 0;
 
     var file_tab = FileTab.init(allocator);
     defer file_tab.deinit();
@@ -181,11 +184,14 @@ pub fn main() !void {
                 _ = ui.textBoxF("session.wait_status={}", .{session.wait_status});
                 _ = ui.textBoxF("rip=0x{x}", .{rip});
 
-                if (ui.button("Next Instrunction").clicked) try session.stepInstructions(1);
+                if (ui.button("Next Instruction").clicked) try session.stepInstructions(1);
 
                 _ = ui.textBoxF("line={}, col={}, file={s}\n", session.currentSrcLoc());
 
                 if (ui.button("do break").clicked) try session.setBreakAtAddr(rip);
+                if (ui.button("continue").clicked) session.continueRunning();
+                if (ui.button("stop").clicked) session.stopRunning();
+                if (ui.button("find main").clicked) try session.elf.findMainFile();
 
                 const bytes_at_rip = c.ptrace(.PEEKTEXT, session.pid, @intToPtr(*anyopaque, rip), null);
                 _ = ui.labelF("bytes at rip: 0x{x}\n", .{bytes_at_rip});

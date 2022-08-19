@@ -73,7 +73,6 @@ fn insertByteAtAddr(self: *Session, addr: usize, byte: u8) !u8 {
 
 pub fn killChild(self: *Session) void {
     _ = c.kill(self.pid, c.SIGKILL);
-    self.pid = undefined;
 }
 
 pub fn stepInstructions(self: *Session, num_instrs: usize) !void {
@@ -84,16 +83,25 @@ pub fn stepInstructions(self: *Session, num_instrs: usize) !void {
     }
 }
 
-pub const SrcLoc = struct { line: u64, column: u64, file: []const u8 };
+pub const SrcLoc = Elf.SrcLoc;
 
 pub fn stepLine(self: *Session) !void {
     // TODO
     _ = self;
 }
 
+pub fn continueRunning(self: *Session) void {
+    _ = c.ptrace(.CONT, self.pid, null, null);
+}
+
+pub fn stopRunning(self: *Session) void {
+    _ = c.kill(self.pid, c.SIGSTOP);
+}
+
 pub fn currentSrcLoc(self: *Session) SrcLoc {
     std.debug.assert(self.hasDebugInfo());
-    return SrcLoc{ .line = 0, .column = 0, .file = "" };
+    return self.elf.translateAddrToSrc(self.getRegisters().rip) catch
+        SrcLoc{ .line = 0, .column = 0, .file = "" };
 }
 
 pub const Registers = struct {
