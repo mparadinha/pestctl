@@ -11,7 +11,7 @@ pub fn build(b: *std.build.Builder) void {
     // between Debug, ReleaseSafe, ReleaseFast, and ReleaseSmall.
     const mode = b.standardReleaseOptions();
 
-    const exe = b.addExecutable("pestctl", "src/main.zig");
+    var exe = b.addExecutable("pestctl", "src/main.zig");
     exe.setTarget(target);
     exe.setBuildMode(mode);
     exe.linkLibC();
@@ -19,6 +19,7 @@ pub fn build(b: *std.build.Builder) void {
     exe.addIncludeDir("src");
     exe.addCSourceFile("src/stb_impls.c", &[_][]u8{""});
     exe.install();
+    _ = @import("build_tracy.zig").link(b, exe, "tracy-0.8.2");
 
     const run_cmd = exe.run();
     run_cmd.step.dependOn(b.getInstallStep());

@@ -22,6 +22,8 @@ pub fn init(allocator: Allocator, exec_path: []const u8) !Elf {
         .debug_line = "",
         .debug_line_str = "",
         .debug_ranges = "",
+        .line_progs = undefined,
+        .units = undefined,
     };
 
     var file = try std.fs.cwd().openFile(exec_path, .{});
@@ -74,70 +76,34 @@ pub fn deinit(self: *Elf) void {
     self.allocator.free(self.string_section);
 }
 
-pub const SrcLoc = struct { line: u64, column: u64, file: []const u8 };
+pub const SrcLoc = struct { dir: []const u8, file: []const u8, line: u32, column: u32 };
 
 pub fn translateAddrToSrc(self: Elf, addr: usize) !?SrcLoc {
-    // i think the .debug_info has a thing with the offset into .debug_line we need
-    // but I haven't parsed that yet
-    var stream = std.io.fixedBufferStream(self.dwarf.debug_line);
-    var reader = stream.reader();
-    while ((try stream.getPos()) < self.dwarf.debug_line.len) {
-        const offset = try stream.getPos();
-        const initial_len = try reader.readIntLittle(u32);
-        const unit_len = if (initial_len < 0xffff_fff0) initial_len else blk: {
-            std.debug.assert(initial_len == 0xffff_ffff);
-            break :blk try reader.readIntBig(u64);
-        };
-        const section_end = (try stream.getPos()) + unit_len;
-
-        const line_prog = try Dwarf.LineProg.init(self.allocator, self.dwarf.debug_line, self.dwarf.debug_line_str, offset);
-        defer line_prog.deinit();
-
-        if (try line_prog.findAddr(addr)) |state| {
-            return SrcLoc{
-                .line = state.line,
-                .column = state.column,
-                .file = line_prog.file_names[state.file],
-            };
+    for (self.dwarf.line_progs) |prog| {
+        if (prog.address_range[0] <= addr and addr <= prog.address_range[1]) {
+            if (try prog.findAddr(addr)) |state| {
+                return SrcLoc{
+                    .dir = prog.include_dirs[prog.files[state.file].dir],
+                    .file = prog.files[state.file].name,
+                    .line = state.line,
+                    .column = state.column,
+                };
+            }
         }
-
-        try stream.seekTo(section_end);
-        reader = stream.reader();
     }
-
     return null;
 }
 
-pub fn translateSrcToAddr(self: Elf, src: SrcLoc) ?usize {
-    // i think the .debug_info has a thing with the offset into .debug_line we need
-    // but I haven't parsed that yet
-    var stream = std.io.fixedBufferStream(self.dwarf.debug_line);
-    var reader = stream.reader();
-    while ((try stream.getPos()) < self.dwarf.debug_line.len) {
-        const offset = try stream.getPos();
-        const initial_len = try reader.readIntLittle(u32);
-        const unit_len = if (initial_len < 0xffff_fff0) initial_len else blk: {
-            std.debug.assert(initial_len == 0xffff_ffff);
-            break :blk try reader.readIntBig(u64);
-        };
-        const section_end = (try stream.getPos()) + unit_len;
-
-        const line_prog = try Dwarf.LineProg.init(self.allocator, self.dwarf.debug_line, self.dwarf.debug_line_str, offset);
-        defer line_prog.deinit();
-
-        for (line_prog.file_names) |file_name, i| {
-            if (std.mem.eql(u8, file_name, src.file)) {
-                std.debug.print("line_prog state for main.zig:80 -> {any}\n", .{try line_prog.findAddrForSrc(80, @intCast(u32, i + 1))});
+pub fn translateSrcToAddr(self: Elf, src: SrcLoc) !?usize {
+    for (self.dwarf.line_progs) |prog| {
+        for (prog.files) |file_info, i| {
+            if (std.mem.eql(u8, file_info.name, src.file)) {
                 const file_idx = @intCast(u32, i);
-                const state = try line_prog.findAddrForSrc(src.line, file_idx) orelse continue;
-                return state.addr;
+                const state = (try prog.findAddrForSrc(file_idx, src.line)) orelse continue;
+                return state.address;
             }
         }
-
-        try stream.seekTo(section_end);
-        reader = stream.reader();
     }
-
     return null;
 }
 
@@ -153,11 +119,6 @@ fn readSectionHeader(file: anytype, header: elf.Header, sh_idx: usize) !elf.Elf6
     try file.seekTo(saved_filepos);
 
     return shdr;
-}
-
-pub fn hasDebugInfo(self: Elf) bool {
-    _ = self;
-    return true; // lol. lmao
 }
 
 pub const Section = struct {

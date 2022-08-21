@@ -43,6 +43,7 @@ active_node_key: ?NodeKey,
 
 // hack!
 pop_up_key: ?NodeKey,
+on_top_nodes: std.ArrayList(Node),
 
 const NodeKey = NodeTable.Hash;
 
@@ -77,11 +78,13 @@ pub fn init(allocator: Allocator, font_path: []const u8, window_ptr: *window.Win
         .active_node_key = null,
 
         .pop_up_key = null,
+        .on_top_nodes = std.ArrayList(Node).init(allocator),
     };
     return self;
 }
 
 pub fn deinit(self: *UiContext) void {
+    self.on_top_nodes.deinit();
     self.style_stack.deinit();
     self.parent_stack.deinit();
     self.node_table.deinit();
@@ -130,6 +133,8 @@ pub const Node = struct {
     pref_size: [2]Size,
     child_layout_axis: Axis,
     hover_cursor: window.CursorType,
+
+    text_rect: Rect, // @hack
 
     // post-size-determination data
     calc_size: vec2,
@@ -233,24 +238,23 @@ pub fn spacer(self: *UiContext, axis: Axis, size: Size) Signal {
     return self.getNodeSignal(node);
 }
 
-pub fn label(self: *UiContext, string: []const u8) Signal {
+pub fn label(self: *UiContext, string: []const u8) void {
     const label_size = [2]Size{ Size.text_dim(1), Size.text_dim(1) };
-    const node = self.addNode(.{
+    _ = self.addNode(.{
         .no_id = true,
         .ignore_hash_sep = true,
         .draw_text = true,
     }, string, .{
         .pref_size = label_size,
     });
-    return self.getNodeSignal(node);
 }
 
-pub fn labelF(self: *UiContext, comptime fmt: []const u8, args: anytype) Signal {
+pub fn labelF(self: *UiContext, comptime fmt: []const u8, args: anytype) void {
     const str = std.fmt.allocPrint(self.string_arena.allocator(), fmt, args) catch |e| blk: {
         self.setErrorInfo(@errorReturnTrace(), @errorName(e));
         break :blk "";
     };
-    return self.label(str);
+    self.label(str);
 }
 
 pub fn textBox(self: *UiContext, string: []const u8) Signal {
@@ -378,7 +382,7 @@ pub fn scrollableText(self: *UiContext, hash_string: []const u8, string: []const
     return self.getNodeSignal(top_node);
 }
 
-/// if `buf` runs out of space input is truncated 
+/// if `buf` runs out of space input is truncated
 /// unlike other widgets, the string here is only used for the hash and not display
 pub fn textInput(self: *UiContext, hash_string: []const u8, buf: []u8, buf_len: *usize) Signal {
     // * widget/parent node (layout in x)
@@ -592,6 +596,10 @@ pub fn addNodeRaw(self: *UiContext, flags: Flags, string: []const u8, init_args:
     node.child_layout_axis = style.child_layout_axis;
     node.hover_cursor = style.hover_cursor;
 
+    // @hack: calling textRect is too expensive to do multiple times per frame
+    const font_rect = try self.font.textRect(display_string);
+    node.text_rect = .{ .min = font_rect.min, .max = font_rect.max };
+
     // reset layout data (but not the final screen rect which we need for signal stuff)
     node.calc_size = vec2{ 0, 0 };
     node.calc_rel_pos = vec2{ 0, 0 };
@@ -698,6 +706,8 @@ pub fn getNodeSignal(self: *UiContext, node: *Node) Signal {
 
         signal.hovering = is_hot;
         signal.held_down = is_active;
+
+        if (is_hot) self.window_ptr.set_cursor(node.hover_cursor);
     }
 
     if (node.flags.selectable) {
@@ -725,6 +735,8 @@ pub fn getNodeSignal(self: *UiContext, node: *Node) Signal {
             self.active_node_key = null;
         }
         signal.hovering = is_hot;
+
+        if (is_active) self.window_ptr.set_cursor(node.hover_cursor);
     }
 
     if (node.flags.scrollable) {
@@ -754,8 +766,6 @@ pub fn getNodeSignal(self: *UiContext, node: *Node) Signal {
         }
     }
 
-    if (signal.hovering) self.window_ptr.set_cursor(node.hover_cursor);
-
     return signal;
 }
 
@@ -765,6 +775,8 @@ pub fn startFrame(self: *UiContext, screen_w: u32, screen_h: u32, mouse_pos: vec
     while (node_iter.next()) |node| {
         if (node.flags.no_id) try node_iter.removeCurrent();
     }
+
+    self.on_top_nodes.clearRetainingCapacity();
 
     const screen_size = vec2{ @intToFloat(f32, screen_w), @intToFloat(f32, screen_h) };
     self.screen_size = screen_size;
@@ -794,7 +806,8 @@ pub fn startFrame(self: *UiContext, screen_w: u32, screen_h: u32, mouse_pos: vec
 
     self.first_error_trace = null;
 
-    self.window_ptr.set_cursor(.arrow);
+    if (self.active_node_key == null and self.hot_node_key == null)
+        self.window_ptr.set_cursor(.arrow);
 
     // pop up hack!
     if (self.pop_up_key) |key| {
@@ -875,104 +888,16 @@ pub fn render(self: *UiContext) !void {
     while (node_iterator.next()) |node| {
         if (node.flags.special_error_pop_up_layout) {
             start_swap_idx = shader_inputs.items.len;
-            const text_rect = try self.font.textRect(node.display_string);
-            const text_size = text_rect.max - text_rect.min;
-            const hsize = math.div(text_size, 2);
-            const center = math.div(self.screen_size, 2);
-            node.rect = .{ .min = center - hsize, .max = center + hsize };
-        }
-
-        const base_rect = ShaderInput{
-            .bottom_left_pos = node.rect.min,
-            .top_right_pos = node.rect.max,
-            .bottom_left_uv = vec2{ 0, 0 },
-            .top_right_uv = vec2{ 0, 0 },
-            .top_color = vec4{ 0, 0, 0, 0 },
-            .bottom_color = vec4{ 0, 0, 0, 0 },
-            .corner_roundness = node.corner_roundness,
-            .border_thickness = node.border_thickness,
-            .clip_rect_min = node.clip_rect.min,
-            .clip_rect_max = node.clip_rect.max,
-        };
-
-        // draw background
-        if (node.flags.draw_background) {
-            var rect = base_rect;
-            rect.top_color = node.bg_color;
-            rect.bottom_color = node.bg_color;
-            rect.border_thickness = 0;
-            try shader_inputs.append(rect);
-
-            const hot_remove_factor = if (node.flags.draw_active_effects) node.active_trans else 0;
-            const effective_hot_trans = node.hot_trans * (1 - hot_remove_factor);
-
-            if (node.flags.draw_hot_effects) {
-                rect = base_rect;
-                rect.border_thickness = 0;
-                rect.top_color = vec4{ 1, 1, 1, 0.1 * effective_hot_trans };
-                try shader_inputs.append(rect);
-            }
-            if (node.flags.draw_active_effects) {
-                rect = base_rect;
-                rect.border_thickness = 0;
-                rect.bottom_color = vec4{ 1, 1, 1, 0.1 * node.active_trans };
-                try shader_inputs.append(rect);
-            }
-        }
-
-        // draw border
-        if (node.flags.draw_border) {
-            var rect = base_rect;
-            rect.top_color = node.border_color;
-            rect.bottom_color = node.border_color;
-            try shader_inputs.append(rect);
-
-            if (node.flags.draw_hot_effects) {
-                rect = base_rect;
-                rect.top_color = vec4{ 1, 1, 1, 0.2 * node.hot_trans };
-                rect.bottom_color = vec4{ 1, 1, 1, 0.2 * node.hot_trans };
-                try shader_inputs.append(rect);
-            }
-        }
-
-        // draw text
-        if (node.flags.draw_text) {
-            var text_pos = self.textPosFromNode(node);
-            if (node.flags.draw_active_effects) {
-                text_pos[1] -= 0.1 * self.font.pixel_size * node.active_trans;
-            }
-
-            // TODO: manually clip text rectangles that are completly off the clip rect
-            // as an optimization for large text rendering. (like rendering a whole 10k
-            // line file)
-
-            const display_text = node.display_string;
-            const quads = try self.font.buildQuads(self.allocator, display_text);
-            defer self.allocator.free(quads);
-            for (quads) |quad| {
-                var quad_rect = Rect{ .min = quad.points[0].pos, .max = quad.points[2].pos };
-                quad_rect.min += text_pos;
-                quad_rect.max += text_pos;
-
-                try shader_inputs.append(.{
-                    .bottom_left_pos = quad_rect.min,
-                    .top_right_pos = quad_rect.max,
-                    .bottom_left_uv = quad.points[0].uv,
-                    .top_right_uv = quad.points[2].uv,
-                    .top_color = node.text_color,
-                    .bottom_color = node.text_color,
-                    .corner_roundness = 0,
-                    .border_thickness = 0,
-                    .clip_rect_min = base_rect.clip_rect_min,
-                    .clip_rect_max = base_rect.clip_rect_max,
-                });
-            }
-        }
-
-        if (node.flags.special_error_pop_up_layout) {
+            try self.addShaderInputsForNode(ShaderInput, &shader_inputs, node);
             end_swap_idx = shader_inputs.items.len;
             _ = self.getNodeSignal(node);
+        } else {
+            try self.addShaderInputsForNode(ShaderInput, &shader_inputs, node);
         }
+    }
+
+    for (self.on_top_nodes.items) |*node| {
+        try self.addShaderInputsForNode(ShaderInput, &shader_inputs, node);
     }
 
     if (start_swap_idx != null and end_swap_idx != null) {
@@ -1028,6 +953,105 @@ pub fn render(self: *UiContext) !void {
     self.font.texture.bind(0);
     gl.bindVertexArray(inputs_vao);
     gl.drawArrays(gl.POINTS, 0, @intCast(i32, shader_inputs.items.len));
+}
+
+// small helper for `UiContext.render`
+fn addShaderInputsForNode(self: *UiContext, comptime ShaderInput: type, shader_inputs: *std.ArrayList(ShaderInput), node: *Node) !void {
+    if (node.flags.special_error_pop_up_layout) {
+        //const text_rect = try self.font.textRect(node.display_string);
+        const text_rect = node.text_rect;
+        const text_size = text_rect.max - text_rect.min;
+        const hsize = math.div(text_size, 2);
+        const center = math.div(self.screen_size, 2);
+        node.rect = .{ .min = center - hsize, .max = center + hsize };
+    }
+
+    const base_rect = ShaderInput{
+        .bottom_left_pos = node.rect.min,
+        .top_right_pos = node.rect.max,
+        .bottom_left_uv = vec2{ 0, 0 },
+        .top_right_uv = vec2{ 0, 0 },
+        .top_color = vec4{ 0, 0, 0, 0 },
+        .bottom_color = vec4{ 0, 0, 0, 0 },
+        .corner_roundness = node.corner_roundness,
+        .border_thickness = node.border_thickness,
+        .clip_rect_min = node.clip_rect.min,
+        .clip_rect_max = node.clip_rect.max,
+    };
+
+    // draw background
+    if (node.flags.draw_background) {
+        var rect = base_rect;
+        rect.top_color = node.bg_color;
+        rect.bottom_color = node.bg_color;
+        rect.border_thickness = 0;
+        try shader_inputs.append(rect);
+
+        const hot_remove_factor = if (node.flags.draw_active_effects) node.active_trans else 0;
+        const effective_hot_trans = node.hot_trans * (1 - hot_remove_factor);
+
+        if (node.flags.draw_hot_effects) {
+            rect = base_rect;
+            rect.border_thickness = 0;
+            rect.top_color = vec4{ 1, 1, 1, 0.1 * effective_hot_trans };
+            try shader_inputs.append(rect);
+        }
+        if (node.flags.draw_active_effects) {
+            rect = base_rect;
+            rect.border_thickness = 0;
+            rect.bottom_color = vec4{ 1, 1, 1, 0.1 * node.active_trans };
+            try shader_inputs.append(rect);
+        }
+    }
+
+    // draw border
+    if (node.flags.draw_border) {
+        var rect = base_rect;
+        rect.top_color = node.border_color;
+        rect.bottom_color = node.border_color;
+        try shader_inputs.append(rect);
+
+        if (node.flags.draw_hot_effects) {
+            rect = base_rect;
+            rect.top_color = vec4{ 1, 1, 1, 0.2 * node.hot_trans };
+            rect.bottom_color = vec4{ 1, 1, 1, 0.2 * node.hot_trans };
+            try shader_inputs.append(rect);
+        }
+    }
+
+    // draw text
+    if (node.flags.draw_text) {
+        var text_pos = self.textPosFromNode(node);
+        if (node.flags.draw_active_effects) {
+            text_pos[1] -= 0.1 * self.font.pixel_size * node.active_trans;
+        }
+
+        // TODO: manually clip text rectangles that are completly off the clip rect
+        // as an optimization for large text rendering. (like rendering a whole 10k
+        // line file)
+
+        const display_text = node.display_string;
+        const quads = try self.font.buildQuads(self.allocator, display_text);
+        defer self.allocator.free(quads);
+        for (quads) |quad| {
+            var quad_rect = Rect{ .min = quad.points[0].pos, .max = quad.points[2].pos };
+            quad_rect.min += text_pos;
+            quad_rect.max += text_pos;
+
+            try shader_inputs.append(.{
+                .bottom_left_pos = quad_rect.min,
+                .top_right_pos = quad_rect.max,
+                .bottom_left_uv = quad.points[0].uv,
+                .top_right_uv = quad.points[2].uv,
+                .top_color = node.text_color,
+                .bottom_color = node.text_color,
+                .corner_roundness = 0,
+                .border_thickness = 0,
+                .clip_rect_min = base_rect.clip_rect_min,
+                .clip_rect_max = base_rect.clip_rect_max,
+            });
+        }
+    }
 }
 
 const vertex_shader_src =
@@ -1243,13 +1267,16 @@ const fragment_shader_src =
 fn solveIndependentSizes(in_self: *UiContext, in_node: *Node, in_axis: Axis) void {
     // zig fmt: off
     const work_fn = (struct { pub fn work(self: *UiContext, node: *Node, axis: Axis) void {
+        _ = self;
         const axis_idx: usize = @enumToInt(axis);
         switch (node.pref_size[axis_idx]) {
             .pixels => |pixels| node.calc_size[axis_idx] = pixels.value,
             .text_dim => {
-                const text_rect = self.font.textRect(node.display_string) catch |e| switch (e) {
-                    error.InvalidUtf8 => unreachable, // we already check this on node creation
-                };
+                //const text_rect = self.font.textRect(node.display_string) catch |e| switch (e) {
+                //    error.InvalidUtf8 => unreachable, // we already check this on node creation
+                //    error.OutOfMemory => std.debug.panic("that's fucking unlucky!\n", .{}),
+                //};
+                const text_rect = node.text_rect;
                 const text_size = text_rect.max - text_rect.min;
                 const text_padding = switch (axis) {
                     .x => text_hpadding,
@@ -1441,9 +1468,11 @@ fn layoutRecurseHelperPost(work_fn: LayoutWorkFn, args: LayoutWorkFnArgs) void {
 pub const text_hpadding: f32 = 4;
 pub const text_vpadding: f32 = 4;
 
-fn textPosFromNode(self: UiContext, node: *Node) vec2 {
-    const text_rect = self.font.textRect(node.display_string) catch
-        unreachable; // input is already checked in render pass
+fn textPosFromNode(self: *UiContext, node: *Node) vec2 {
+    _ = self;
+    //const text_rect = self.font.textRect(node.display_string) catch
+    //    unreachable; // input is already checked in render pass
+    const text_rect = node.text_rect;
     const text_size_y = text_rect.max[1] - text_rect.min[1];
     const box_middle_y = (node.rect.min[1] + node.rect.max[1]) / 2;
 

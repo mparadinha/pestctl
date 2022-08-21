@@ -11,6 +11,9 @@ const Font = @import("Font.zig");
 const UiContext = @import("UiContext.zig");
 const Size = UiContext.Size;
 const Session = @import("Session.zig");
+const SrcLoc = Session.SrcLoc;
+
+const tracy = @import("tracy.zig");
 
 const app_style = .{
     .highlight_color = vec4{ 0, 0, 0.5, 1 },
@@ -38,6 +41,7 @@ pub fn main() !void {
     }){};
     defer _ = general_purpose_allocator.detectLeaks();
     const allocator = general_purpose_allocator.allocator();
+    //const allocator = std.heap.c_allocator;
 
     //var tmpbuf: [0x1000]u8 = undefined;
     //std.debug.print("cwd={s}\n", .{try std.os.getcwd(&tmpbuf)});
@@ -73,7 +77,6 @@ pub fn main() !void {
     var session_opt = if (cmdline_args.exec_path) |path| try Session.init(allocator, path) else null;
     defer if (session_opt) |*session| session.deinit();
 
-    // ui variables
     var last_mouse_pos = vec2{ 0, 0 };
     var last_time = @floatCast(f32, c.glfwGetTime());
 
@@ -81,8 +84,9 @@ pub fn main() !void {
     var text_buf: []u8 = &backing_buf;
     text_buf.len = 0;
     var backing_buf_num: [0x1000]u8 = undefined;
-    var text_buf_num: []u8 = &backing_buf_num;
-    text_buf_num.len = 0;
+    var text_buf_num = try std.fmt.bufPrint(&backing_buf_num, "38", .{});
+    var backing_buf_file: [0x1000]u8 = undefined;
+    var text_buf_file = try std.fmt.bufPrint(&backing_buf_file, "main.zig", .{});
 
     var file_tab = FileTab.init(allocator);
     defer file_tab.deinit();
@@ -152,7 +156,7 @@ pub fn main() !void {
             open_file_parent.pref_size = [2]Size{ Size.percent(1, 1), Size.by_children(1) };
             ui.pushParent(open_file_parent);
             {
-                const open_button_sig = ui.button("Open File");
+                const open_button_sig = ui.button("Open Source File");
                 _ = open_button_sig;
                 ui.pushStyle(.{ .bg_color = vec4{ 0.75, 0.75, 0.75, 1 } });
                 const text_input_sig = ui.textInput("textinput", &backing_buf, &text_buf.len);
@@ -161,14 +165,14 @@ pub fn main() !void {
                     if (file_tab.addFile(text_buf)) {
                         file_tab.active_file = file_tab.files.items.len - 1;
                     } else |err| {
-                        ui.openErrorPopUpF("Got an unhandled error: {s}\n{}", .{ @errorName(err), @errorReturnTrace().? });
+                        ui.openErrorPopUpF("Got an unhandled error: {s}\n{?}", .{ @errorName(err), @errorReturnTrace() });
                     }
                 }
             }
             _ = ui.popParent(); // open_file_parent
 
             try file_tab.display(&ui);
-            //_ = ui.labelF("mouse_pos={d:.2}", .{mouse_pos});
+            //ui.labelF("mouse_pos={d:.2}", .{mouse_pos});
         }
         _ = ui.popParent(); // left_side_parent
 
@@ -177,7 +181,16 @@ pub fn main() !void {
         ui.pushParent(right_side_parent);
         {
             if (session_opt) |*session| {
+                try session.update();
                 const rip = session.getRegisters().rip;
+
+                // @debug
+                if (session.breakpoints.items.len == 0) tmpblk: {
+                    const line = std.fmt.parseUnsigned(u32, text_buf_num, 0) catch break :tmpblk;
+                    try session.setBreakpointAtSrc(.{ .dir = "src", .file = text_buf_file, .line = line, .column = 0 });
+                }
+
+                if (session.src_loc) |loc| try file_tab.focusOnSrc(loc);
 
                 _ = ui.textBoxF("session.exec_path={s}", .{session.exec_path});
                 _ = ui.textBoxF("session.pid={}", .{session.pid});
@@ -186,15 +199,46 @@ pub fn main() !void {
 
                 if (ui.button("Next Instruction").clicked) try session.stepInstructions(1);
 
-                _ = ui.textBoxF("line={}, col={}, file={s}\n", session.currentSrcLoc());
+                _ = ui.textBoxF("dir={s}, file={s}, line={}, col={}\n", session.src_loc orelse @as(SrcLoc, undefined));
 
-                if (ui.button("do break").clicked) try session.setBreakAtAddr(rip);
-                if (ui.button("continue").clicked) session.continueRunning();
-                if (ui.button("stop").clicked) session.stopRunning();
-                if (ui.button("find main").clicked) try session.elf.findMainFile();
+                if (ui.button("continue").clicked)
+                    session.continueRunning();
+                if (ui.button("pause").clicked) session.pauseRunning();
 
                 const bytes_at_rip = c.ptrace(.PEEKTEXT, session.pid, @intToPtr(*anyopaque, rip), null);
-                _ = ui.labelF("bytes at rip: 0x{x}\n", .{bytes_at_rip});
+                ui.labelF("bytes at rip: 0x{x}\n", .{bytes_at_rip});
+
+                const set_break_parent = ui.addNode(.{}, "###set_break_parent", .{ .child_layout_axis = .y });
+                set_break_parent.pref_size = [2]Size{ Size.percent(1, 1), Size.by_children(1) };
+                ui.pushParent(set_break_parent);
+                {
+                    if (ui.button("Set Breakpoint").clicked) {
+                        const line = try std.fmt.parseUnsigned(u32, text_buf_num, 0);
+                        try session.setBreakpointAtSrc(.{ .dir = "src", .file = text_buf_file, .line = line, .column = 0 });
+                    }
+
+                    const number_parent = ui.addNode(.{}, "###number_parent", .{ .child_layout_axis = .x });
+                    number_parent.pref_size = [2]Size{ Size.percent(1, 1), Size.by_children(1) };
+                    ui.pushParent(number_parent);
+                    {
+                        _ = ui.textBox("Line Number");
+                        ui.pushStyle(.{ .bg_color = vec4{ 0.75, 0.75, 0.75, 1 } });
+                        _ = ui.textInput("src_linenum_textinput", &backing_buf_num, &text_buf_num.len);
+                        _ = ui.popStyle();
+                    }
+                    _ = ui.popParent();
+                    const file_parent = ui.addNode(.{}, "###file_parent", .{ .child_layout_axis = .x });
+                    file_parent.pref_size = [2]Size{ Size.percent(1, 1), Size.by_children(1) };
+                    ui.pushParent(file_parent);
+                    {
+                        _ = ui.textBox("File Name");
+                        ui.pushStyle(.{ .bg_color = vec4{ 0.75, 0.75, 0.75, 1 } });
+                        _ = ui.textInput("src_filename_textinput", &backing_buf_file, &text_buf_file.len);
+                        _ = ui.popStyle();
+                    }
+                    _ = ui.popParent();
+                }
+                _ = ui.popParent();
             }
         }
         _ = ui.popParent(); // right_side_parent
@@ -204,6 +248,7 @@ pub fn main() !void {
 
         ui.endFrame(dt);
         window.update();
+        tracy.FrameMark();
     }
 }
 
@@ -211,6 +256,11 @@ const FileTab = struct {
     allocator: Allocator,
     files: std.ArrayList(FileInfo),
     active_file: ?usize,
+    highlight_box: struct {
+        file_idx: usize,
+        min: struct { line: u32, column: u32 },
+        max: struct { line: u32, column: u32 },
+    },
 
     const FileInfo = struct { path: []const u8, content: []const u8, lock_line: ?usize };
 
@@ -219,6 +269,12 @@ const FileTab = struct {
             .allocator = allocator,
             .files = std.ArrayList(FileInfo).init(allocator),
             .active_file = null,
+            .highlight_box = undefined,
+            //.highlight_box = .{
+            //    .file_idx = 0,
+            //    .min = .{ .line = 0, .column = 0 },
+            //    .max = .{ .line = 0, .column = 0 },
+            //},
         };
     }
 
@@ -230,20 +286,55 @@ const FileTab = struct {
         self.files.deinit();
     }
 
+    /// if file was already open, this does nothing
     pub fn addFile(self: *FileTab, path: []const u8) !void {
-        for (self.files.items) |file_info, i| {
-            if (std.mem.eql(u8, path, file_info.path)) {
-                self.allocator.free(file_info.path);
-                self.allocator.free(file_info.content);
-                _ = self.files.swapRemove(i);
-                break;
-            }
+        for (self.files.items) |file_info| {
+            if (std.mem.eql(u8, path, file_info.path)) return;
         }
+        const content = std.fs.cwd().readFileAlloc(self.allocator, path, std.math.maxInt(usize)) catch |err| {
+            if (err == error.FileNotFound) std.debug.print("couldn't open file @ path '{s}'\n", .{path});
+            return err;
+        };
+        errdefer self.allocator.free(content);
         const dupe_path = try self.allocator.dupe(u8, path);
         errdefer self.allocator.free(dupe_path);
-        const content = try std.fs.cwd().readFileAlloc(self.allocator, path, std.math.maxInt(usize));
-        errdefer self.allocator.free(content);
         try self.files.append(.{ .path = dupe_path, .content = content, .lock_line = null });
+    }
+
+    /// if file was already open, this does nothing
+    pub fn addFileFromSrc(self: *FileTab, src: SrcLoc) !void {
+        const path = try std.fs.path.join(self.allocator, &.{ src.dir, src.file });
+        defer self.allocator.free(path);
+        try self.addFile(path);
+    }
+
+    /// if the file was not open already we try to open it now
+    pub fn focusOnSrc(self: *FileTab, src: SrcLoc) !void {
+        const path = try std.fs.path.join(self.allocator, &.{ src.dir, src.file });
+        defer self.allocator.free(path);
+
+        try self.addFile(path);
+        const file_idx = self.findFile(path) orelse unreachable;
+
+        //self.active_file = file_idx;
+        self.highlight_box = .{
+            .file_idx = file_idx,
+            .min = .{ .line = src.line, .column = src.column },
+            .max = .{ .line = src.line, .column = src.column },
+        };
+    }
+
+    pub fn findFile(self: FileTab, path: []const u8) ?usize {
+        for (self.files.items) |file_info, i| {
+            if (std.mem.eql(u8, path, file_info.path)) return i;
+        }
+        return null;
+    }
+
+    pub fn findFileFromSrc(self: FileTab, src: SrcLoc) ?usize {
+        const path = try std.fs.path.join(self.allocator, &.{ src.dir, src.file });
+        defer self.allocator.free(path);
+        return self.findFile(path);
     }
 
     pub fn display(self: *FileTab, ui: *UiContext) !void {
@@ -293,6 +384,17 @@ const FileTab = struct {
         //ui.topParent().last.?.pref_size[0] = Size.pixels(1, 1); // maybe I should just use addNode 🤔🤔🤔🤔
         //ui.topParent().last.?.pref_size[1] = Size.percent(1, 0); // maybe I should just use addNode 🤔🤔🤔🤔🤔
 
+        const ui_style = ui.topStyle();
+        var highlight_box = @as(UiContext.Node, undefined);
+        highlight_box.flags = UiContext.Flags{ .draw_border = true };
+        highlight_box.border_color = ui_style.border_color;
+        highlight_box.corner_roundness = 0;
+        highlight_box.border_thickness = ui_style.border_thickness;
+        highlight_box.pref_size = undefined; // can't set to zero
+        highlight_box.rect = UiContext.Rect{ .min = vec2{ 100, 100 }, .max = vec2{ 300, 300 + 100 * @sin(@floatCast(f32, c.glfwGetTime())) } };
+        highlight_box.clip_rect = ui.topParent().clip_rect;
+        try ui.on_top_nodes.append(highlight_box);
+
         const text_box_size = [2]Size{ Size.percent(1, 0), Size.percent(1, 0) };
         ui.pushStyle(.{ .pref_size = text_box_size });
         try textDisplay(ui, active_name, active_content, active_line);
@@ -318,17 +420,19 @@ fn textDisplay(ui: *UiContext, label: []const u8, text: []const u8, lock_line: ?
     _ = ui.scrollableRegionF("###{s}::text_scroll_region_y", .{label}, .y);
     const y_scroll = ui.topParent();
 
-    _ = ui.label(text);
-
     const x_off = &x_scroll.scroll_offset[0];
     const y_off = &y_scroll.scroll_offset[1];
+    const font_metrics = ui.font.getScaledMetrics();
+
+    ui.label(text);
+    const label_node = y_scroll.last.?;
 
     if (lock_line) |line| {
-        y_off.* = -ui.font.getScaledMetrics().line_advance * @intToFloat(f32, line);
+        y_off.* = -font_metrics.line_advance * @intToFloat(f32, line);
     }
 
     // hack to cut off scrolling at the ends of text
-    const text_rect = try ui.font.textRect(text);
+    const text_rect = label_node.text_rect;
     const text_size = text_rect.max - text_rect.min;
     const text_padd = vec2{ UiContext.text_hpadding, UiContext.text_vpadding };
     var max_offset = text_size - parent.rect.size() + vec2{ 2, 2 } * text_padd;
@@ -398,4 +502,8 @@ pub fn getStackTrace(ret_addr: usize) std.builtin.StackTrace {
     var trace = std.builtin.StackTrace{ .instruction_addresses = &addrs, .index = 0 };
     std.debug.captureStackTrace(ret_addr, &trace);
     return trace;
+}
+
+pub fn reachedHere(src: std.builtin.SourceLocation) void {
+    std.debug.print("reached {s}:{s}:{}:{}\n", src);
 }
