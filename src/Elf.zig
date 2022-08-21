@@ -107,6 +107,15 @@ pub fn translateSrcToAddr(self: Elf, src: SrcLoc) !?usize {
     return null;
 }
 
+pub fn getLineProgForSrc(self: Elf, src: SrcLoc) !?Dwarf.LineProg {
+    for (self.dwarf.line_progs) |prog| {
+        for (prog.files) |file_info| {
+            if (std.mem.eql(u8, file_info.name, src.file)) return prog;
+        }
+    }
+    return null;
+}
+
 fn readSectionHeader(file: anytype, header: elf.Header, sh_idx: usize) !elf.Elf64_Shdr {
     const saved_filepos = try file.getPos();
 

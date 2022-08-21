@@ -229,13 +229,12 @@ pub const Signal = struct {
     scroll_offset: vec2,
 };
 
-pub fn spacer(self: *UiContext, axis: Axis, size: Size) Signal {
+pub fn spacer(self: *UiContext, axis: Axis, size: Size) void {
     const sizes = switch (axis) {
         .x => [2]Size{ size, Size.percent(0, 0) },
         .y => [2]Size{ Size.percent(0, 0), size },
     };
-    const node = self.addNode(.{ .no_id = true }, "", .{ .pref_size = sizes });
-    return self.getNodeSignal(node);
+    _ = self.addNode(.{ .no_id = true }, "", .{ .pref_size = sizes });
 }
 
 pub fn label(self: *UiContext, string: []const u8) void {
@@ -314,7 +313,7 @@ pub fn scrollableRegion(self: *UiContext, string: []const u8, axis: Axis) Signal
         .x => 0,
         .y => 1,
     };
-    _ = self.spacer(axis, Size.pixels(node.scroll_offset[axis_idx], 1));
+    self.spacer(axis, Size.pixels(node.scroll_offset[axis_idx], 1));
 
     return self.getNodeSignal(node);
 }
@@ -357,10 +356,10 @@ pub fn scrollableText(self: *UiContext, hash_string: []const u8, string: []const
     //x_scrollbar.pref_size = [2]Size{ Size.percent(1, 0), Size.by_children(1) };
     //self.pushParent(x_scrollbar);
     //{
-    //    _ = self.spacer(.x, Size.pixels(scrollable_x_sig.scroll_offset[0], 1));
+    //     self.spacer(.x, Size.pixels(scrollable_x_sig.scroll_offset[0], 1));
     //    const x_scrollbar_grabber = self.addNodeF(.{ .clickable = true, .draw_background = true }, "{s}::x_grabber", .{hash_string}, .{});
     //    x_scrollbar_grabber.pref_size = [2]Size{ Size.pixels(10, 1), Size.pixels(10, 1) };
-    //    _ = self.spacer(.x, Size.percent(1, 0));
+    //     self.spacer(.x, Size.percent(1, 0));
     //}
     //_ = self.popParent(); // pop x_scrollbar
 
@@ -370,10 +369,10 @@ pub fn scrollableText(self: *UiContext, hash_string: []const u8, string: []const
     y_scrollbar.pref_size = [2]Size{ Size.by_children(1), Size.percent(1, 0) };
     self.pushParent(y_scrollbar);
     {
-        _ = self.spacer(.y, Size.pixels(scrollable_y_sig.scroll_offset[1], 1));
+        self.spacer(.y, Size.pixels(scrollable_y_sig.scroll_offset[1], 1));
         const y_scrollbar_grabber = self.addNodeF(.{ .clickable = true, .draw_background = true }, "{s}::y_grabber", .{hash_string}, .{});
         y_scrollbar_grabber.pref_size = [2]Size{ Size.pixels(10, 1), Size.pixels(10, 1) };
-        _ = self.spacer(.y, Size.percent(1, 0));
+        self.spacer(.y, Size.percent(1, 0));
     }
     _ = self.popParent(); // pop y_scrollbar
 
@@ -409,7 +408,6 @@ pub fn textInput(self: *UiContext, hash_string: []const u8, buf: []u8, buf_len: 
         .child_layout_axis = .x,
         .hover_cursor = .ibeam,
     });
-    widget_node.pref_size[0] = Size.percent(1, 0);
     if (first_time) widget_node.text_cursor = @intToFloat(f32, std.unicode.utf8CountCodepoints(display_buf) catch unreachable);
 
     const node_key = self.keyFromNode(widget_node);
@@ -429,7 +427,7 @@ pub fn textInput(self: *UiContext, hash_string: []const u8, buf: []u8, buf_len: 
     const cursor_rel_pos = partial_text_rect.max[0] + text_hpadding;
     const max_cursor_rel_pos = widget_node.rect.size()[0] - text_hpadding;
     const cursor_overflow = std.math.max(0, cursor_rel_pos - max_cursor_rel_pos);
-    _ = self.spacer(.x, Size.pixels(-cursor_overflow, 1));
+    self.spacer(.x, Size.pixels(-cursor_overflow, 1));
 
     const text_node = self.addNode(.{ .no_id = true, .draw_text = true }, display_buf, .{
         .text_color = vec4{ 0, 0, 0, 1 },
@@ -438,13 +436,13 @@ pub fn textInput(self: *UiContext, hash_string: []const u8, buf: []u8, buf_len: 
     self.pushParent(text_node);
     defer _ = self.popParent();
 
-    _ = self.spacer(.x, Size.pixels(partial_text_rect.max[0], 1));
-    _ = self.spacer(.x, Size.pixels(text_hpadding, 1)); // TODO: implement general padding and the we can remove the ad-hoc text padding
+    self.spacer(.x, Size.pixels(partial_text_rect.max[0], 1));
+    self.spacer(.x, Size.pixels(text_hpadding, 1)); // TODO: implement general padding and the we can remove the ad-hoc text padding
     {
         const v_pad_node = self.addNode(.{ .no_id = true }, "", .{ .child_layout_axis = .y });
         self.pushParent(v_pad_node);
         defer _ = self.popParent();
-        _ = self.spacer(.y, Size.pixels(text_vpadding, 1)); // TODO: implement general padding and the we can remove the ad-hoc text padding
+        self.spacer(.y, Size.pixels(text_vpadding, 1)); // TODO: implement general padding and the we can remove the ad-hoc text padding
 
         const cursor_node = self.addNode(.{ .no_id = true, .draw_background = true }, "", .{
             .bg_color = vec4{ 0.2, 0.2, 0.2, 1 },

@@ -87,6 +87,10 @@ pub fn main() !void {
     var text_buf_num = try std.fmt.bufPrint(&backing_buf_num, "38", .{});
     var backing_buf_file: [0x1000]u8 = undefined;
     var text_buf_file = try std.fmt.bufPrint(&backing_buf_file, "main.zig", .{});
+    var backing_buf_exec: [0x1000]u8 = undefined;
+    var text_buf_exec = try std.fmt.bufPrint(&backing_buf_exec, "", .{});
+    var backing_buf_var: [0x1000]u8 = undefined;
+    var text_buf_var = try std.fmt.bufPrint(&backing_buf_var, "", .{});
 
     var file_tab = FileTab.init(allocator);
     defer file_tab.deinit();
@@ -148,18 +152,46 @@ pub fn main() !void {
 
         ui.topParent().child_layout_axis = .x;
 
-        const left_side_parent = ui.addNode(.{}, "###left_side_parent", .{ .child_layout_axis = .y });
+        const left_side_parent = ui.addNode(.{
+            .draw_border = true,
+            .draw_background = true,
+        }, "###left_side_parent", .{ .child_layout_axis = .y });
         left_side_parent.pref_size = [2]Size{ Size.percent(0.5, 1), Size.percent(1, 0) };
         ui.pushParent(left_side_parent);
         {
+            const open_exec_parent = ui.addNode(.{}, "###open_exec_parent", .{ .child_layout_axis = .x });
+            open_exec_parent.pref_size = [2]Size{ Size.percent(1, 1), Size.by_children(1) };
+            ui.pushParent(open_exec_parent);
+            {
+                const open_button_sig = ui.button("Open Executable");
+                _ = open_button_sig;
+                const text_input_size = [2]Size{ Size.percent(1, 0), Size.text_dim(1) };
+                ui.pushStyle(.{ .pref_size = text_input_size });
+                ui.pushStyle(.{ .bg_color = vec4{ 0.75, 0.75, 0.75, 1 } });
+                const text_input_sig = ui.textInput("openexecinput", &backing_buf_exec, &text_buf_exec.len);
+                _ = ui.popStyle();
+                _ = ui.popStyle();
+                if (text_buf_exec.len > 0 and (open_button_sig.clicked or text_input_sig.enter_pressed)) {
+                    if (session_opt) |*session| session.deinit();
+                    session_opt = Session.init(allocator, text_buf_exec) catch |err| blk: {
+                        ui.openErrorPopUpF("Got an unhandled error: {s}\n{?}", .{ @errorName(err), @errorReturnTrace() });
+                        break :blk null;
+                    };
+                }
+            }
+            _ = ui.popParent(); // open_exec_parent
+
             const open_file_parent = ui.addNode(.{}, "###open_file_parent", .{ .child_layout_axis = .x });
             open_file_parent.pref_size = [2]Size{ Size.percent(1, 1), Size.by_children(1) };
             ui.pushParent(open_file_parent);
             {
                 const open_button_sig = ui.button("Open Source File");
                 _ = open_button_sig;
+                const text_input_size = [2]Size{ Size.percent(1, 0), Size.text_dim(1) };
+                ui.pushStyle(.{ .pref_size = text_input_size });
                 ui.pushStyle(.{ .bg_color = vec4{ 0.75, 0.75, 0.75, 1 } });
                 const text_input_sig = ui.textInput("textinput", &backing_buf, &text_buf.len);
+                _ = ui.popStyle();
                 _ = ui.popStyle();
                 if (text_buf.len > 0 and (open_button_sig.clicked or text_input_sig.enter_pressed)) {
                     if (file_tab.addFile(text_buf)) {
@@ -172,43 +204,94 @@ pub fn main() !void {
             _ = ui.popParent(); // open_file_parent
 
             try file_tab.display(&ui);
-            //ui.labelF("mouse_pos={d:.2}", .{mouse_pos});
         }
         _ = ui.popParent(); // left_side_parent
 
-        const right_side_parent = ui.addNode(.{}, "###right_side_parent", .{ .child_layout_axis = .y });
+        const right_side_parent = ui.addNode(.{ .draw_background = true }, "###right_side_parent", .{ .child_layout_axis = .y });
         right_side_parent.pref_size = [2]Size{ Size.percent(0.5, 1), Size.percent(1, 0) };
         ui.pushParent(right_side_parent);
         {
             if (session_opt) |*session| {
                 try session.update();
-                const rip = session.getRegisters().rip;
 
                 // @debug
-                if (session.breakpoints.items.len == 0) tmpblk: {
-                    const line = std.fmt.parseUnsigned(u32, text_buf_num, 0) catch break :tmpblk;
-                    try session.setBreakpointAtSrc(.{ .dir = "src", .file = text_buf_file, .line = line, .column = 0 });
+                //if (session.breakpoints.items.len == 0) tmpblk: {
+                //    const line = std.fmt.parseUnsigned(u32, text_buf_num, 0) catch break :tmpblk;
+                //    try session.setBreakpointAtSrc(.{ .dir = "src", .file = text_buf_file, .line = line, .column = 0 });
+                //}
+
+                _ = ui.textBoxF("Child Status: {s}", .{@tagName(session.status)});
+                ui.topParent().last.?.pref_size[0] = Size.percent(1, 1);
+                //_ = ui.textBoxF("wait_status: 0x{x}", .{session.wait_status});
+                //ui.topParent().last.?.pref_size[0] = Size.percent(1, 1);
+
+                const vars_parent = ui.addNode(.{}, "###vars_parent", .{ .child_layout_axis = .y });
+                vars_parent.pref_size = [2]Size{ Size.percent(1, 1), Size.by_children(1) };
+                ui.pushParent(vars_parent);
+                {
+                    const row_size = [2]Size{ Size.percent(1, 1), Size.by_children(1) };
+                    const column_box_size = [2]Size{ Size.percent(1.0 / 3.0, 1), Size.text_dim(1) };
+                    const table_header_row_parent = ui.addNode(.{}, "###table_header_row_parent", .{ .child_layout_axis = .x });
+                    table_header_row_parent.pref_size = row_size;
+                    ui.pushParent(table_header_row_parent);
+                    {
+                        ui.pushStyle(.{ .pref_size = column_box_size });
+                        _ = ui.textBox("Variable Name");
+                        _ = ui.textBox("Type");
+                        _ = ui.textBox("Value");
+                        _ = ui.popStyle();
+                    }
+                    _ = ui.popParent();
+
+                    const row0_parent = ui.addNode(.{}, "###row0_parent", .{ .child_layout_axis = .x });
+                    row0_parent.pref_size = row_size;
+                    ui.pushParent(row0_parent);
+                    {
+                        ui.pushStyle(.{ .pref_size = column_box_size });
+                        _ = ui.textBox("my_var_is_cool");
+                        _ = ui.textBox("ComplexType");
+                        _ = ui.textBox(".{ 1, 2, 3 }");
+                        _ = ui.popStyle();
+                    }
+                    _ = ui.popParent();
                 }
+                _ = ui.popParent();
 
-                if (session.src_loc) |loc| try file_tab.focusOnSrc(loc);
+                const add_var_parent = ui.addNode(.{}, "###add_var_parent", .{ .child_layout_axis = .x });
+                add_var_parent.pref_size = [2]Size{ Size.percent(1, 1), Size.by_children(1) };
+                ui.pushParent(add_var_parent);
+                {
+                    const var_input_size = [2]Size{ Size.percent(1, 0), Size.text_dim(1) };
+                    const button_sig = ui.button("Add Variable");
+                    ui.pushStyle(.{ .bg_color = vec4{ 0.75, 0.75, 0.75, 1 } });
+                    ui.pushStyle(.{ .pref_size = var_input_size });
+                    const text_sig = ui.textInput("add_var_textinput", &backing_buf_var, &text_buf_var.len);
+                    _ = ui.popStyle();
+                    _ = ui.popStyle();
+                    if (button_sig.clicked or text_sig.enter_pressed) {
+                        std.debug.print("STUB: add var '{s}' to watched vars table\n", .{text_buf_var});
+                    }
+                }
+                _ = ui.popParent();
 
-                _ = ui.textBoxF("session.exec_path={s}", .{session.exec_path});
-                _ = ui.textBoxF("session.pid={}", .{session.pid});
-                _ = ui.textBoxF("session.wait_status={}", .{session.wait_status});
-                _ = ui.textBoxF("rip=0x{x}", .{rip});
+                ui.spacer(.y, Size.percent(1, 0));
 
+                const button_size = [2]Size{ Size.percent(0.5, 1), Size.text_dim(1) };
+                ui.pushStyle(.{ .pref_size = button_size });
+                if (ui.button("Continue Running").clicked) session.continueRunning();
+                if (ui.button("Pause Child").clicked) session.pauseRunning();
+                if (ui.button("Next Line").clicked) {
+                    if (session.src_loc) |src| {
+                        std.debug.print("we're at line={}\n", .{src.line});
+                        if (try session.putBreakpointAtNextSrc(src)) {
+                            session.continueRunning();
+                        }
+                    }
+                }
                 if (ui.button("Next Instruction").clicked) try session.stepInstructions(1);
+                _ = ui.popStyle();
 
-                _ = ui.textBoxF("dir={s}, file={s}, line={}, col={}\n", session.src_loc orelse @as(SrcLoc, undefined));
-
-                if (ui.button("continue").clicked)
-                    session.continueRunning();
-                if (ui.button("pause").clicked) session.pauseRunning();
-
-                const bytes_at_rip = c.ptrace(.PEEKTEXT, session.pid, @intToPtr(*anyopaque, rip), null);
-                ui.labelF("bytes at rip: 0x{x}\n", .{bytes_at_rip});
-
-                const set_break_parent = ui.addNode(.{}, "###set_break_parent", .{ .child_layout_axis = .y });
+                const set_break_parent = ui.addNode(.{}, "###set_break_parent", .{ .child_layout_axis = .x });
                 set_break_parent.pref_size = [2]Size{ Size.percent(1, 1), Size.by_children(1) };
                 ui.pushParent(set_break_parent);
                 {
@@ -217,31 +300,31 @@ pub fn main() !void {
                         try session.setBreakpointAtSrc(.{ .dir = "src", .file = text_buf_file, .line = line, .column = 0 });
                     }
 
-                    const number_parent = ui.addNode(.{}, "###number_parent", .{ .child_layout_axis = .x });
-                    number_parent.pref_size = [2]Size{ Size.percent(1, 1), Size.by_children(1) };
-                    ui.pushParent(number_parent);
-                    {
-                        _ = ui.textBox("Line Number");
-                        ui.pushStyle(.{ .bg_color = vec4{ 0.75, 0.75, 0.75, 1 } });
-                        _ = ui.textInput("src_linenum_textinput", &backing_buf_num, &text_buf_num.len);
-                        _ = ui.popStyle();
-                    }
-                    _ = ui.popParent();
-                    const file_parent = ui.addNode(.{}, "###file_parent", .{ .child_layout_axis = .x });
-                    file_parent.pref_size = [2]Size{ Size.percent(1, 1), Size.by_children(1) };
-                    ui.pushParent(file_parent);
-                    {
-                        _ = ui.textBox("File Name");
-                        ui.pushStyle(.{ .bg_color = vec4{ 0.75, 0.75, 0.75, 1 } });
-                        _ = ui.textInput("src_filename_textinput", &backing_buf_file, &text_buf_file.len);
-                        _ = ui.popStyle();
-                    }
-                    _ = ui.popParent();
+                    const line_input_size = [2]Size{ Size.percent(0.5, 0.25), Size.text_dim(1) };
+                    _ = ui.textBox("Line Number");
+                    ui.pushStyle(.{ .bg_color = vec4{ 0.75, 0.75, 0.75, 1 } });
+                    ui.pushStyle(.{ .pref_size = line_input_size });
+                    _ = ui.textInput("src_linenum_textinput", &backing_buf_num, &text_buf_num.len);
+                    _ = ui.popStyle();
+                    _ = ui.popStyle();
+
+                    const file_input_size = [2]Size{ Size.percent(0.5, 0.5), Size.text_dim(1) };
+                    _ = ui.textBox("File Name");
+                    ui.pushStyle(.{ .bg_color = vec4{ 0.75, 0.75, 0.75, 1 } });
+                    ui.pushStyle(.{ .pref_size = file_input_size });
+                    _ = ui.textInput("src_filename_textinput", &backing_buf_file, &text_buf_file.len);
+                    _ = ui.popStyle();
+                    _ = ui.popStyle();
                 }
                 _ = ui.popParent();
             }
         }
         _ = ui.popParent(); // right_side_parent
+
+        // update src viewing window with the next session information
+        if (session_opt) |session| {
+            if (session.src_loc) |loc| try file_tab.focusOnSrc(loc);
+        }
 
         gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
         try ui.render();
@@ -256,13 +339,20 @@ const FileTab = struct {
     allocator: Allocator,
     files: std.ArrayList(FileInfo),
     active_file: ?usize,
-    highlight_box: struct {
-        file_idx: usize,
-        min: struct { line: u32, column: u32 },
-        max: struct { line: u32, column: u32 },
-    },
+    highlight_box: SrcBox,
 
-    const FileInfo = struct { path: []const u8, content: []const u8, lock_line: ?usize };
+    pub const SrcBox = struct {
+        file_idx: usize,
+        /// these are floats so we can smoothly transition between two boxes 
+        min: struct { line: f32, column: f32 },
+        max: struct { line: f32, column: f32 },
+    };
+
+    const FileInfo = struct {
+        path: []const u8,
+        content: []const u8,
+        lock_line: ?usize,
+    };
 
     pub fn init(allocator: Allocator) FileTab {
         return .{
@@ -316,11 +406,13 @@ const FileTab = struct {
         try self.addFile(path);
         const file_idx = self.findFile(path) orelse unreachable;
 
+        self.files.items[file_idx].lock_line = src.line;
         //self.active_file = file_idx;
+
         self.highlight_box = .{
             .file_idx = file_idx,
-            .min = .{ .line = src.line, .column = src.column },
-            .max = .{ .line = src.line, .column = src.column },
+            .min = .{ .line = @intToFloat(f32, src.line), .column = @intToFloat(f32, src.column) },
+            .max = .{ .line = @intToFloat(f32, src.line), .column = @intToFloat(f32, src.column) },
         };
     }
 
@@ -343,75 +435,84 @@ const FileTab = struct {
         ui.pushParent(file_tab_node);
 
         const buttons_parent_size = [2]Size{ Size.percent(1, 0), Size.by_children(1) };
-        const buttons_parent = ui.addNode(.{ .draw_background = true, .draw_border = true }, "FileTab:buttons_parent", .{ .pref_size = buttons_parent_size, .child_layout_axis = .x });
+        const buttons_parent = ui.addNode(.{
+            .draw_background = true,
+        }, "FileTab:buttons_parent", .{ .pref_size = buttons_parent_size, .child_layout_axis = .x });
         ui.pushParent(buttons_parent);
         for (self.files.items) |file_info, i| {
+            const filename = std.fs.path.basename(file_info.path);
             const highlight_color = app_style.highlight_color;
             const is_active = self.active_file != null and self.active_file.? == i;
             if (is_active) ui.pushStyle(.{ .bg_color = highlight_color });
-            const sig = ui.button(file_info.path);
-            if (sig.clicked) {
-                self.active_file = i;
-            }
+            const sig = ui.button(filename);
+            buttons_parent.last.?.pref_size[0] = Size.text_dim(0);
+            if (sig.clicked) self.active_file = i;
             if (is_active) _ = ui.popStyle();
         }
-        _ = ui.popParent();
+        _ = ui.popParent(); // buttons parent
 
         const active_name = if (self.active_file) |idx| self.files.items[idx].path else "";
         const active_content = if (self.active_file) |idx| self.files.items[idx].content else "";
         const active_line = if (self.active_file) |idx| self.files.items[idx].lock_line else null;
 
-        // text+line parent
-        //const text_box_parent_size = [2]Size{ Size.percent(1, 1), Size.percent(1, 0) };
-        //const text_box_parent = ui.addNode(.{
-        //    .draw_background = true,
-        //    .draw_border = true,
-        //    .draw_hot_effects = true,
-        //}, "FileTab:text_box_parent", .{
-        //    .pref_size = text_box_parent_size,
-        //    .child_layout_axis = .x,
-        //    .border_color = vec4{ 1, 0, 1, 1 },
-        //    .border_thickness = 10,
-        //});
-        //_ = ui.getNodeSignal(text_box_parent);
-        //ui.pushParent(text_box_parent);
+        const highlight_box = if (self.active_file == self.highlight_box.file_idx)
+            self.highlight_box
+        else
+            null;
 
-        //_ = ui.textBox("line");
-        //ui.topParent().last.?.flags.draw_border = false; // maybe I should just use addNode 🤔
-        //ui.topParent().last.?.pref_size[1] = Size.percent(1, 0); // maybe I should just use addNode 🤔🤔
-        //_ = ui.textBox(""); // separator
-        //ui.topParent().last.?.flags.draw_text = false; // maybe I should just use addNode 🤔🤔🤔
-        //ui.topParent().last.?.pref_size[0] = Size.pixels(1, 1); // maybe I should just use addNode 🤔🤔🤔🤔
-        //ui.topParent().last.?.pref_size[1] = Size.percent(1, 0); // maybe I should just use addNode 🤔🤔🤔🤔🤔
+        if (self.active_file) |_| {
+            // line + text parent
+            const file_box_parent_size = [2]Size{ Size.percent(1, 1), Size.percent(1, 0) };
+            const file_box_parent = ui.addNode(.{
+                .clip_children = true,
+                .draw_border = true,
+            }, "FileTab:text_box_parent", .{});
+            file_box_parent.pref_size = file_box_parent_size;
+            file_box_parent.child_layout_axis = .x;
+            ui.pushParent(file_box_parent);
 
-        const ui_style = ui.topStyle();
-        var highlight_box = @as(UiContext.Node, undefined);
-        highlight_box.flags = UiContext.Flags{ .draw_border = true };
-        highlight_box.border_color = ui_style.border_color;
-        highlight_box.corner_roundness = 0;
-        highlight_box.border_thickness = ui_style.border_thickness;
-        highlight_box.pref_size = undefined; // can't set to zero
-        highlight_box.rect = UiContext.Rect{ .min = vec2{ 100, 100 }, .max = vec2{ 300, 300 + 100 * @sin(@floatCast(f32, c.glfwGetTime())) } };
-        highlight_box.clip_rect = ui.topParent().clip_rect;
-        try ui.on_top_nodes.append(highlight_box);
+            _ = ui.scrollableRegion("###file_tab_line_scroll", .y);
+            {
+                // TODO: what about files with more than 1k lines?
+                var tmpbuf: [50_000]u8 = undefined;
+                var i: usize = 1;
+                var offset: usize = 0;
+                while (i < 1000) : (i += 1) {
+                    offset += (try std.fmt.bufPrint(tmpbuf[offset..], "{}\n", .{i})).len;
+                }
+                const lines_text = tmpbuf[0..offset];
 
-        const text_box_size = [2]Size{ Size.percent(1, 0), Size.percent(1, 0) };
-        ui.pushStyle(.{ .pref_size = text_box_size });
-        try textDisplay(ui, active_name, active_content, active_line);
-        _ = ui.popStyle();
+                ui.label(lines_text);
+            }
+            const line_scrollable = ui.popParent();
+            line_scrollable.pref_size[0] = Size.by_children(1);
 
-        //_ = ui.popParent();
+            const text_box_size = [2]Size{ Size.percent(1, 0), Size.percent(1, 0) };
+            ui.pushStyle(.{ .pref_size = text_box_size });
+            try textDisplay(ui, active_name, active_content, active_line, highlight_box);
+            _ = ui.popStyle();
 
-        _ = ui.popParent();
+            // very hack and fragile
+            const scrolling_node =
+                file_box_parent.last.? // text parent
+                .first.? // scrollable in x
+                .first.? // scrollable in x (spacer)
+                .next.?; // scrollable in y
+            line_scrollable.scroll_offset[1] = scrolling_node.scroll_offset[1];
+
+            _ = ui.popParent(); // file_box_parent (line + text parent)
+
+        }
+
+        _ = ui.popParent(); // file tab parent
     }
 };
 
-/// `line` is 0th indexed
-fn textDisplay(ui: *UiContext, label: []const u8, text: []const u8, lock_line: ?usize) !void {
+/// `line` index starts at 1
+fn textDisplay(ui: *UiContext, label: []const u8, text: []const u8, lock_line: ?usize, highlight_box: ?FileTab.SrcBox) !void {
     const parent = ui.addNodeF(.{
         .clip_children = true,
-        .draw_border = true,
-        .draw_background = true,
+        //.draw_border = true,
     }, "###{s}::parent", .{label}, .{ .child_layout_axis = .y });
     ui.pushParent(parent);
 
@@ -422,13 +523,13 @@ fn textDisplay(ui: *UiContext, label: []const u8, text: []const u8, lock_line: ?
 
     const x_off = &x_scroll.scroll_offset[0];
     const y_off = &y_scroll.scroll_offset[1];
-    const font_metrics = ui.font.getScaledMetrics();
+    const line_size = ui.font.getScaledMetrics().line_advance;
 
     ui.label(text);
     const label_node = y_scroll.last.?;
 
     if (lock_line) |line| {
-        y_off.* = -font_metrics.line_advance * @intToFloat(f32, line);
+        y_off.* = -line_size * @intToFloat(f32, line) + parent.rect.size()[1] / 2;
     }
 
     // hack to cut off scrolling at the ends of text
@@ -441,6 +542,25 @@ fn textDisplay(ui: *UiContext, label: []const u8, text: []const u8, lock_line: ?
     x_off.* = std.math.max(x_off.*, -max_offset[0]);
     y_off.* = std.math.min(y_off.*, 0);
     y_off.* = std.math.max(y_off.*, -max_offset[1]);
+
+    if (highlight_box) |box| {
+        _ = box;
+        const ui_style = ui.topStyle();
+        var box_node = @as(UiContext.Node, undefined);
+        box_node.flags = UiContext.Flags{ .draw_border = true };
+        box_node.border_color = ui_style.border_color;
+        box_node.corner_roundness = 0;
+        box_node.border_thickness = ui_style.border_thickness;
+        box_node.pref_size = undefined; // can't set to zero
+        box_node.clip_rect = ui.topParent().clip_rect;
+        const box_y_start = parent.rect.max[1] - y_off.* - (box.min.line * line_size + text_padd[1]);
+        const box_y_size = (box.max.line + 1 - box.min.line) * line_size;
+        box_node.rect = UiContext.Rect{
+            .min = vec2{ parent.rect.min[0], box_y_start },
+            .max = vec2{ parent.rect.max[0], box_y_start + box_y_size },
+        };
+        try ui.on_top_nodes.append(box_node);
+    }
 
     _ = ui.popParent();
     _ = ui.popParent();

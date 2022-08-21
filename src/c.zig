@@ -5,6 +5,7 @@ pub usingnamespace @cImport({
     @cInclude("GLFW/glfw3.h");
 
     @cInclude("sys/user.h");
+    @cInclude("sys/wait.h");
     @cInclude("sys/types.h");
     @cInclude("signal.h");
     @cInclude("string.h");
@@ -79,12 +80,12 @@ pub fn ptrace(req: ptrace_request, pid: std.os.pid_t, _addr: ?*anyopaque, _data:
     return ptrace_ret;
 }
 
-pub const WNOHANG = 1;
-pub const WUNTRACED = 2;
-pub const WSTOPPED = 2;
-pub const WEXITED = 4;
-pub const WCONTINUED = 8;
-pub const WNOWAIT = 0x01000000;
-pub const __WNOTHREAD = 0x20000000;
-pub const __WALL = 0x40000000;
-pub const __WCLONE = 0x80000000;
+//pub const WNOHANG = 1;
+//pub const WUNTRACED = 2;
+//pub const WSTOPPED = 2;
+//pub const WEXITED = 4;
+//pub const WCONTINUED = 8;
+//pub const WNOWAIT = 0x01000000;
+//pub const __WNOTHREAD = 0x20000000;
+//pub const __WALL = 0x40000000;
+//pub const __WCLONE = 0x80000000;

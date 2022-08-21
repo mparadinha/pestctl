@@ -8,6 +8,7 @@ const Session = @This();
 allocator: Allocator,
 exec_path: [:0]const u8,
 pid: std.os.pid_t,
+status: enum { Running, Stopped },
 wait_status: u32,
 elf: Elf,
 breakpoints: std.ArrayList(BreakPoint),
@@ -26,10 +27,11 @@ pub fn init(allocator: Allocator, exec_path: []const u8) !Session {
         .allocator = allocator,
         .exec_path = try allocator.dupeZ(u8, exec_path),
         .pid = undefined,
+        .status = undefined,
         .wait_status = undefined,
         .elf = try Elf.init(allocator, exec_path),
         .breakpoints = std.ArrayList(BreakPoint).init(allocator),
-        .src_loc = .{ .dir = "", .file = "", .line = 0, .column = 0 },
+        .src_loc = null,
     };
     try self.startTracing();
     return self;
@@ -42,23 +44,36 @@ pub fn deinit(self: *Session) void {
     self.breakpoints.deinit();
 }
 
-/// call this once per frame
 /// checks if the child is stopped at a breakpoint (which we need to restore)
 /// some breakpoints need to be re-setup (in case we want to hit them again)
 pub fn update(self: *Session) !void {
     self.updateStatus();
-    const regs = self.getRegisters();
+    if (self.status != .Stopped) return;
+
+    var regs = self.getRegisters();
     self.src_loc = try self.elf.translateAddrToSrc(regs.rip);
 
+    // if we're stopped at breakpoint, restore the clobbered byte and fix rip
     for (self.breakpoints.items) |*breakpt| {
         if (breakpt.addr == regs.rip - 1) {
             const cc = self.insertByteAtAddr(breakpt.addr, breakpt.saved_byte);
-            //std.debug.print("fixing breakpoint at 0x{x} (rip=0x{x}) with saved_byte=0x{x}, got 0x{x} back\n", .{ breakpt.addr, regs.rip, breakpt.saved_byte, cc });
+            std.debug.print("fixing breakpoint at 0x{x} (rip=0x{x}) with saved_byte=0x{x}, got 0x{x} back\n", .{ breakpt.addr, regs.rip, breakpt.saved_byte, cc });
             std.debug.assert(cc == 0xcc);
             var new_regs = regs;
             new_regs.rip -= 1;
             self.setRegisters(new_regs);
         }
+    }
+
+    regs = self.getRegisters();
+
+    // TODO this is not working we're getting back 0x00 for the saved byte stored in the breakpoint
+    // reset all the breakpoints (except the one we just hit)
+    for (self.breakpoints.items) |*breakpt| {
+        if (breakpt.addr == regs.rip) continue;
+        const saved = self.insertByteAtAddr(breakpt.addr, 0xcc);
+        //std.debug.print("resetting breakpoint at @ addr=0x{x}, (had saved=0x{x}), breakpt.saved_byte=0x{x}\n", .{ breakpt.addr, saved, breakpt.saved_byte });
+        if (saved != 0xcc) breakpt.saved_byte = saved;
     }
 }
 
@@ -74,14 +89,20 @@ pub fn startTracing(self: *Session) !void {
         );
         unreachable;
     }
+    // hack: to get updateStatus to use .Stopped when the program is stopped right after the
+    // initial exec call
+    //self.pauseRunning();
 }
 
-pub fn setBreakAtAddr(self: *Session, addr: usize) !void {
+pub fn setBreakpointAtAddr(self: *Session, addr: usize) !void {
+    for (self.breakpoints.items) |breakpt| {
+        if (breakpt.addr == addr) return;
+    }
     try self.breakpoints.append(.{
         .addr = addr,
         .saved_byte = self.insertByteAtAddr(addr, 0xcc),
     });
-    std.debug.print("setting breakpoint at 0x{x}\n", .{addr});
+    std.debug.print("setting breakpoint at 0x{x}, saved_byte=0x{x}\n", .{ addr, self.breakpoints.items[self.breakpoints.items.len - 1].saved_byte });
 }
 
 pub fn stepInstructions(self: *Session, num_instrs: usize) !void {
@@ -92,23 +113,42 @@ pub fn stepInstructions(self: *Session, num_instrs: usize) !void {
     }
 }
 
+/// this steps over functions
 pub fn stepLine(self: *Session) !void {
     // because of loops and jumps backwards we can't just put a breakpoint
     // on the next line and be done with it. the only solution I can
     // think of right now is this (singlestepping until we hit a different
     // line) but it could, in some cases, freeze the UI for a while, if
     // it takes like 1k+ instructions to reach the next line.
-    var src = try self.getCurrentSrcLoc();
+    var old_src = self.src_loc orelse return;
     while (true) {
         try self.stepInstructions(1);
-        var old_src = src;
-        src = try self.getCurrentSrcLoc();
-        if (old_src.line != src.line or old_src.column != src.column or !std.mem.eql(u8, old_src.file, src.file)) return;
+        //std.debug.print("step one instruction. addr is now 0x{x}\n", .{self.getRegisters().rip});
+        var new_src = (try self.currentSrcLoc()) orelse continue;
+        if (old_src.line != new_src.line or old_src.column != new_src.column) {
+            return;
+        }
     }
+}
+
+/// return a bool determining success of this operation
+pub fn putBreakpointAtNextSrc(self: *Session, src_loc: SrcLoc) !bool {
+    const line_prog = (try self.elf.getLineProgForSrc(src_loc)) orelse std.debug.panic("passed in invalid src\n", .{});
+    var src = src_loc;
+    while (true) {
+        src.line += 1;
+        if (src.line > line_prog.file_line_range[1]) return false;
+        if (try self.elf.translateSrcToAddr(src)) |new_addr| {
+            try self.setBreakpointAtAddr(new_addr);
+            return true;
+        }
+    }
+    return false;
 }
 
 pub fn continueRunning(self: *Session) void {
     _ = c.ptrace(.CONT, self.pid, null, null);
+    self.updateStatus();
 }
 
 pub fn killChild(self: *Session) void {
@@ -119,18 +159,20 @@ pub fn pauseRunning(self: *Session) void {
     _ = c.kill(self.pid, c.SIGSTOP);
 }
 
-pub fn currentSrcLoc(self: *Session) SrcLoc {
-    const src = self.elf.translateAddrToSrc(self.getRegisters().rip) catch std.debug.panic("woopsie daisy\n", .{});
-    if (src) |s| return s else return SrcLoc{ .file = "", .line = 0, .column = 0 };
+pub fn currentSrcLoc(self: *Session) !?SrcLoc {
+    return (try self.elf.translateAddrToSrc(self.getRegisters().rip));
 }
 
 pub fn setBreakpointAtSrc(self: *Session, src: SrcLoc) !void {
     const addr = (try self.elf.translateSrcToAddr(src)) orelse std.debug.panic("could not translate src={} to an address\n", .{src});
-    try self.setBreakAtAddr(addr);
+    try self.setBreakpointAtAddr(addr);
 }
 
 pub fn updateStatus(self: *Session) void {
     _ = std.os.linux.waitpid(self.pid, &self.wait_status, c.WNOHANG | c.WUNTRACED | c.WCONTINUED);
+    const is_stopped = (self.wait_status & 0xff) == 0x7f;
+    //std.debug.print("wait_status = 0x{x:0>8}, is_stopped: {}\n", .{ self.wait_status, is_stopped });
+    self.status = if (is_stopped) .Stopped else .Running;
 }
 
 pub fn waitForStatusChange(self: *Session) void {

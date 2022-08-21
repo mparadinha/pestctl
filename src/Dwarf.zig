@@ -80,6 +80,8 @@ pub const DebugUnit = struct {
     abbrevs: []Abbrev,
 
     comp_dir: []const u8,
+    types: []TypeInfo,
+    functions: []FuncInfo,
 
     pub const Abbrev = struct {
         tag: u16,
@@ -91,6 +93,28 @@ pub const DebugUnit = struct {
         pub fn deinit(self: *Abbrev, allocator: Allocator) void {
             allocator.free(self.attribs);
         }
+    };
+
+    pub const TypeInfo = struct {
+        name: []const u8,
+        @"type": enum { Int, Struct },
+        signed: bool,
+        base_type_idx: usize,
+    };
+
+    pub const FuncInfo = struct {
+        name: []const u8,
+        address_range: [2]u64,
+        vars: []VarInfo,
+
+        pub fn deinit(self: FuncInfo, allocator: Allocator) void {
+            self.vars.deinit(allocator);
+        }
+    };
+
+    pub const VarInfo = struct {
+        name: []const u8,
+        type_idx: usize,
     };
 
     /// this returns the amount of bytes we need to skip (starting from `offset`) to reach the
@@ -125,8 +149,8 @@ pub const DebugUnit = struct {
             std.debug.assert(initial_len == 0xffff_ffff);
             break :blk try reader.readIntLittle(u64);
         };
-        _ = unit_len;
         self.is_64 = (initial_len == 0xffff_ffff);
+        const section_size = (try stream.getPos()) + unit_len;
 
         self.version = try reader.readIntLittle(u16);
         if (self.version < 4) std.debug.panic("debug_info unit @ offset=0x{x} has version={}\n", .{ offset, self.version });
@@ -145,9 +169,11 @@ pub const DebugUnit = struct {
 
         try self.readAbbrevTable(debug_abbrev);
 
-        self.entries_buf = debug_info[offset .. offset + (try stream.getPos())];
+        const entries_buf_start = offset + (try stream.getPos());
+        const entries_buf_size = section_size - (try stream.getPos());
+        self.entries_buf = debug_info[entries_buf_start .. entries_buf_start + entries_buf_size];
 
-        //try self.parseAllDebugInfo(debug_str);
+        try self.parseAllDebugInfo(debug_str);
 
         // we need to get at least the `DW_AT_comp_dir` because before Dwarf v5
         // the line programs refer to it (implicitly)
@@ -160,7 +186,7 @@ pub const DebugUnit = struct {
         for (abbrev.attribs) |pair| {
             if (pair.attrib == DW.AT.comp_dir) {
                 comp_dir_opt = try readString(pair.form, &stream, self.is_64, debug_str);
-            } else try skipFORM(pair.form, reader, .{ .address_size = self.address_size, .is_64 = self.is_64, .version = self.version });
+            } else try skipFORM(pair.form, reader, .{ .address_size = self.address_size, .is_64 = self.is_64 });
         }
         self.comp_dir = if (comp_dir_opt) |comp_dir| comp_dir else std.debug.panic("no comp_dir found in DW_TAG_compile_unit\n", .{});
 
@@ -176,12 +202,9 @@ pub const DebugUnit = struct {
         var stream = std.io.fixedBufferStream(debug_abbrev[self.abbrev_offset..]);
         var reader = stream.reader();
 
-        //std.debug.print("self.abbrev_offset=0x{x}\n", .{self.abbrev_offset});
-
         var valid_codes = std.ArrayList(usize).init(self.allocator);
         defer valid_codes.deinit();
 
-        //std.debug.print("allocator used init ArrayList(Abbrev): {}\n", .{self.allocator});
         var abbrevs = std.ArrayList(Abbrev).init(self.allocator);
         try abbrevs.append(.{ // entry 0 is reserved
             .tag = undefined,
@@ -211,7 +234,6 @@ pub const DebugUnit = struct {
             }
 
             if (code >= abbrevs.items.len) try abbrevs.resize(code + 1);
-            //std.debug.print("setting abbrev for code={}, tag=0x{x}, has_children={}, #attribs={}\n", .{ code, tag, has_children, attribs.items.len });
             abbrevs.items[code] = .{
                 .tag = tag,
                 .has_children = has_children,
@@ -223,8 +245,8 @@ pub const DebugUnit = struct {
         self.abbrevs = abbrevs.toOwnedSlice();
 
         // because we're placing the abbrevs into the array using their code (and because
-        // these codes have no obligations as to size or order) some items in the abbrev
-        // list will be garbage that we need to init to null entries
+        // these codes have no obligations as to size or order of declaration) some items
+        // in the abbrev list will be garbage that we need to init to null entries
         for (self.abbrevs) |*abbrev, i| {
             var is_undef = std.mem.indexOfScalar(usize, valid_codes.items, i) == null;
             if (is_undef) abbrev.* = .{
@@ -238,11 +260,17 @@ pub const DebugUnit = struct {
     fn parseAllDebugInfo(self: *DebugUnit, debug_str: []const u8) !void {
         var stream = std.io.fixedBufferStream(self.entries_buf);
         var reader = stream.reader();
-        const skip_info = SkipInfo{ .address_size = self.address_size, .is_64 = self.is_64, .version = self.version };
+        const skip_info = SkipInfo{ .address_size = self.address_size, .is_64 = self.is_64 };
 
+        var parent_lvl: usize = 0;
         while ((try stream.getPos()) < self.entries_buf.len) {
             const abbrev_code = try std.leb.readULEB128(usize, reader);
             const abbrev = self.abbrevs[abbrev_code];
+            if (abbrev.has_children) parent_lvl += 1;
+            if (abbrev.tag == 0) {
+                parent_lvl -= 1;
+                if (parent_lvl == 0) break;
+            }
 
             switch (abbrev.tag) {
                 DW.TAG.compile_unit => {
@@ -253,11 +281,97 @@ pub const DebugUnit = struct {
                         }
                     }
                 },
-                else => for (abbrev.attribs) |pair| try skipFORM(pair.form, reader, skip_info),
+                else => {
+                    std.debug.print("skipping {s}\n", .{DW.TAG.asStr(abbrev.tag)});
+                    for (abbrev.attribs) |pair| try skipFORM(pair.form, reader, skip_info);
+                },
             }
         }
     }
 };
+
+const ReadInfo = struct {
+    address_size: u8,
+    is_64: bool,
+    version: u8,
+
+    debug_str_opt: ?[]const u8 = null,
+    debug_line_str_opt: ?[]const u8 = null,
+    sup_debug_str_opt: ?[]const u8 = null,
+    debug_str_offsets_opt: ?[]const u8 = null,
+};
+
+const ReaderType = std.io.FixedBufferStream([]const u8).Reader;
+
+fn readAddress(read_info: ReadInfo, reader: ReaderType, form: u16) !usize {
+    switch (form) {
+        DW.FORM.addr => switch (read_info.address_size) {
+            4 => return @intCast(usize, try reader.readIntLittle(u32)),
+            8 => return @intCast(usize, try reader.readIntLittle(u32)),
+            else => std.debug.panic("DW_FORM_addr with address_size={}\n", .{read_info.address_size}),
+        },
+        DW.FORM.addrx => _ = try std.leb.readULEB128(u64, reader),
+        DW.FORM.addrx1 => try reader.skipBytes(1, .{}),
+        DW.FORM.addrx2 => try reader.skipBytes(2, .{}),
+        DW.FORM.addrx3 => try reader.skipBytes(3, .{}),
+        DW.FORM.addrx4 => try reader.skipBytes(4, .{}),
+        else => std.debug.panic("{s} is not a valid address form\n", .{DW.FORM.asStr(form)}),
+    }
+}
+
+fn readString(read_info: ReadInfo, reader: ReaderType, form: u16) ![]const u8 {
+    // TODO: look up in objdump's src code how they handle the strx and friends
+    // its unclear to me if the "array of offsets" (in the .debug_str_offsets)
+    // are all the same save (and so indexing the array is just some pointer math)
+    // or if the can have different sizes depending on `is_64`
+    switch (form) {
+        DW.FORM.string => {
+            const str_start = try reader.context.getPos();
+            try reader.skipUntilDelimiterOrEof(0);
+            const str_end = try reader.context.getPos();
+            return reader.context.buffer[str_start..str_end];
+        },
+        DW.FORM.strp, DW.FORM.strp_sup, DW.FORM.line_strp => {
+            const str_start = readIs64(reader, read_info.is_64);
+            const str_section = (switch (form) {
+                DW.FORM.strp => read_info.debug_str_opt,
+                DW.FORM.strp_sup => read_info.sup_debug_str_opt,
+                DW.FORM.line_strp => read_info.debug_line_str,
+                else => unreachable,
+            }) orelse std.debug.panic("{s}\n", .{DW.FORM.asStr(form)});
+            const str_len = c.strlen(&str_section[str_start]);
+            return str_section[str_start .. str_start + str_len];
+        },
+        DW.FORM.strx, DW.FORM.strx1, DW.FORM.strx2, DW.FORM.strx3, DW.FORM.strx4 => {
+            const offset = if (form == DW.FORM.strx)
+                try std.leb.readULEB128(usize, reader)
+            else switch (form) {
+                DW.FORM.strx1 => @intCast(usize, reader.readByte()),
+                DW.FORM.strx2 => @intCast(usize, reader.readIntLittle(u16)),
+                DW.FORM.strx3 => @intCast(usize, reader.readIntLittle(u24)),
+                DW.FORM.strx4 => @intCast(usize, reader.readIntLittle(u32)),
+                else => unreachable,
+            };
+            const offset_section = read_info.debug_str_offsets_opt orelse std.debug.panic("{s}\n", .{DW.FORM.asStr(form)});
+            var offset_reader = std.io.fixedBufferStream(offset_section[offset..]).reader();
+            const str_start = readIs64(reader, read_info.is_64);
+            // the spec does not specify which string section these offsets point to
+            // so I'm assuming it's the "main" one, .debug_str (see Dwarf v5 spec, pg.218)
+            const str_section = read_info.debug_str_opt orelse std.debug.panic("{s}\n", .{DW.FORM.asStr(form)});
+            const str_len = c.strlen(&str_section[offset]);
+            return str_section[offset .. offset + str_len];
+        },
+        else => std.debug.panic("{s} is not a valid string form\n", .{DW.FORM.asStr(form)}),
+    }
+}
+
+/// "In the 32-bit DWARF format [...] 4-byte [...] 64-bit DWARF format [...] 8-byte [...]"
+fn readIs64(reader: anytype, is_64: bool) usize {
+    return if (is_64)
+        @intCast(usize, try reader.readIntLittle(u64))
+    else
+        @intCast(usize, try reader.readIntLittle(u32));
+}
 
 /// gets a stream instead of reader because we need to use the underlying buffer and stream position
 pub fn readString(form: u16, stream: anytype, is_64: bool, str_section: []const u8) ![]const u8 {
@@ -283,7 +397,6 @@ pub fn readString(form: u16, stream: anytype, is_64: bool, str_section: []const 
 const SkipInfo = struct {
     address_size: u8,
     is_64: bool,
-    version: u16,
 };
 
 fn readFormAddress(self: Dwarf, reader: anytype, address_size: u8) !u64 {
@@ -296,68 +409,73 @@ pub fn skipFORM(form: u16, reader: anytype, skip_info: SkipInfo) !void {
     switch (form) {
         // address
         DW.FORM.addr => try reader.skipBytes(skip_info.address_size, .{}),
-        //.addrx
-        //.addrx1
-        //.addrx2
-        //.addrx3
-        //.addrx4
-
+        DW.FORM.addrx => _ = try std.leb.readULEB128(u64, reader),
+        DW.FORM.addrx1 => try reader.skipBytes(1, .{}),
+        DW.FORM.addrx2 => try reader.skipBytes(2, .{}),
+        DW.FORM.addrx3 => try reader.skipBytes(3, .{}),
+        DW.FORM.addrx4 => try reader.skipBytes(4, .{}),
         // block
-        //.block
-        //.block1
-        //.block2
-        //.block4
-
+        DW.FORM.block => {
+            const skip_len = try std.leb.readULEB128(usize, reader);
+            try reader.skipBytes(skip_len, .{});
+        },
+        DW.FORM.block1 => {
+            const skip_len = try reader.readByte();
+            try reader.skipBytes(skip_len, .{});
+        },
+        DW.FORM.block2 => {
+            const skip_len = try reader.readIntLittle(u16);
+            try reader.skipBytes(skip_len, .{});
+        },
+        DW.FORM.block4 => {
+            const skip_len = try reader.readIntLittle(u32);
+            try reader.skipBytes(skip_len, .{});
+        },
         // constant
         DW.FORM.data1 => try reader.skipBytes(1, .{}),
         DW.FORM.data2 => try reader.skipBytes(2, .{}),
         DW.FORM.data4 => try reader.skipBytes(4, .{}),
         DW.FORM.data8 => try reader.skipBytes(8, .{}),
         DW.FORM.data16 => try reader.skipBytes(16, .{}),
-        //.sdata
         DW.FORM.udata => _ = try std.leb.readULEB128(u64, reader),
-        //.implicit_const
-
+        DW.FORM.sdata => _ = try std.leb.readILEB128(i64, reader),
+        DW.FORM.implicit_const => {},
         // exprloc
-        //.exprloc
-
+        DW.FORM.exprloc => {
+            const instr_bytes_len = try std.leb.readULEB128(usize, reader);
+            try reader.skipBytes(instr_bytes_len, .{});
+        },
         // flag
         DW.FORM.flag => try reader.skipBytes(1, .{}),
         DW.FORM.flag_present => {},
-
         // loclist
-        //.loclistx
-
+        DW.FORM.loclistx => _ = try std.leb.readULEB128(u64, reader),
         // rnglist
-        //.rnglistx
-
+        DW.FORM.rnglistx => _ = try std.leb.readULEB128(u64, reader),
         // reference
-        //.ref_addr
-        //.ref1
-        //.ref2
-        //.ref4
-        //.ref8
-        //.ref_udata
-        //.ref_sup4
-        //.ref_sup8
-        //.ref_sig8
-
+        DW.FORM.ref_addr => try reader.skipBytes(if (skip_info.is_64) 8 else 4, .{}),
+        DW.FORM.ref1 => try reader.skipBytes(1, .{}),
+        DW.FORM.ref2 => try reader.skipBytes(2, .{}),
+        DW.FORM.ref4 => try reader.skipBytes(4, .{}),
+        DW.FORM.ref8 => try reader.skipBytes(8, .{}),
+        DW.FORM.ref_udata => _ = try std.leb.readULEB128(u64, reader),
+        DW.FORM.ref_sup4 => try reader.skipBytes(4, .{}),
+        DW.FORM.ref_sup8 => try reader.skipBytes(8, .{}),
+        DW.FORM.ref_sig8 => try reader.skipBytes(8, .{}),
         // string
-        //.string
+        DW.FORM.string => try reader.skipUntilDelimiterOrEof(0),
         DW.FORM.strp => try reader.skipBytes(if (skip_info.is_64) 8 else 4, .{}),
-        //.strx
-        //.strp_sup
+        DW.FORM.strp_sup => try reader.skipBytes(if (skip_info.is_64) 8 else 4, .{}),
         DW.FORM.line_strp => try reader.skipBytes(if (skip_info.is_64) 8 else 4, .{}),
-        //.strx1
-        //.strx2
-        //.strx3
-        //.strx4
-
+        DW.FORM.strx => _ = try std.leb.readULEB128(u64, reader),
+        DW.FORM.strx1 => try reader.skipBytes(1, .{}),
+        DW.FORM.strx2 => try reader.skipBytes(2, .{}),
+        DW.FORM.strx3 => try reader.skipBytes(3, .{}),
+        DW.FORM.strx4 => try reader.skipBytes(4, .{}),
         // addrptr, lineptr, loclistptr, macptr, rnglistptr, stroffsetsptr
         DW.FORM.sec_offset => try reader.skipBytes(if (skip_info.is_64) 8 else 4, .{}),
-
         // other
-        //.indirect
+        DW.FORM.indirect => {},
 
         else => std.debug.panic("unknown FORM=0x{x}. can't skip.\n", .{form}),
     }
@@ -385,6 +503,7 @@ pub const LineProg = struct {
     // some things filled during init to help with searching without having to actually run
     // every single line program in the debug information
     address_range: [2]u64,
+    file_line_range: [2]u32,
 
     pub const FileInfo = struct {
         name: []const u8,
@@ -608,9 +727,10 @@ pub const LineProg = struct {
             return self;
         }
 
-        // run the whole program once to find the range of addresses
+        // run the whole program once to find the range of addresses/lines
         // this helps later with searching through multiple LineProg's
         self.address_range = .{ std.math.maxInt(u64), 0 };
+        self.file_line_range = .{ std.math.maxInt(u32), 0 };
         var state = State{ .is_stmt = self.default_is_stmt };
         var op_stream = std.io.fixedBufferStream(self.ops);
         var op_reader = op_stream.reader();
@@ -619,6 +739,8 @@ pub const LineProg = struct {
             if (new_row) |row| {
                 self.address_range[0] = std.math.min(self.address_range[0], row.address);
                 self.address_range[1] = std.math.max(self.address_range[1], row.address);
+                self.file_line_range[0] = std.math.min(self.file_line_range[0], row.line);
+                self.file_line_range[1] = std.math.max(self.file_line_range[1], row.line);
                 if (row.end_sequence) break;
             }
         }

@@ -1,6 +1,25 @@
-// this file was lifted from the zig 0.10.0 std library
+// the constants in this file were lifted from the zig 0.10.0 std library
+
+const std = @import("std");
+
+pub fn dwarfString(comptime T: type, value: u16) []const u8 {
+    inline for (@typeInfo(T).Struct.decls) |decl| {
+        switch (decl.data) {
+            .Type, .Fn => {},
+            .Var => {
+                const t_value = @field(T, decl.name);
+                if (t_value == value) return "DW_" ++ @typeName(T) ++ "_" ++ decl.name;
+            },
+        }
+    }
+    std.debug.panic("no value 0x{x} in {s}\n", .{ value, @typeName(T) });
+}
 
 pub const TAG = struct {
+    pub fn asStr(value: u16) []const u8 {
+        return dwarfString(@This(), value);
+    }
+
     pub const padding = 0x00;
     pub const array_type = 0x01;
     pub const class_type = 0x02;
@@ -120,7 +139,12 @@ pub const TAG = struct {
     pub const PGI_kanji_type = 0xA000;
     pub const PGI_interface_block = 0xA020;
 };
+
 pub const AT = struct {
+    pub fn asStr(value: u16) []const u8 {
+        return dwarfString(@This(), value);
+    }
+
     pub const sibling = 0x01;
     pub const location = 0x02;
     pub const name = 0x03;
@@ -348,7 +372,12 @@ pub const AT = struct {
     pub const PGI_soffset = 0x3a01;
     pub const PGI_lstride = 0x3a02;
 };
+
 pub const OP = struct {
+    pub fn asStr(value: u16) []const u8 {
+        return dwarfString(@This(), value);
+    }
+
     pub const addr = 0x03;
     pub const deref = 0x06;
     pub const const1u = 0x08;
@@ -563,7 +592,12 @@ pub const OP = struct {
     pub const WASM_global_u32 = 0x03;
     pub const WASM_operand_stack = 0x02;
 };
+
 pub const LANG = struct {
+    pub fn asStr(value: u16) []const u8 {
+        return dwarfString(@This(), value);
+    }
+
     pub const C89 = 0x0001;
     pub const C = 0x0002;
     pub const Ada83 = 0x0003;
@@ -613,7 +647,12 @@ pub const LANG = struct {
     pub const HP_IMacro = 0x8006;
     pub const HP_Assembler = 0x8007;
 };
+
 pub const FORM = struct {
+    pub fn asStr(value: u16) []const u8 {
+        return dwarfString(@This(), value);
+    }
+
     pub const addr = 0x01;
     pub const block2 = 0x03;
     pub const block4 = 0x04;
@@ -667,7 +706,12 @@ pub const FORM = struct {
     pub const GNU_ref_alt = 0x1f20;
     pub const GNU_strp_alt = 0x1f21;
 };
+
 pub const ATE = struct {
+    pub fn asStr(value: u16) []const u8 {
+        return dwarfString(@This(), value);
+    }
+
     pub const @"void" = 0x0;
     pub const address = 0x1;
     pub const boolean = 0x2;
@@ -717,6 +761,10 @@ pub const ATE = struct {
 };
 
 pub const LLE = struct {
+    pub fn asStr(value: u16) []const u8 {
+        return dwarfString(@This(), value);
+    }
+
     pub const end_of_list = 0x00;
     pub const base_addressx = 0x01;
     pub const startx_endx = 0x02;
@@ -729,6 +777,10 @@ pub const LLE = struct {
 };
 
 pub const CFA = struct {
+    pub fn asStr(value: u16) []const u8 {
+        return dwarfString(@This(), value);
+    }
+
     pub const advance_loc = 0x40;
     pub const offset = 0x80;
     pub const restore = 0xc0;
@@ -771,11 +823,19 @@ pub const CFA = struct {
 };
 
 pub const CHILDREN = struct {
+    pub fn asStr(value: u16) []const u8 {
+        return dwarfString(@This(), value);
+    }
+
     pub const no = 0x00;
     pub const yes = 0x01;
 };
 
 pub const LNS = struct {
+    pub fn asStr(value: u16) []const u8 {
+        return dwarfString(@This(), value);
+    }
+
     pub const extended_op = 0x00;
     pub const copy = 0x01;
     pub const advance_pc = 0x02;
@@ -792,6 +852,10 @@ pub const LNS = struct {
 };
 
 pub const LNE = struct {
+    pub fn asStr(value: u16) []const u8 {
+        return dwarfString(@This(), value);
+    }
+
     pub const end_sequence = 0x01;
     pub const set_address = 0x02;
     pub const define_file = 0x03;
@@ -801,6 +865,10 @@ pub const LNE = struct {
 };
 
 pub const UT = struct {
+    pub fn asStr(value: u16) []const u8 {
+        return dwarfString(@This(), value);
+    }
+
     pub const compile = 0x01;
     pub const @"type" = 0x02;
     pub const partial = 0x03;
@@ -813,6 +881,10 @@ pub const UT = struct {
 };
 
 pub const LNCT = struct {
+    pub fn asStr(value: u16) []const u8 {
+        return dwarfString(@This(), value);
+    }
+
     pub const path = 0x1;
     pub const directory_index = 0x2;
     pub const timestamp = 0x3;
@@ -824,6 +896,10 @@ pub const LNCT = struct {
 };
 
 pub const RLE = struct {
+    pub fn asStr(value: u16) []const u8 {
+        return dwarfString(@This(), value);
+    }
+
     pub const end_of_list = 0x00;
     pub const base_addressx = 0x01;
     pub const startx_endx = 0x02;
