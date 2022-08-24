@@ -75,7 +75,7 @@ pub fn getScaledMetrics(self: Font) struct {
     };
 }
 
-pub const Quad = packed struct {
+pub const Quad = extern struct {
     /// points are given in counter clockwise order starting from bottom left
     points: [4]Vertex,
     const Vertex = packed struct { pos: vec2, uv: vec2 };
@@ -243,7 +243,7 @@ fn increaseTextureAndRepack(self: *Font) !void {
     while (char_iterator.next()) |entry| {
         const pack_result = c.stbtt_PackFontRange(
             &self.packing_ctx,
-            self.file_data,
+            self.file_data.ptr,
             0,
             self.pixel_size,
             @intCast(i32, entry.key_ptr.*),
@@ -262,7 +262,7 @@ fn getCharData(self: *Font, codepoint: u21) !CharData {
     var char_data = @as(CharData, undefined);
     const pack_result = c.stbtt_PackFontRange(
         &self.packing_ctx,
-        self.file_data,
+        self.file_data.ptr,
         0,
         self.pixel_size,
         @intCast(i32, codepoint),

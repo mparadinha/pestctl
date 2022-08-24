@@ -11,8 +11,10 @@ pid: std.os.pid_t,
 status: enum { Running, Stopped },
 wait_status: u32,
 elf: Elf,
+
 breakpoints: std.ArrayList(BreakPoint),
 src_loc: ?SrcLoc,
+regs: Registers,
 
 const BreakPoint = struct {
     addr: usize,
@@ -27,11 +29,12 @@ pub fn init(allocator: Allocator, exec_path: []const u8) !Session {
         .allocator = allocator,
         .exec_path = try allocator.dupeZ(u8, exec_path),
         .pid = undefined,
-        .status = undefined,
+        .status = .Stopped,
         .wait_status = undefined,
         .elf = try Elf.init(allocator, exec_path),
         .breakpoints = std.ArrayList(BreakPoint).init(allocator),
         .src_loc = null,
+        .regs = undefined,
     };
     try self.startTracing();
     return self;
@@ -42,39 +45,6 @@ pub fn deinit(self: *Session) void {
     self.allocator.free(self.exec_path);
     self.elf.deinit();
     self.breakpoints.deinit();
-}
-
-/// checks if the child is stopped at a breakpoint (which we need to restore)
-/// some breakpoints need to be re-setup (in case we want to hit them again)
-pub fn update(self: *Session) !void {
-    self.updateStatus();
-    if (self.status != .Stopped) return;
-
-    var regs = self.getRegisters();
-    self.src_loc = try self.elf.translateAddrToSrc(regs.rip);
-
-    // if we're stopped at breakpoint, restore the clobbered byte and fix rip
-    for (self.breakpoints.items) |*breakpt| {
-        if (breakpt.addr == regs.rip - 1) {
-            const cc = self.insertByteAtAddr(breakpt.addr, breakpt.saved_byte);
-            std.debug.print("fixing breakpoint at 0x{x} (rip=0x{x}) with saved_byte=0x{x}, got 0x{x} back\n", .{ breakpt.addr, regs.rip, breakpt.saved_byte, cc });
-            std.debug.assert(cc == 0xcc);
-            var new_regs = regs;
-            new_regs.rip -= 1;
-            self.setRegisters(new_regs);
-        }
-    }
-
-    regs = self.getRegisters();
-
-    // TODO this is not working we're getting back 0x00 for the saved byte stored in the breakpoint
-    // reset all the breakpoints (except the one we just hit)
-    for (self.breakpoints.items) |*breakpt| {
-        if (breakpt.addr == regs.rip) continue;
-        const saved = self.insertByteAtAddr(breakpt.addr, 0xcc);
-        //std.debug.print("resetting breakpoint at @ addr=0x{x}, (had saved=0x{x}), breakpt.saved_byte=0x{x}\n", .{ breakpt.addr, saved, breakpt.saved_byte });
-        if (saved != 0xcc) breakpt.saved_byte = saved;
-    }
 }
 
 pub fn startTracing(self: *Session) !void {
@@ -89,9 +59,39 @@ pub fn startTracing(self: *Session) !void {
         );
         unreachable;
     }
-    // hack: to get updateStatus to use .Stopped when the program is stopped right after the
-    // initial exec call
-    //self.pauseRunning();
+}
+
+/// checks if the child is stopped at a breakpoint (which we need to restore)
+/// some breakpoints need to be re-setup (in case we want to hit them again)
+pub fn update(self: *Session) !void {
+    self.updateStatus();
+    if (self.status != .Stopped) return;
+
+    self.regs = self.getRegisters();
+    self.src_loc = try self.elf.translateAddrToSrc(self.regs.rip);
+
+    // if we're stopped at breakpoint, restore the clobbered byte and fix rip
+    for (self.breakpoints.items) |*breakpt| {
+        if (breakpt.addr == self.regs.rip - 1) {
+            const cc = self.insertByteAtAddr(breakpt.addr, breakpt.saved_byte);
+            //std.debug.print("fixing breakpoint at 0x{x} (rip=0x{x}) with saved_byte=0x{x}, got 0x{x} back\n", .{ breakpt.addr, regs.rip, breakpt.saved_byte, cc });
+            std.debug.assert(cc == 0xcc);
+            var new_regs = self.regs;
+            new_regs.rip -= 1;
+            self.setRegisters(new_regs);
+        }
+    }
+
+    self.regs = self.getRegisters();
+
+    // TODO this is not working we're getting back 0x00 for the saved byte stored in the breakpoint
+    // reset all the breakpoints (except the one we just hit)
+    for (self.breakpoints.items) |*breakpt| {
+        if (breakpt.addr == self.regs.rip) continue;
+        const saved = self.insertByteAtAddr(breakpt.addr, 0xcc);
+        //std.debug.print("resetting breakpoint at @ addr=0x{x}, (had saved=0x{x}), breakpt.saved_byte=0x{x}\n", .{ breakpt.addr, saved, breakpt.saved_byte });
+        if (saved != 0xcc) breakpt.saved_byte = saved;
+    }
 }
 
 pub fn setBreakpointAtAddr(self: *Session, addr: usize) !void {
@@ -102,7 +102,7 @@ pub fn setBreakpointAtAddr(self: *Session, addr: usize) !void {
         .addr = addr,
         .saved_byte = self.insertByteAtAddr(addr, 0xcc),
     });
-    std.debug.print("setting breakpoint at 0x{x}, saved_byte=0x{x}\n", .{ addr, self.breakpoints.items[self.breakpoints.items.len - 1].saved_byte });
+    //std.debug.print("setting breakpoint at 0x{x}, saved_byte=0x{x}\n", .{ addr, self.breakpoints.items[self.breakpoints.items.len - 1].saved_byte });
 }
 
 pub fn stepInstructions(self: *Session, num_instrs: usize) !void {
@@ -227,7 +227,7 @@ pub const Registers = struct {
 
 };
 
-pub fn getRegisters(self: Session) Registers {
+fn getRegisters(self: Session) Registers {
     var regs: c.user_regs_struct = undefined;
     _ = c.ptrace(.GETREGS, self.pid, null, &regs);
     var fp_regs: c.user_fpregs_struct = undefined;
@@ -280,7 +280,7 @@ pub fn getRegisters(self: Session) Registers {
     return registers;
 }
 
-pub fn setRegisters(self: *Session, registers: Registers) void {
+fn setRegisters(self: *Session, registers: Registers) void {
     var regs = c.user_regs_struct{
         .rax = registers.rax,
         .rcx = registers.rcx,
@@ -337,7 +337,6 @@ pub fn setRegisters(self: *Session, registers: Registers) void {
     _ = c.ptrace(.SETFPREGS, self.pid, null, &fp_regs);
 }
 
-/// returns the byte that was there before we inserted the new one
 /// returns the byte that was there before we inserted the new one
 fn insertByteAtAddr(self: *Session, addr: usize, byte: u8) u8 {
     const data = c.ptrace(.PEEKTEXT, self.pid, @intToPtr(*anyopaque, addr), null);

@@ -19,7 +19,8 @@ pub fn build(b: *std.build.Builder) void {
     exe.addIncludeDir("src");
     exe.addCSourceFile("src/stb_impls.c", &[_][]u8{""});
     exe.install();
-    _ = @import("build_tracy.zig").link(b, exe, "tracy-0.8.2");
+    //_ = @import("build_tracy.zig").link(b, exe, "tracy-0.8.2");
+    _ = @import("build_tracy.zig").link(b, exe, null);
 
     const run_cmd = exe.run();
     run_cmd.step.dependOn(b.getInstallStep());

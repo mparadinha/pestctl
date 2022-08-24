@@ -71,21 +71,14 @@ pub fn ptrace(req: ptrace_request, pid: std.os.pid_t, _addr: ?*anyopaque, _data:
         data,
     );
 
-    const errno = std.os.errno(ptrace_ret);
+    const errno = std.os.linux.getErrno(ptrace_ret);
     if (errno != .SUCCESS) {
-        std.debug.panic("errno={}, {s}\n", .{ errno, @tagName(errno) });
+        //std.debug.panic("ptrace(.{s}, pid={}, addr={?}, data={?}) returned {}\n", .{
+        std.debug.print("ptrace(.{s}, pid={}, addr={?}, data={?}) returned {}\n", .{
+            @tagName(req), pid, _addr, _data, errno,
+        });
     }
 
     if (@enumToInt(req) < 4) return ret;
     return ptrace_ret;
 }
-
-//pub const WNOHANG = 1;
-//pub const WUNTRACED = 2;
-//pub const WSTOPPED = 2;
-//pub const WEXITED = 4;
-//pub const WCONTINUED = 8;
-//pub const WNOWAIT = 0x01000000;
-//pub const __WNOTHREAD = 0x20000000;
-//pub const __WALL = 0x40000000;
-//pub const __WCLONE = 0x80000000;

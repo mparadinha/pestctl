@@ -16,16 +16,25 @@ pub const InputEvent = union(enum) {
     GamepadDown: usize,
     Char: u32, // unicode codepoint
 
-    const KeyEvent = struct {
+    pub const KeyEvent = struct {
         key: i32,
-        mods: struct {
-            shift: bool,
-            control: bool,
-            alt: bool,
-            super: bool,
-            caps_lock: bool,
-            num_lock: bool,
-        },
+        mods: Modifiers,
+    };
+
+    // TODO: maybe the mouse should also use this type of event payload, like the key one
+    // but this would make querying for simple mouse up/down in the UI worse
+    //pub const MouseButtonEvent = struct {
+    //    button: i32,
+    //    mods: Modifiers,
+    //};
+
+    pub const Modifiers = struct {
+        shift: bool,
+        control: bool,
+        alt: bool,
+        super: bool,
+        caps_lock: bool,
+        num_lock: bool,
     };
 
     pub fn payload(self: InputEvent, comptime E: std.meta.Tag(InputEvent)) std.meta.TagPayload(InputEvent, E) {
@@ -353,6 +362,23 @@ pub const Window = struct {
     pub fn key_pair(self: *Window, pos_key_id: i32, neg_key_id: i32) f32 {
         return (if (self.key_pressed(pos_key_id)) @as(f32, 1) else @as(f32, 0)) +
             (if (self.key_pressed(neg_key_id)) @as(f32, -1) else @as(f32, 0));
+    }
+
+    pub fn get_modifiers(self: *Window) InputEvent.Modifiers {
+        return .{
+            .shift = self.key_pressed(c.GLFW_KEY_LEFT_SHIFT) or
+                self.key_pressed(c.GLFW_KEY_RIGHT_SHIFT),
+            .control = self.key_pressed(c.GLFW_KEY_LEFT_CONTROL) or
+                self.key_pressed(c.GLFW_KEY_RIGHT_CONTROL),
+            .alt = self.key_pressed(c.GLFW_KEY_LEFT_ALT) or
+                self.key_pressed(c.GLFW_KEY_RIGHT_ALT),
+            .super = self.key_pressed(c.GLFW_KEY_LEFT_SUPER) or
+                self.key_pressed(c.GLFW_KEY_RIGHT_SUPER),
+            // TODO: these two need their state to be preserved, this is probably wrong
+            // TODO: check these two!
+            .caps_lock = self.key_pressed(c.GLFW_KEY_CAPS_LOCK),
+            .num_lock = self.key_pressed(c.GLFW_KEY_NUM_LOCK),
+        };
     }
 
     pub fn mouse_pos(self: Window) vec2 {

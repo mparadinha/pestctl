@@ -2,22 +2,13 @@
 
 const std = @import("std");
 
-pub fn dwarfString(comptime T: type, value: u16) []const u8 {
-    inline for (@typeInfo(T).Struct.decls) |decl| {
-        switch (decl.data) {
-            .Type, .Fn => {},
-            .Var => {
-                const t_value = @field(T, decl.name);
-                if (t_value == value) return "DW_" ++ @typeName(T) ++ "_" ++ decl.name;
-            },
-        }
-    }
-    std.debug.panic("no value 0x{x} in {s}\n", .{ value, @typeName(T) });
-}
-
 pub const TAG = struct {
     pub fn asStr(value: u16) []const u8 {
         return dwarfString(@This(), value);
+    }
+
+    pub fn isValid(value: u16) bool {
+        return dwarfIsValid(@This(), value);
     }
 
     pub const padding = 0x00;
@@ -143,6 +134,10 @@ pub const TAG = struct {
 pub const AT = struct {
     pub fn asStr(value: u16) []const u8 {
         return dwarfString(@This(), value);
+    }
+
+    pub fn isValid(value: u16) bool {
+        return dwarfIsValid(@This(), value);
     }
 
     pub const sibling = 0x01;
@@ -378,6 +373,10 @@ pub const OP = struct {
         return dwarfString(@This(), value);
     }
 
+    pub fn isValid(value: u16) bool {
+        return dwarfIsValid(@This(), value);
+    }
+
     pub const addr = 0x03;
     pub const deref = 0x06;
     pub const const1u = 0x08;
@@ -598,6 +597,10 @@ pub const LANG = struct {
         return dwarfString(@This(), value);
     }
 
+    pub fn isValid(value: u16) bool {
+        return dwarfIsValid(@This(), value);
+    }
+
     pub const C89 = 0x0001;
     pub const C = 0x0002;
     pub const Ada83 = 0x0003;
@@ -651,6 +654,10 @@ pub const LANG = struct {
 pub const FORM = struct {
     pub fn asStr(value: u16) []const u8 {
         return dwarfString(@This(), value);
+    }
+
+    pub fn isValid(value: u16) bool {
+        return dwarfIsValid(@This(), value);
     }
 
     pub const addr = 0x01;
@@ -712,6 +719,10 @@ pub const ATE = struct {
         return dwarfString(@This(), value);
     }
 
+    pub fn isValid(value: u16) bool {
+        return dwarfIsValid(@This(), value);
+    }
+
     pub const @"void" = 0x0;
     pub const address = 0x1;
     pub const boolean = 0x2;
@@ -765,6 +776,10 @@ pub const LLE = struct {
         return dwarfString(@This(), value);
     }
 
+    pub fn isValid(value: u16) bool {
+        return dwarfIsValid(@This(), value);
+    }
+
     pub const end_of_list = 0x00;
     pub const base_addressx = 0x01;
     pub const startx_endx = 0x02;
@@ -779,6 +794,10 @@ pub const LLE = struct {
 pub const CFA = struct {
     pub fn asStr(value: u16) []const u8 {
         return dwarfString(@This(), value);
+    }
+
+    pub fn isValid(value: u16) bool {
+        return dwarfIsValid(@This(), value);
     }
 
     pub const advance_loc = 0x40;
@@ -827,6 +846,10 @@ pub const CHILDREN = struct {
         return dwarfString(@This(), value);
     }
 
+    pub fn isValid(value: u16) bool {
+        return dwarfIsValid(@This(), value);
+    }
+
     pub const no = 0x00;
     pub const yes = 0x01;
 };
@@ -834,6 +857,10 @@ pub const CHILDREN = struct {
 pub const LNS = struct {
     pub fn asStr(value: u16) []const u8 {
         return dwarfString(@This(), value);
+    }
+
+    pub fn isValid(value: u16) bool {
+        return dwarfIsValid(@This(), value);
     }
 
     pub const extended_op = 0x00;
@@ -856,6 +883,10 @@ pub const LNE = struct {
         return dwarfString(@This(), value);
     }
 
+    pub fn isValid(value: u16) bool {
+        return dwarfIsValid(@This(), value);
+    }
+
     pub const end_sequence = 0x01;
     pub const set_address = 0x02;
     pub const define_file = 0x03;
@@ -867,6 +898,10 @@ pub const LNE = struct {
 pub const UT = struct {
     pub fn asStr(value: u16) []const u8 {
         return dwarfString(@This(), value);
+    }
+
+    pub fn isValid(value: u16) bool {
+        return dwarfIsValid(@This(), value);
     }
 
     pub const compile = 0x01;
@@ -885,6 +920,10 @@ pub const LNCT = struct {
         return dwarfString(@This(), value);
     }
 
+    pub fn isValid(value: u16) bool {
+        return dwarfIsValid(@This(), value);
+    }
+
     pub const path = 0x1;
     pub const directory_index = 0x2;
     pub const timestamp = 0x3;
@@ -900,6 +939,10 @@ pub const RLE = struct {
         return dwarfString(@This(), value);
     }
 
+    pub fn isValid(value: u16) bool {
+        return dwarfIsValid(@This(), value);
+    }
+
     pub const end_of_list = 0x00;
     pub const base_addressx = 0x01;
     pub const startx_endx = 0x02;
@@ -911,6 +954,14 @@ pub const RLE = struct {
 };
 
 pub const CC = enum(u8) {
+    pub fn asStr(value: u16) []const u8 {
+        return dwarfString(@This(), value);
+    }
+
+    pub fn isValid(value: u16) bool {
+        return dwarfIsValid(@This(), value);
+    }
+
     normal = 0x1,
     program = 0x2,
     nocall = 0x3,
@@ -924,3 +975,21 @@ pub const CC = enum(u8) {
     GNU_renesas_sh = 0x40,
     GNU_borland_fastcall_i386 = 0x41,
 };
+
+pub fn dwarfString(comptime T: type, value: u16) []const u8 {
+    inline for (@typeInfo(T).Struct.decls) |decl| {
+        const field = @field(T, decl.name);
+        if (@TypeOf(field) != comptime_int) continue;
+        if (field == value) return "DW_" ++ @typeName(T) ++ "_" ++ decl.name;
+    }
+    std.debug.panic("no value 0x{x} in {s}\n", .{ value, "DW_" ++ @typeName(T) });
+}
+
+pub fn dwarfIsValid(comptime T: type, value: u16) bool {
+    inline for (@typeInfo(T).Struct.decls) |decl| {
+        const field = @field(T, decl.name);
+        if (@TypeOf(field) != comptime_int) continue;
+        if (field == value) return true;
+    }
+    return false;
+}

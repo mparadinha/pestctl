@@ -11,17 +11,19 @@ dwarf: Dwarf,
 
 const Elf = @This();
 
+pub const SrcLoc = Dwarf.SrcLoc;
+
 pub fn init(allocator: Allocator, exec_path: []const u8) !Elf {
     var self = @as(Elf, undefined);
     self.allocator = allocator;
     self.dwarf = Dwarf{
         .allocator = self.allocator,
-        .debug_info = "",
-        .debug_abbrev = "",
-        .debug_str = "",
-        .debug_line = "",
-        .debug_line_str = "",
-        .debug_ranges = "",
+        .debug_info = &[0]u8{},
+        .debug_abbrev = &[0]u8{},
+        .debug_str = &[0]u8{},
+        .debug_line = &[0]u8{},
+        .debug_line_str = &[0]u8{},
+        .debug_ranges = &[0]u8{},
         .line_progs = undefined,
         .units = undefined,
     };
@@ -75,8 +77,6 @@ pub fn deinit(self: *Elf) void {
     self.allocator.free(self.sections);
     self.allocator.free(self.string_section);
 }
-
-pub const SrcLoc = struct { dir: []const u8, file: []const u8, line: u32, column: u32 };
 
 pub fn translateAddrToSrc(self: Elf, addr: usize) !?SrcLoc {
     for (self.dwarf.line_progs) |prog| {

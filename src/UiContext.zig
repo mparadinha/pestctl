@@ -12,6 +12,7 @@ const Font = @import("Font.zig");
 const window = @import("window.zig");
 
 const UiContext = @This();
+pub usingnamespace @import("ui_widgets.zig");
 
 allocator: Allocator,
 generic_shader: gfx.Shader,
@@ -56,7 +57,7 @@ pub fn init(allocator: Allocator, font_path: []const u8, window_ptr: *window.Win
             .geometry = geometry_shader_src,
             .fragment = fragment_shader_src,
         }),
-        .font = try Font.from_ttf(allocator, font_path, 18),
+        .font = try Font.from_ttf(allocator, font_path, 16),
         .string_arena = std.heap.ArenaAllocator.init(allocator),
         .node_table = NodeTable.init(allocator),
         .prng = PRNG.init(0),
@@ -228,315 +229,6 @@ pub const Signal = struct {
 
     scroll_offset: vec2,
 };
-
-pub fn spacer(self: *UiContext, axis: Axis, size: Size) void {
-    const sizes = switch (axis) {
-        .x => [2]Size{ size, Size.percent(0, 0) },
-        .y => [2]Size{ Size.percent(0, 0), size },
-    };
-    _ = self.addNode(.{ .no_id = true }, "", .{ .pref_size = sizes });
-}
-
-pub fn label(self: *UiContext, string: []const u8) void {
-    const label_size = [2]Size{ Size.text_dim(1), Size.text_dim(1) };
-    _ = self.addNode(.{
-        .no_id = true,
-        .ignore_hash_sep = true,
-        .draw_text = true,
-    }, string, .{
-        .pref_size = label_size,
-    });
-}
-
-pub fn labelF(self: *UiContext, comptime fmt: []const u8, args: anytype) void {
-    const str = std.fmt.allocPrint(self.string_arena.allocator(), fmt, args) catch |e| blk: {
-        self.setErrorInfo(@errorReturnTrace(), @errorName(e));
-        break :blk "";
-    };
-    self.label(str);
-}
-
-pub fn textBox(self: *UiContext, string: []const u8) Signal {
-    const node = self.addNode(.{
-        .draw_text = true,
-        .draw_border = true,
-        .draw_background = true,
-    }, string, .{});
-    return self.getNodeSignal(node);
-}
-
-pub fn textBoxF(self: *UiContext, comptime fmt: []const u8, args: anytype) Signal {
-    const str = std.fmt.allocPrint(self.string_arena.allocator(), fmt, args) catch |e| blk: {
-        self.setErrorInfo(@errorReturnTrace(), @errorName(e));
-        break :blk "";
-    };
-    return self.textBox(str);
-}
-
-pub fn button(self: *UiContext, string: []const u8) Signal {
-    const node = self.addNode(.{
-        .clickable = true,
-        .draw_text = true,
-        .draw_border = true,
-        .draw_background = true,
-        .draw_hot_effects = true,
-        .draw_active_effects = true,
-    }, string, .{
-        .hover_cursor = .hand,
-    });
-    return self.getNodeSignal(node);
-}
-
-pub fn buttonF(self: *UiContext, comptime fmt: []const u8, args: anytype) Signal {
-    const str = std.fmt.allocPrint(self.string_arena.allocator(), fmt, args) catch |e| blk: {
-        self.setErrorInfo(@errorReturnTrace(), @errorName(e));
-        break :blk "";
-    };
-    return self.button(str);
-}
-
-/// pushes itself as the parent. make sure to use popParent later
-pub fn scrollableRegion(self: *UiContext, string: []const u8, axis: Axis) Signal {
-    //const percent_sizes = switch (axis) {
-    //    .x => [2]Size{ Size.percent(1, 0), Size.percent(1, 0) },
-    //    .y => [2]Size{ Size.percent(1, 0), Size.percent(1, 0) },
-    //};
-    const percent_sizes = [2]Size{ Size.percent(1, 0), Size.percent(1, 0) };
-
-    const node = self.addNode(.{
-        .clickable = true,
-        .scrollable = true,
-    }, string, .{ .pref_size = percent_sizes, .child_layout_axis = axis });
-    self.pushParent(node);
-
-    const axis_idx: usize = switch (axis) {
-        .x => 0,
-        .y => 1,
-    };
-    self.spacer(axis, Size.pixels(node.scroll_offset[axis_idx], 1));
-
-    return self.getNodeSignal(node);
-}
-
-pub fn scrollableRegionF(self: *UiContext, comptime fmt: []const u8, args: anytype, axis: Axis) Signal {
-    const str = std.fmt.allocPrint(self.string_arena.allocator(), fmt, args) catch |e| blk: {
-        self.setErrorInfo(@errorReturnTrace(), @errorName(e));
-        break :blk "";
-    };
-    return self.scrollableRegion(str, axis);
-}
-
-pub fn scrollableText(self: *UiContext, hash_string: []const u8, string: []const u8) Signal {
-    // * parent widget (layout in x)
-    // | * scrollable in y (x size percent(1, 0))
-    // | | * scrollable in x (y size percent(1, 0))
-    // | | | * text
-    // | | | * x scrollbar parent (layout in x) (x size percent(1, 0), y size by_children(1))
-    // | | | | * spacer(x, pixels(scroll_value, 1))
-    // | | | | * scroolbar grabber thingy
-    // | | | | * spacer(x, percent(1, 0))
-    // | | * y scrollbar parent (layout in y) (x size bychildren(1), y size percent(1, 0))
-    // | | | * spacer(y, pixels(scroll_value, 1))
-    // | | | * scroolbar grabber thingy
-    // | | | * spacer(y, percent(1, 0))
-
-    const top_node = self.addNodeF(.{ .clip_children = true, .draw_border = true, .draw_background = true }, "{s}::top_node", .{hash_string}, .{ .child_layout_axis = .x });
-    self.pushParent(top_node);
-    defer _ = self.popParent();
-
-    const scrollable_y_sig = self.scrollableRegionF("{s}::scrollable_y", .{hash_string}, .y);
-
-    const scrollable_x_sig = self.scrollableRegionF("{s}::scrollable_x", .{hash_string}, .x);
-
-    const text_node = self.addNode(.{ .draw_text = true }, string, .{});
-    _ = text_node;
-
-    _ = scrollable_x_sig;
-    //const x_scrollbar = self.addNode(.{ .no_id = true }, "", .{ .child_layout_axis = .x });
-    //x_scrollbar.pref_size = [2]Size{ Size.percent(1, 0), Size.by_children(1) };
-    //self.pushParent(x_scrollbar);
-    //{
-    //     self.spacer(.x, Size.pixels(scrollable_x_sig.scroll_offset[0], 1));
-    //    const x_scrollbar_grabber = self.addNodeF(.{ .clickable = true, .draw_background = true }, "{s}::x_grabber", .{hash_string}, .{});
-    //    x_scrollbar_grabber.pref_size = [2]Size{ Size.pixels(10, 1), Size.pixels(10, 1) };
-    //     self.spacer(.x, Size.percent(1, 0));
-    //}
-    //_ = self.popParent(); // pop x_scrollbar
-
-    _ = self.popParent(); // pop scrollable region x
-
-    const y_scrollbar = self.addNode(.{ .no_id = true }, "", .{ .child_layout_axis = .y });
-    y_scrollbar.pref_size = [2]Size{ Size.by_children(1), Size.percent(1, 0) };
-    self.pushParent(y_scrollbar);
-    {
-        self.spacer(.y, Size.pixels(scrollable_y_sig.scroll_offset[1], 1));
-        const y_scrollbar_grabber = self.addNodeF(.{ .clickable = true, .draw_background = true }, "{s}::y_grabber", .{hash_string}, .{});
-        y_scrollbar_grabber.pref_size = [2]Size{ Size.pixels(10, 1), Size.pixels(10, 1) };
-        self.spacer(.y, Size.percent(1, 0));
-    }
-    _ = self.popParent(); // pop y_scrollbar
-
-    _ = self.popParent(); // pop scrollable region y
-
-    return self.getNodeSignal(top_node);
-}
-
-/// if `buf` runs out of space input is truncated
-/// unlike other widgets, the string here is only used for the hash and not display
-pub fn textInput(self: *UiContext, hash_string: []const u8, buf: []u8, buf_len: *usize) Signal {
-    // * widget/parent node (layout in x)
-    // | * text node (layout in x)
-    // | | * cursor node y padding node
-    // | | | * cursor node
-
-    const display_buf = buf[0..buf_len.*];
-
-    // this is a really hacky way to see if this is the first time we using this node
-    // (we need to initialize the cursor on first use)
-    const first_time = !self.node_table.hasKey(hash_string);
-
-    // NOTE: the text_cursor is in characters/codepoints *not* bytes into buf
-    // (this will still be wrong for glyphs/graphemes that are several codepoints
-    // long, like emoji with modifiers, for example)
-
-    const widget_node = self.addNodeF(.{
-        .clip_children = true,
-        .selectable = true,
-        .draw_background = true,
-        .draw_border = true,
-    }, "###{s}", .{hash_string}, .{
-        .child_layout_axis = .x,
-        .hover_cursor = .ibeam,
-    });
-    if (first_time) widget_node.text_cursor = @intToFloat(f32, std.unicode.utf8CountCodepoints(display_buf) catch unreachable);
-
-    const node_key = self.keyFromNode(widget_node);
-    var sig = self.getNodeSignal(widget_node);
-
-    // make input box darker when not in focus
-    if (self.active_node_key != node_key)
-        widget_node.bg_color = math.times(widget_node.bg_color, 0.85);
-
-    self.pushParent(widget_node);
-    defer _ = self.popParent();
-
-    // text until the cursor
-    const partial_text_buf = Utf8Viewer.init(display_buf).bytesRange(0, @floatToInt(usize, widget_node.text_cursor));
-    const partial_text_rect = self.font.textRect(partial_text_buf) catch unreachable;
-
-    const cursor_rel_pos = partial_text_rect.max[0] + text_hpadding;
-    const max_cursor_rel_pos = widget_node.rect.size()[0] - text_hpadding;
-    const cursor_overflow = std.math.max(0, cursor_rel_pos - max_cursor_rel_pos);
-    self.spacer(.x, Size.pixels(-cursor_overflow, 1));
-
-    const text_node = self.addNode(.{ .no_id = true, .draw_text = true }, display_buf, .{
-        .text_color = vec4{ 0, 0, 0, 1 },
-        .child_layout_axis = .x,
-    });
-    self.pushParent(text_node);
-    defer _ = self.popParent();
-
-    self.spacer(.x, Size.pixels(partial_text_rect.max[0], 1));
-    self.spacer(.x, Size.pixels(text_hpadding, 1)); // TODO: implement general padding and the we can remove the ad-hoc text padding
-    {
-        const v_pad_node = self.addNode(.{ .no_id = true }, "", .{ .child_layout_axis = .y });
-        self.pushParent(v_pad_node);
-        defer _ = self.popParent();
-        self.spacer(.y, Size.pixels(text_vpadding, 1)); // TODO: implement general padding and the we can remove the ad-hoc text padding
-
-        const cursor_node = self.addNode(.{ .no_id = true, .draw_background = true }, "", .{
-            .bg_color = vec4{ 0.2, 0.2, 0.2, 1 },
-        });
-        cursor_node.pref_size[0] = Size.pixels(2, 1);
-        cursor_node.pref_size[1] = Size.percent(0.75, 1);
-    }
-
-    if (self.active_node_key != node_key) return sig;
-
-    self.events.iter_idx = null;
-    var next_event = self.events.next();
-    while (next_event) |ev| : (next_event = self.events.next()) {
-        var remove_ev = true;
-        const cur_buf = buf[0..buf_len.*];
-        const view = Utf8Viewer.init(cur_buf);
-        var cur_buf_len = buf_len.*;
-        switch (ev) {
-            // for control type key presses (backspace, ctrl+arrows, etc)
-            // actual text is handled with the Char inputs
-            .KeyDown, .KeyRepeat => |key_ev| switch (key_ev.key) {
-                c.GLFW_KEY_ENTER => {
-                    sig.enter_pressed = true;
-                    self.active_node_key = null;
-                },
-                c.GLFW_KEY_BACKSPACE => {
-                    const old_cursor = @floatToInt(usize, widget_node.text_cursor);
-                    const new_cursor = if (key_ev.mods.control) blk: {
-                        if (view.findLast(' ')) |space_pos| {
-                            break :blk if (space_pos < old_cursor) space_pos + 1 else 0;
-                        } else break :blk 0;
-                    } else blk: {
-                        break :blk if (old_cursor == 0) 0 else old_cursor - 1;
-                    };
-                    const old_bytes_cursor = view.charPosIntoBytes(old_cursor);
-                    const new_bytes_cursor = view.charPosIntoBytes(new_cursor);
-
-                    widget_node.text_cursor = @intToFloat(f32, new_cursor);
-
-                    std.debug.assert(new_bytes_cursor <= old_bytes_cursor);
-                    // erase buf[new_bytes_cursor .. old_bytes_cursor]
-                    // move buf[old_bytes_cursor ..] to buf[new_bytes_cursor ..]
-                    for (cur_buf[old_bytes_cursor..]) |b, i| {
-                        buf[new_bytes_cursor + i] = b;
-                    }
-                    cur_buf_len -= (old_bytes_cursor - new_bytes_cursor);
-                },
-                c.GLFW_KEY_DELETE => {
-                    const n_chars = std.unicode.utf8CountCodepoints(cur_buf) catch unreachable;
-                    const cur_cursor = @floatToInt(usize, widget_node.text_cursor);
-                    if (cur_cursor >= n_chars) continue;
-
-                    const old_byte_cursor = view.charPosIntoBytes(cur_cursor);
-                    const new_byte_cursor = old_byte_cursor + view.byteSizeAt(cur_cursor);
-
-                    // note: cursor stays in the same place
-
-                    // erase the character at cursor. move everything back one char's worth
-                    // (i.e move buf[new_byte_cursor ..] to  buf[old_byte_cursor ..])
-                    for (cur_buf[new_byte_cursor..]) |b, i| {
-                        buf[old_byte_cursor + i] = b;
-                    }
-                    cur_buf_len -= (new_byte_cursor - old_byte_cursor);
-                },
-                c.GLFW_KEY_LEFT => {
-                    if (widget_node.text_cursor > 0) widget_node.text_cursor -= 1;
-                },
-                c.GLFW_KEY_RIGHT => {
-                    const max_cursor = std.unicode.utf8CountCodepoints(cur_buf) catch unreachable;
-                    if (widget_node.text_cursor != @intToFloat(f32, max_cursor)) widget_node.text_cursor += 1;
-                },
-                c.GLFW_KEY_HOME => {},
-                c.GLFW_KEY_END => {},
-                else => remove_ev = false,
-            },
-            .Char => |codepoint| {
-                const unicode_pt = @intCast(u21, codepoint);
-                const buf_space_left = buf.len - buf_len.*;
-                const codepoint_len = std.unicode.utf8CodepointSequenceLength(unicode_pt) catch
-                    unreachable; // it was broken when I got here officer. it's GLFW's fault, I swear!
-                if (codepoint_len > buf_space_left) break;
-                var write_buf = buf[buf_len.*..];
-                cur_buf_len += std.unicode.utf8Encode(unicode_pt, write_buf) catch
-                    unreachable; // maybe we're all at fault here??? no, it is GLFW who is wrong.
-                widget_node.text_cursor += 1;
-            },
-            else => remove_ev = false,
-        }
-        buf_len.* = cur_buf_len;
-        if (remove_ev) self.events.removeCurrent();
-    }
-
-    return sig;
-}
 
 pub fn addNode(self: *UiContext, flags: Flags, string: []const u8, init_args: anytype) *Node {
     if (!std.unicode.utf8ValidateSlice(string)) {
@@ -854,17 +546,13 @@ pub fn endFrame(self: *UiContext, dt: f32) void {
 
 pub fn render(self: *UiContext) !void {
     // do the whole layout right before rendering
-    self.solveIndependentSizes(self.root_node, .x);
-    self.solveIndependentSizes(self.root_node, .y);
-    self.solveUpwardDependent(self.root_node, .x);
-    self.solveUpwardDependent(self.root_node, .y);
-    self.solveDownwardDependent(self.root_node, .x);
-    self.solveDownwardDependent(self.root_node, .y);
-    self.solveViolations(self.root_node, .x);
-    self.solveViolations(self.root_node, .y);
+    self.solveIndependentSizes(self.root_node);
+    self.solveUpwardDependent(self.root_node);
+    self.solveDownwardDependent(self.root_node);
+    self.solveViolations(self.root_node);
 
     // this struct must have the exact layout expected by the shader
-    const ShaderInput = packed struct {
+    const ShaderInput = extern struct {
         bottom_left_pos: [2]f32,
         top_right_pos: [2]f32,
         bottom_left_uv: [2]f32,
@@ -876,6 +564,8 @@ pub fn render(self: *UiContext) !void {
         clip_rect_min: [2]f32,
         clip_rect_max: [2]f32,
     };
+    // stage2 won't let me put [2]f32 fields in packed structs so I make sure this way instead
+    std.debug.assert(@sizeOf(ShaderInput) == (2 + (6 * 2) + (2 * 4)) * @sizeOf(f32));
     var shader_inputs = std.ArrayList(ShaderInput).init(self.allocator);
     defer shader_inputs.deinit();
 
@@ -1262,182 +952,186 @@ const fragment_shader_src =
     \\
 ;
 
-fn solveIndependentSizes(in_self: *UiContext, in_node: *Node, in_axis: Axis) void {
-    // zig fmt: off
-    const work_fn = (struct { pub fn work(self: *UiContext, node: *Node, axis: Axis) void {
-        _ = self;
-        const axis_idx: usize = @enumToInt(axis);
-        switch (node.pref_size[axis_idx]) {
-            .pixels => |pixels| node.calc_size[axis_idx] = pixels.value,
-            .text_dim => {
-                //const text_rect = self.font.textRect(node.display_string) catch |e| switch (e) {
-                //    error.InvalidUtf8 => unreachable, // we already check this on node creation
-                //    error.OutOfMemory => std.debug.panic("that's fucking unlucky!\n", .{}),
-                //};
-                const text_rect = node.text_rect;
-                const text_size = text_rect.max - text_rect.min;
-                const text_padding = switch (axis) {
-                    .x => text_hpadding,
-                    .y => text_vpadding,
-                };
-                node.calc_size[axis_idx] = text_size[axis_idx] + 2 * text_padding;
-            },
-            else => {},
-        }
-    } }).work;
-    // zig fmt: on
-    layoutRecurseHelperPre(work_fn, .{ .self = in_self, .node = in_node, .axis = in_axis });
+fn solveIndependentSizes(self: *UiContext, node: *Node) void {
+    const work_fn = solveIndependentSizesWorkFn;
+    layoutRecurseHelperPre(work_fn, .{ .self = self, .node = node, .axis = .x });
+    layoutRecurseHelperPre(work_fn, .{ .self = self, .node = node, .axis = .y });
 }
 
-fn solveUpwardDependent(in_self: *UiContext, in_node: *Node, in_axis: Axis) void {
-    // zig fmt: off
-    const work_fn = (struct { pub fn work(self: *UiContext, node: *Node, axis: Axis) void {
-        _ = self;
-        const axis_idx: usize = @enumToInt(axis);
-        switch (node.pref_size[axis_idx]) {
-            .percent => |percent| {
-                // look for the first ancestor with a fixed size
-                var ancestor: ?*Node = null;
-                var search = node.parent;
-                while (search) |search_node| : (search = search_node.parent) {
-                    if (std.meta.activeTag(search_node.pref_size[axis_idx]) != .by_children) {
-                        ancestor = search_node;
-                        break;
-                    }
-                }
-
-                if (ancestor) |ancestor_node| {
-                    node.calc_size[axis_idx] = ancestor_node.calc_size[axis_idx] * percent.value;
-                }
-            },
-            else => {},
-        }
-    } }).work;
-    // zig fmt: on
-    layoutRecurseHelperPre(work_fn, .{ .self = in_self, .node = in_node, .axis = in_axis });
+fn solveUpwardDependent(self: *UiContext, node: *Node) void {
+    const work_fn = solveUpwardDependentWorkFn;
+    layoutRecurseHelperPre(work_fn, .{ .self = self, .node = node, .axis = .x });
+    layoutRecurseHelperPre(work_fn, .{ .self = self, .node = node, .axis = .y });
 }
 
-fn solveDownwardDependent(in_self: *UiContext, in_node: *Node, in_axis: Axis) void {
-    // zig fmt: off
-    const work_fn = (struct { pub fn work(self: *UiContext, node: *Node, axis: Axis) void {
-        _ = self;
-        const axis_idx: usize = @enumToInt(axis);
-        switch (node.pref_size[axis_idx]) {
-            .by_children => {
-                var value: f32 = 0;
-                var child = node.first;
-                while (child) |child_node| : (child = child_node.next) {
-                    if (axis == node.child_layout_axis) {
-                        value += child_node.calc_size[axis_idx];
-                    } else {
-                        value = std.math.max(value, child_node.calc_size[axis_idx]);
-                    }
-                }
-                node.calc_size[axis_idx] = value;
-            },
-            else => {},
-        }
-    } }).work;
-    // zig fmt: on
-    layoutRecurseHelperPost(work_fn, .{ .self = in_self, .node = in_node, .axis = in_axis });
+fn solveDownwardDependent(self: *UiContext, node: *Node) void {
+    const work_fn = solveDownwardDependentWorkFn;
+    layoutRecurseHelperPost(work_fn, .{ .self = self, .node = node, .axis = .x });
+    layoutRecurseHelperPost(work_fn, .{ .self = self, .node = node, .axis = .y });
 }
 
-fn solveViolations(in_self: *UiContext, in_node: *Node, in_axis: Axis) void {
-    // zig fmt: off
-    const work_fn = (struct { pub fn work(self: *UiContext, node: *Node, axis: Axis) void {
-        _ = self;
-        const axis_idx: usize = @enumToInt(axis);
+fn solveViolations(self: *UiContext, node: *Node) void {
+    const work_fn = solveViolationsWorkFn;
+    layoutRecurseHelperPre(work_fn, .{ .self = self, .node = node, .axis = .x });
+    layoutRecurseHelperPre(work_fn, .{ .self = self, .node = node, .axis = .y });
+}
 
-        if (node.child_count == 0) return;
+fn solveIndependentSizesWorkFn(self: *UiContext, node: *Node, axis: Axis) void {
+    _ = self;
+    const axis_idx: usize = @enumToInt(axis);
+    switch (node.pref_size[axis_idx]) {
+        .pixels => |pixels| node.calc_size[axis_idx] = pixels.value,
+        .text_dim => {
+            //const text_rect = self.font.textRect(node.display_string) catch |e| switch (e) {
+            //    error.InvalidUtf8 => unreachable, // we already check this on node creation
+            //    error.OutOfMemory => std.debug.panic("that's fucking unlucky!\n", .{}),
+            //};
+            const text_rect = node.text_rect;
+            const text_size = text_rect.max - text_rect.min;
+            const text_padding = switch (axis) {
+                .x => text_hpadding,
+                .y => text_vpadding,
+            };
+            node.calc_size[axis_idx] = text_size[axis_idx] + 2 * text_padding;
+        },
+        else => {},
+    }
+}
 
-        // start layout at the top left
-        const start_rel_pos: f32 = switch (axis) {
-            .x => 0,
-            .y => node.calc_size[1],
-        };
+fn solveUpwardDependentWorkFn(self: *UiContext, node: *Node, axis: Axis) void {
+    _ = self;
+    const axis_idx: usize = @enumToInt(axis);
+    switch (node.pref_size[axis_idx]) {
+        .percent => |percent| {
+            // look for the first ancestor with a fixed size
+            var ancestor: ?*Node = null;
+            var search = node.parent;
+            while (search) |search_node| : (search = search_node.parent) {
+                if (std.meta.activeTag(search_node.pref_size[axis_idx]) != .by_children) {
+                    ancestor = search_node;
+                    break;
+                }
+            }
 
-        var child: ?*Node = undefined;
+            if (ancestor) |ancestor_node| {
+                node.calc_size[axis_idx] = ancestor_node.calc_size[axis_idx] * percent.value;
+            }
+        },
+        else => {},
+    }
+}
 
-        // solve size violations
-        var total_children_size: f32 = 0;
-        child = node.first;
-        while (child) |child_node| : (child = child_node.next) {
-            if (axis == node.child_layout_axis)
-                total_children_size += child_node.calc_size[axis_idx]
-            else 
-                total_children_size = std.math.max(total_children_size, child_node.calc_size[axis_idx]);
+fn solveDownwardDependentWorkFn(self: *UiContext, node: *Node, axis: Axis) void {
+    _ = self;
+    const axis_idx: usize = @enumToInt(axis);
+    switch (node.pref_size[axis_idx]) {
+        .by_children => {
+            var value: f32 = 0;
+            var child = node.first;
+            while (child) |child_node| : (child = child_node.next) {
+                if (axis == node.child_layout_axis) {
+                    value += child_node.calc_size[axis_idx];
+                } else {
+                    value = std.math.max(value, child_node.calc_size[axis_idx]);
+                }
+            }
+            node.calc_size[axis_idx] = value;
+        },
+        else => {},
+    }
+}
+
+fn solveViolationsWorkFn(self: *UiContext, node: *Node, axis: Axis) void {
+    _ = self;
+    if (node.child_count == 0) return;
+
+    const axis_idx: usize = @enumToInt(axis);
+
+    // start layout at the top left
+    const start_rel_pos: f32 = switch (axis) {
+        .x => 0,
+        .y => node.calc_size[1],
+    };
+
+    var child: ?*Node = undefined;
+
+    // solve size violations
+    var total_children_size: f32 = 0;
+    child = node.first;
+    while (child) |child_node| : (child = child_node.next) {
+        if (axis == node.child_layout_axis)
+            total_children_size += child_node.calc_size[axis_idx]
+        else
+            total_children_size = std.math.max(total_children_size, child_node.calc_size[axis_idx]);
+    }
+
+    var overflow = std.math.max(0, total_children_size - node.calc_size[axis_idx]);
+
+    var total_leeway: f32 = 0;
+    child = node.first;
+    while (child) |child_node| : (child = child_node.next) {
+        const strictness = child_node.pref_size[axis_idx].getStrictness();
+        const leeway = 1 - strictness;
+        if (axis == node.child_layout_axis) {
+            // for the special case where we have 0 strictness, because of spacers
+            // (if we don't do this here, then even a 100% leeway value will still
+            // be a small percentage of the total remove take, if there are other
+            // nodes in the axis)
+            if (leeway == 1) {
+                const remove_size = std.math.min(overflow, child_node.calc_size[axis_idx]);
+                child_node.calc_size[axis_idx] -= remove_size;
+                overflow -= remove_size;
+            } else {
+                total_leeway += leeway;
+            }
+        } else {
+            total_leeway = std.math.min(total_leeway, leeway);
         }
+    }
 
-        var overflow = std.math.max(0, total_children_size - node.calc_size[axis_idx]);
-
-        var total_leeway: f32 = 0;
+    if (overflow > 0) {
         child = node.first;
         while (child) |child_node| : (child = child_node.next) {
             const strictness = child_node.pref_size[axis_idx].getStrictness();
-            const leeway = 1 - strictness;
-            if (axis == node.child_layout_axis) {
-                // for the special case where we have 0 strictness, because of spacers
-                // (if we don't do this here, then even a 100% leeway value will still
-                // be a small percentage of the total remove take, if there are other
-                // nodes in the axis)
-                if (leeway == 1) {
-                    const remove_size = std.math.min(overflow, child_node.calc_size[axis_idx]);
-                    child_node.calc_size[axis_idx] -= remove_size;
-                    overflow -= remove_size;
-                } else {
-                    total_leeway += leeway;
-                }
-            } else {
-                total_leeway = std.math.min(total_leeway, leeway);
+            if (strictness == 0) continue; // already handled before
+            const remove_weight = (1 - strictness) / total_leeway;
+            const max_remove_budget = child_node.calc_size[axis_idx] * (1 - strictness);
+            child_node.calc_size[axis_idx] -= std.math.min(overflow * remove_weight, max_remove_budget);
+        }
+    }
+
+    // position all the children
+    var rel_pos: f32 = start_rel_pos;
+    child = node.first;
+    while (child) |child_node| : (child = child_node.next) {
+        if (axis == node.child_layout_axis) {
+            const rel_pos_advance = child_node.calc_size[axis_idx];
+            switch (axis) {
+                .x => {
+                    child_node.calc_rel_pos[axis_idx] = rel_pos;
+                    rel_pos += rel_pos_advance;
+                },
+                .y => {
+                    rel_pos -= rel_pos_advance;
+                    child_node.calc_rel_pos[axis_idx] = rel_pos;
+                },
+            }
+        } else {
+            switch (axis) {
+                .x => child_node.calc_rel_pos[axis_idx] = start_rel_pos,
+                .y => child_node.calc_rel_pos[axis_idx] = start_rel_pos - child_node.calc_size[axis_idx],
             }
         }
+    }
 
-        if (overflow > 0) {
-            child = node.first;
-            while (child) |child_node| : (child = child_node.next) {
-                const strictness = child_node.pref_size[axis_idx].getStrictness();
-                if (strictness == 0) continue; // already handled before
-                const remove_weight = (1 - strictness) / total_leeway;
-                const max_remove_budget = child_node.calc_size[axis_idx] * (1 - strictness);
-                child_node.calc_size[axis_idx] -= std.math.min(overflow * remove_weight, max_remove_budget);
-            }
-        }
-
-        // position all the children
-        var rel_pos: f32 = start_rel_pos;
-        child = node.first;
-        while (child) |child_node| : (child = child_node.next) {
-            if (axis == node.child_layout_axis) {
-                const rel_pos_advance = child_node.calc_size[axis_idx];
-                switch (axis) {
-                    .x => {
-                        child_node.calc_rel_pos[axis_idx] = rel_pos;
-                        rel_pos += rel_pos_advance;
-                    },
-                    .y =>{
-                        rel_pos -= rel_pos_advance;
-                        child_node.calc_rel_pos[axis_idx] = rel_pos;
-                    },
-                }
-            } else {
-                switch (axis) {
-                    .x => child_node.calc_rel_pos[axis_idx] = start_rel_pos,
-                    .y => child_node.calc_rel_pos[axis_idx] = start_rel_pos - child_node.calc_size[axis_idx],
-                }
-            }
-        }
-
-        // calculate the final screen pixel rect
-        child = node.first;
-        while (child) |child_node| : (child = child_node.next) {
-            child_node.rect.min[axis_idx] = node.rect.min[axis_idx] + child_node.calc_rel_pos[axis_idx];
-            child_node.rect.max[axis_idx] = child_node.rect.min[axis_idx] + child_node.calc_size[axis_idx];
-            // propagate the clipping to children
-            child_node.clip_rect = if (node.flags.clip_children) node.rect else node.clip_rect;
-        }
-    } }).work;
-    // zig fmt: on
-    layoutRecurseHelperPre(work_fn, .{ .self = in_self, .node = in_node, .axis = in_axis });
+    // calculate the final screen pixel rect
+    child = node.first;
+    while (child) |child_node| : (child = child_node.next) {
+        child_node.rect.min[axis_idx] = node.rect.min[axis_idx] + child_node.calc_rel_pos[axis_idx];
+        child_node.rect.max[axis_idx] = child_node.rect.min[axis_idx] + child_node.calc_size[axis_idx];
+        // propagate the clipping to children
+        child_node.clip_rect = if (node.flags.clip_children) node.rect else node.clip_rect;
+    }
 }
 
 const LayoutWorkFn = fn (*UiContext, *Node, Axis) void;
@@ -1466,7 +1160,7 @@ fn layoutRecurseHelperPost(work_fn: LayoutWorkFn, args: LayoutWorkFnArgs) void {
 pub const text_hpadding: f32 = 4;
 pub const text_vpadding: f32 = 4;
 
-fn textPosFromNode(self: *UiContext, node: *Node) vec2 {
+pub fn textPosFromNode(self: *UiContext, node: *Node) vec2 {
     _ = self;
     //const text_rect = self.font.textRect(node.display_string) catch
     //    unreachable; // input is already checked in render pass
@@ -1480,28 +1174,28 @@ fn textPosFromNode(self: *UiContext, node: *Node) vec2 {
     };
 }
 
-fn setErrorInfo(self: *UiContext, trace: ?*std.builtin.StackTrace, name: []const u8) void {
+pub fn setErrorInfo(self: *UiContext, trace: ?*std.builtin.StackTrace, name: []const u8) void {
     self.first_error_trace = trace;
     self.first_error_name = name;
 }
 
-fn keyFromNode(self: UiContext, node: *Node) NodeKey {
+pub fn keyFromNode(self: UiContext, node: *Node) NodeKey {
     return self.node_table.ctx.hash(hashPartOfString(node.hash_string));
 }
 
-fn displayPartOfString(string: []const u8) []const u8 {
+pub fn displayPartOfString(string: []const u8) []const u8 {
     if (std.mem.indexOf(u8, string, "###")) |idx| {
         return string[0..idx];
     } else return string;
 }
 
-fn hashPartOfString(string: []const u8) []const u8 {
+pub fn hashPartOfString(string: []const u8) []const u8 {
     if (std.mem.indexOf(u8, string, "###")) |idx| {
         return string[idx + 3 ..];
     } else return string;
 }
 
-const DepthFirstNodeIterator = struct {
+pub const DepthFirstNodeIterator = struct {
     cur_node: *Node,
     parent_level: usize = 0, // how many times have we gone down the hierarchy
 
@@ -1524,7 +1218,7 @@ const DepthFirstNodeIterator = struct {
 };
 
 /// very small wrapper around std.ArrayList that provides push, pop, and top functions
-fn Stack(comptime T: type) type {
+pub fn Stack(comptime T: type) type {
     return struct {
         array_list: std.ArrayList(T),
 
@@ -1565,7 +1259,7 @@ fn Stack(comptime T: type) type {
 /// Supports removing entries while iterating over them.
 /// Uses an arena allocator under the hood to allocate new entries, which is not great
 /// if we have a *lot* of entries. (1000 is not a lot btw)
-const NodeTable = struct {
+pub const NodeTable = struct {
     arena: std.heap.ArenaAllocator,
     ctx: HashContext,
 
@@ -1696,83 +1390,11 @@ pub const PRNG = struct {
     }
 };
 
-fn randomString(prng: *PRNG) [32]u8 {
+pub fn randomString(prng: *PRNG) [32]u8 {
     var buf: [32]u8 = undefined;
     _ = std.fmt.bufPrint(&buf, "{x:0>16}{x:0>16}", .{ prng.next(), prng.next() }) catch unreachable;
     return buf;
 }
-
-const Utf8Viewer = struct {
-    bytes: []const u8,
-
-    pub fn init(bytes: []const u8) Utf8Viewer {
-        std.debug.assert(std.unicode.utf8ValidateSlice(bytes));
-        return .{ .bytes = bytes };
-    }
-
-    /// number of bytes occupied by the last character
-    pub fn lastCharByteSize(self: Utf8Viewer) u3 {
-        const len = self.bytes.len;
-        var size = std.math.min(4, len);
-        while (size > 0) : (size -= 1) {
-            const slice = self.bytes[len - size .. len];
-            if (std.unicode.utf8ValidateSlice(slice)) {
-                const codepoint_bytes = std.unicode.utf8ByteSequenceLength(slice[0]) catch unreachable;
-                if (codepoint_bytes == size) return codepoint_bytes;
-            }
-        }
-        unreachable;
-    }
-
-    /// number of bytes occupied by character at a character index
-    pub fn byteSizeAt(self: Utf8Viewer, pos: usize) usize {
-        var idx: usize = 0;
-        var utf8_iter = std.unicode.Utf8View.initUnchecked(self.bytes).iterator();
-        while (utf8_iter.nextCodepointSlice()) |codepoint_slice| : (idx += 1) {
-            if (idx == pos) return codepoint_slice.len;
-        }
-        unreachable;
-    }
-
-    pub fn charPosIntoBytes(self: Utf8Viewer, pos: usize) usize {
-        var idx: usize = 0;
-        var bytes: usize = 0;
-        var utf8_iter = std.unicode.Utf8View.initUnchecked(self.bytes).iterator();
-        while (utf8_iter.nextCodepointSlice()) |codepoint_slice| : (idx += 1) {
-            if (idx == pos) break;
-            bytes += codepoint_slice.len;
-        }
-        return bytes;
-    }
-
-    /// return the index of the match in codepoints, *not* bytes
-    pub fn findLast(self: Utf8Viewer, to_match: u21) ?usize {
-        var idx: usize = 0;
-        var match_idx: ?usize = null;
-        var utf8_iter = std.unicode.Utf8View.initUnchecked(self.bytes).iterator();
-        while (utf8_iter.nextCodepoint()) |codepoint| : (idx += 1) {
-            if (codepoint == to_match) match_idx = idx;
-        }
-        return match_idx;
-    }
-
-    /// convert a character index based range into the bytes range
-    pub fn bytesRange(self: Utf8Viewer, start: usize, end: usize) []const u8 {
-        var start_byte_idx: usize = 0;
-
-        var idx: usize = 0;
-        var bytes: usize = 0;
-        var utf8_iter = std.unicode.Utf8View.initUnchecked(self.bytes).iterator();
-        while (utf8_iter.nextCodepointSlice()) |codepoint_slice| : (idx += 1) {
-            if (idx == start) start_byte_idx = bytes;
-            if (idx == end) break;
-            bytes += codepoint_slice.len;
-        }
-
-        const end_byte_idx = bytes;
-        return self.bytes[start_byte_idx..end_byte_idx];
-    }
-};
 
 pub fn openErrorPopUpF(self: *UiContext, comptime fmt: []const u8, args: anytype) void {
     self.pushParent(self.root_node);

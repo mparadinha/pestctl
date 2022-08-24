@@ -111,43 +111,27 @@ pub fn main() !void {
 
         try ui.startFrame(width, height, mouse_pos, &window.event_queue);
 
-        while (window.event_queue.next()) |event| {
-            var remove_ev = true;
-            switch (event) {
-                .KeyUp => |key_ev| switch (key_ev.key) {
-                    else => remove_ev = false,
-                },
-                .MouseUp => |mouse_key| switch (mouse_key) {
-                    c.GLFW_MOUSE_BUTTON_RIGHT => {
-                        const mods_pressed =
-                            window.key_pressed(c.GLFW_KEY_LEFT_SHIFT) and
-                            window.key_pressed(c.GLFW_KEY_LEFT_CONTROL) and
-                            window.key_pressed(c.GLFW_KEY_LEFT_ALT);
-                        if (!mods_pressed) {
-                            remove_ev = false;
-                            continue;
-                        }
-                        std.debug.print("all nodes that contain the mouse:\n", .{});
-                        for (ui.node_table.key_mappings.items) |keymap| {
-                            const node = keymap.value_ptr;
-                            if (node.rect.contains(mouse_pos)) {
-                                std.debug.print("{*} [{s}###{s}] parent=0x{x}, first=0x{x}, next=0x{x}, rect={d:.2}\n", .{
-                                    node,
-                                    node.display_string,
-                                    node.hash_string,
-                                    if (node.parent) |ptr| @ptrToInt(ptr) else 0,
-                                    if (node.first) |ptr| @ptrToInt(ptr) else 0,
-                                    if (node.next) |ptr| @ptrToInt(ptr) else 0,
-                                    node.rect,
-                                });
-                            }
-                        }
-                    },
-                    else => remove_ev = false,
-                },
-                else => remove_ev = false,
+        {
+            const ev = window.event_queue.find(.MouseUp, c.GLFW_MOUSE_BUTTON_RIGHT);
+            const mods = window.get_modifiers();
+            if (mods.shift and mods.control and mods.alt and ev != null) {
+                _ = window.event_queue.removeAt(ev.?);
+                std.debug.print("all nodes that contain the mouse:\n", .{});
+                for (ui.node_table.key_mappings.items) |keymap| {
+                    const node = keymap.value_ptr;
+                    if (node.rect.contains(mouse_pos)) {
+                        std.debug.print("{*} [{s}###{s}] parent=0x{x}, first=0x{x}, next=0x{x}, rect={d:.2}\n", .{
+                            node,
+                            node.display_string,
+                            node.hash_string,
+                            if (node.parent) |ptr| @ptrToInt(ptr) else 0,
+                            if (node.first) |ptr| @ptrToInt(ptr) else 0,
+                            if (node.next) |ptr| @ptrToInt(ptr) else 0,
+                            node.rect,
+                        });
+                    }
+                }
             }
-            if (remove_ev) window.event_queue.removeCurrent();
         }
 
         ui.topParent().child_layout_axis = .x;
@@ -222,8 +206,14 @@ pub fn main() !void {
 
                 _ = ui.textBoxF("Child Status: {s}", .{@tagName(session.status)});
                 ui.topParent().last.?.pref_size[0] = Size.percent(1, 1);
-                //_ = ui.textBoxF("wait_status: 0x{x}", .{session.wait_status});
-                //ui.topParent().last.?.pref_size[0] = Size.percent(1, 1);
+                _ = ui.textBoxF("wait_status: 0x{x}", .{session.wait_status});
+                ui.topParent().last.?.pref_size[0] = Size.percent(1, 1);
+
+                const table_regs = .{ "rip", "rsp" };
+                const regs = session.regs;
+                inline for (table_regs) |reg_name| {
+                    _ = ui.textBoxF(reg_name ++ ": 0x{x:0>16}", .{@field(regs, reg_name)});
+                }
 
                 const vars_parent = ui.addNode(.{}, "###vars_parent", .{ .child_layout_axis = .y });
                 vars_parent.pref_size = [2]Size{ Size.percent(1, 1), Size.by_children(1) };
@@ -243,17 +233,17 @@ pub fn main() !void {
                     }
                     _ = ui.popParent();
 
-                    const row0_parent = ui.addNode(.{}, "###row0_parent", .{ .child_layout_axis = .x });
-                    row0_parent.pref_size = row_size;
-                    ui.pushParent(row0_parent);
-                    {
-                        ui.pushStyle(.{ .pref_size = column_box_size });
-                        _ = ui.textBox("my_var_is_cool");
-                        _ = ui.textBox("ComplexType");
-                        _ = ui.textBox(".{ 1, 2, 3 }");
-                        _ = ui.popStyle();
-                    }
-                    _ = ui.popParent();
+                    //const row0_parent = ui.addNode(.{}, "###row0_parent", .{ .child_layout_axis = .x });
+                    //row0_parent.pref_size = row_size;
+                    //ui.pushParent(row0_parent);
+                    //{
+                    //    ui.pushStyle(.{ .pref_size = column_box_size });
+                    //    _ = ui.textBox("my_var_is_cool");
+                    //    _ = ui.textBox("ComplexType");
+                    //    _ = ui.textBox(".{ 1, 2, 3 }");
+                    //    _ = ui.popStyle();
+                    //}
+                    //_ = ui.popParent();
                 }
                 _ = ui.popParent();
 
@@ -343,7 +333,7 @@ const FileTab = struct {
 
     pub const SrcBox = struct {
         file_idx: usize,
-        /// these are floats so we can smoothly transition between two boxes 
+        /// these are floats so we can smoothly transition between two boxes
         min: struct { line: f32, column: f32 },
         max: struct { line: f32, column: f32 },
     };
@@ -570,9 +560,9 @@ fn textDisplay(ui: *UiContext, label: []const u8, text: []const u8, lock_line: ?
 
 fn get_proc_address_fn(window: ?*c.GLFWwindow, proc_name: [:0]const u8) ?*const anyopaque {
     _ = window;
-    const fn_ptr = c.glfwGetProcAddress(proc_name);
+    const fn_ptr = c.glfwGetProcAddress(proc_name.ptr);
     // without this I got a "cast discards const qualifier" error
-    return @intToPtr(?*opaque {}, @ptrToInt(fn_ptr));
+    return @intToPtr(?*const anyopaque, @ptrToInt(fn_ptr));
 }
 
 fn gl_error_callback(source: u32, error_type: u32, id: u32, severity: u32, len: i32, msg: [*:0]const u8, user_param: ?*const anyopaque) callconv(.C) void {
