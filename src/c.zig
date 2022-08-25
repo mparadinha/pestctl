@@ -73,10 +73,13 @@ pub fn ptrace(req: ptrace_request, pid: std.os.pid_t, _addr: ?*anyopaque, _data:
 
     const errno = std.os.linux.getErrno(ptrace_ret);
     if (errno != .SUCCESS) {
-        //std.debug.panic("ptrace(.{s}, pid={}, addr={?}, data={?}) returned {}\n", .{
-        std.debug.print("ptrace(.{s}, pid={}, addr={?}, data={?}) returned {}\n", .{
+        std.debug.panic("ptrace(.{s}, pid={}, addr={?}, data={?}) returned {}\n", .{
             @tagName(req), pid, _addr, _data, errno,
         });
+        //std.debug.print("ptrace(.{s}, pid={}, addr={?}, data={?}) returned {}\n", .{
+        //    @tagName(req), pid, _addr, _data, errno,
+        //});
+        //@import("main.zig").printStackTrace(@returnAddress());
     }
 
     if (@enumToInt(req) < 4) return ret;

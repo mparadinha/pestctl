@@ -12,6 +12,7 @@ status: enum { Running, Stopped },
 wait_status: u32,
 elf: Elf,
 
+// TODO: switch breakpoints to a linked list (removing items in the middle is needed, while iterating)
 breakpoints: std.ArrayList(BreakPoint),
 src_loc: ?SrcLoc,
 regs: Registers,
@@ -41,7 +42,7 @@ pub fn init(allocator: Allocator, exec_path: []const u8) !Session {
 }
 
 pub fn deinit(self: *Session) void {
-    self.killChild();
+    self.kill();
     self.allocator.free(self.exec_path);
     self.elf.deinit();
     self.breakpoints.deinit();
@@ -61,11 +62,30 @@ pub fn startTracing(self: *Session) !void {
     }
 }
 
+pub fn pause(self: *Session) void {
+    if (self.status != .Running) return;
+    _ = c.kill(self.pid, c.SIGTRAP);
+    // waitpid also isn't working for this case, but I'm not sure why
+    self.status = .Stopped;
+}
+
+pub fn unpause(self: *Session) void {
+    if (self.status != .Stopped) return;
+    _ = c.ptrace(.CONT, self.pid, null, null);
+    // apparently waitpid does not notify us when we use ptrace(.CONT) so we
+    // manually update the status
+    self.status = .Running;
+}
+
+pub fn kill(self: *Session) void {
+    _ = c.kill(self.pid, c.SIGKILL);
+}
+
 /// checks if the child is stopped at a breakpoint (which we need to restore)
 /// some breakpoints need to be re-setup (in case we want to hit them again)
 pub fn update(self: *Session) !void {
     self.updateStatus();
-    if (self.status != .Stopped) return;
+    if (self.status == .Running) return;
 
     self.regs = self.getRegisters();
     self.src_loc = try self.elf.translateAddrToSrc(self.regs.rip);
@@ -74,7 +94,6 @@ pub fn update(self: *Session) !void {
     for (self.breakpoints.items) |*breakpt| {
         if (breakpt.addr == self.regs.rip - 1) {
             const cc = self.insertByteAtAddr(breakpt.addr, breakpt.saved_byte);
-            //std.debug.print("fixing breakpoint at 0x{x} (rip=0x{x}) with saved_byte=0x{x}, got 0x{x} back\n", .{ breakpt.addr, regs.rip, breakpt.saved_byte, cc });
             std.debug.assert(cc == 0xcc);
             var new_regs = self.regs;
             new_regs.rip -= 1;
@@ -84,28 +103,42 @@ pub fn update(self: *Session) !void {
 
     self.regs = self.getRegisters();
 
-    // TODO this is not working we're getting back 0x00 for the saved byte stored in the breakpoint
     // reset all the breakpoints (except the one we just hit)
     for (self.breakpoints.items) |*breakpt| {
         if (breakpt.addr == self.regs.rip) continue;
         const saved = self.insertByteAtAddr(breakpt.addr, 0xcc);
-        //std.debug.print("resetting breakpoint at @ addr=0x{x}, (had saved=0x{x}), breakpt.saved_byte=0x{x}\n", .{ breakpt.addr, saved, breakpt.saved_byte });
         if (saved != 0xcc) breakpt.saved_byte = saved;
     }
 }
 
+pub fn setBreakpointAtSrc(self: *Session, src: SrcLoc) !void {
+    const addr = (try self.elf.translateSrcToAddr(src)) orelse
+        std.debug.panic("could not translate src={} to an address\n", .{src});
+    try self.setBreakpointAtAddr(addr);
+}
+
 pub fn setBreakpointAtAddr(self: *Session, addr: usize) !void {
+    const was_running = (self.status == .Running);
+    if (was_running) self.pause();
+    defer if (was_running) self.unpause();
+
+    std.debug.print("rip=0x{x} when setting breakpoint\n", .{self.getRegisters().rip});
+
     for (self.breakpoints.items) |breakpt| {
         if (breakpt.addr == addr) return;
     }
+
+    const saved_byte = self.insertByteAtAddr(addr, 0xcc);
+    std.debug.print("setting breakpoint @ addr=0x{x}, saved_byte=0x{x}\n", .{ addr, saved_byte });
     try self.breakpoints.append(.{
         .addr = addr,
-        .saved_byte = self.insertByteAtAddr(addr, 0xcc),
+        .saved_byte = saved_byte,
     });
-    //std.debug.print("setting breakpoint at 0x{x}, saved_byte=0x{x}\n", .{ addr, self.breakpoints.items[self.breakpoints.items.len - 1].saved_byte });
 }
 
 pub fn stepInstructions(self: *Session, num_instrs: usize) !void {
+    if (self.status != .Stopped) return;
+
     var instrs_done: usize = 0;
     while (instrs_done < num_instrs) : (instrs_done += 1) {
         _ = c.ptrace(.SINGLESTEP, self.pid, null, null);
@@ -115,6 +148,8 @@ pub fn stepInstructions(self: *Session, num_instrs: usize) !void {
 
 /// this steps over functions
 pub fn stepLine(self: *Session) !void {
+    if (self.status != .Stopped) return;
+
     // because of loops and jumps backwards we can't just put a breakpoint
     // on the next line and be done with it. the only solution I can
     // think of right now is this (singlestepping until we hit a different
@@ -131,52 +166,51 @@ pub fn stepLine(self: *Session) !void {
     }
 }
 
-/// return a bool determining success of this operation
-pub fn putBreakpointAtNextSrc(self: *Session, src_loc: SrcLoc) !bool {
-    const line_prog = (try self.elf.getLineProgForSrc(src_loc)) orelse std.debug.panic("passed in invalid src\n", .{});
-    var src = src_loc;
-    while (true) {
-        src.line += 1;
-        if (src.line > line_prog.file_line_range[1]) return false;
-        if (try self.elf.translateSrcToAddr(src)) |new_addr| {
-            try self.setBreakpointAtAddr(new_addr);
-            return true;
-        }
-    }
-    return false;
-}
-
-pub fn continueRunning(self: *Session) void {
-    _ = c.ptrace(.CONT, self.pid, null, null);
-    self.updateStatus();
-}
-
-pub fn killChild(self: *Session) void {
-    _ = c.kill(self.pid, c.SIGKILL);
-}
-
-pub fn pauseRunning(self: *Session) void {
-    _ = c.kill(self.pid, c.SIGSTOP);
-}
-
 pub fn currentSrcLoc(self: *Session) !?SrcLoc {
     return (try self.elf.translateAddrToSrc(self.getRegisters().rip));
 }
 
-pub fn setBreakpointAtSrc(self: *Session, src: SrcLoc) !void {
-    const addr = (try self.elf.translateSrcToAddr(src)) orelse std.debug.panic("could not translate src={} to an address\n", .{src});
-    try self.setBreakpointAtAddr(addr);
-}
-
 pub fn updateStatus(self: *Session) void {
-    _ = std.os.linux.waitpid(self.pid, &self.wait_status, c.WNOHANG | c.WUNTRACED | c.WCONTINUED);
+    const flags = c.WNOHANG | c.WUNTRACED | c.WCONTINUED;
+    const wait_ret = std.os.linux.waitpid(self.pid, &self.wait_status, flags);
+    const errno = std.os.linux.getErrno(wait_ret);
+    if (errno != .SUCCESS) {
+        std.debug.panic("waitpid(pid={}, wait_status={*}, flags=0x{x}) returned {}\n", .{
+            self.pid, &self.wait_status, flags, errno,
+        });
+        //std.debug.print("waitpid(pid={}, wait_status={*}, flags=0x{x}) returned {}\n", .{
+        //    self.pid, &self.wait_status, flags, errno,
+        //});
+        //@import("main.zig").printStackTrace(@returnAddress());
+    }
+
     const is_stopped = (self.wait_status & 0xff) == 0x7f;
-    //std.debug.print("wait_status = 0x{x:0>8}, is_stopped: {}\n", .{ self.wait_status, is_stopped });
-    self.status = if (is_stopped) .Stopped else .Running;
+    const no_state_change = (wait_ret == 0);
+
+    //std.debug.print("self.status={s}, wait_status = 0x{x:0>8}, wait_ret=0x{x}, is_stopped: {}, no_state_change={}, errno={s}\n", .{
+    //    @tagName(self.status), self.wait_status, wait_ret, is_stopped, no_state_change, @tagName(errno),
+    //});
+
+    if (!no_state_change) self.status = if (is_stopped) .Stopped else .Running;
 }
 
 pub fn waitForStatusChange(self: *Session) void {
-    _ = std.os.linux.waitpid(self.pid, &self.wait_status, 0);
+    const wait_ret = std.os.linux.waitpid(self.pid, &self.wait_status, 0);
+    const errno = std.os.linux.getErrno(wait_ret);
+    if (errno != .SUCCESS) {
+        std.debug.print("waitpid(pid={}, wait_status={*}, flags=0x{x}) returned {}\n", .{
+            self.pid, &self.wait_status, 0, errno,
+        });
+        @import("main.zig").printStackTrace(@returnAddress());
+    }
+}
+
+/// returns the byte that was there before we inserted the new one
+fn insertByteAtAddr(self: *Session, addr: usize, byte: u8) u8 {
+    const data = c.ptrace(.PEEKTEXT, self.pid, @intToPtr(*anyopaque, addr), null);
+    const new_data = (data & 0xffff_ffff_ffff_ff00) | byte;
+    _ = c.ptrace(.POKETEXT, self.pid, @intToPtr(*anyopaque, addr), @intToPtr(*anyopaque, new_data));
+    return @truncate(u8, data);
 }
 
 pub const Registers = struct {
@@ -335,12 +369,4 @@ fn setRegisters(self: *Session, registers: Registers) void {
         @sizeOf(@TypeOf(registers.xmm)),
     );
     _ = c.ptrace(.SETFPREGS, self.pid, null, &fp_regs);
-}
-
-/// returns the byte that was there before we inserted the new one
-fn insertByteAtAddr(self: *Session, addr: usize, byte: u8) u8 {
-    const data = c.ptrace(.PEEKTEXT, self.pid, @intToPtr(*anyopaque, addr), null);
-    const new_data = (data & 0xffff_ffff_ffff_ff00) | byte;
-    _ = c.ptrace(.POKETEXT, self.pid, @intToPtr(*anyopaque, addr), @intToPtr(*anyopaque, new_data));
-    return @truncate(u8, data);
 }

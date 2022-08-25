@@ -57,7 +57,7 @@ pub fn init(allocator: Allocator, font_path: []const u8, window_ptr: *window.Win
             .geometry = geometry_shader_src,
             .fragment = fragment_shader_src,
         }),
-        .font = try Font.from_ttf(allocator, font_path, 16),
+        .font = try Font.from_ttf(allocator, font_path, 18),
         .string_arena = std.heap.ArenaAllocator.init(allocator),
         .node_table = NodeTable.init(allocator),
         .prng = PRNG.init(0),

@@ -84,7 +84,7 @@ pub fn main() !void {
     var text_buf: []u8 = &backing_buf;
     text_buf.len = 0;
     var backing_buf_num: [0x1000]u8 = undefined;
-    var text_buf_num = try std.fmt.bufPrint(&backing_buf_num, "38", .{});
+    var text_buf_num = try std.fmt.bufPrint(&backing_buf_num, "100", .{});
     var backing_buf_file: [0x1000]u8 = undefined;
     var text_buf_file = try std.fmt.bufPrint(&backing_buf_file, "main.zig", .{});
     var backing_buf_exec: [0x1000]u8 = undefined;
@@ -198,18 +198,16 @@ pub fn main() !void {
             if (session_opt) |*session| {
                 try session.update();
 
-                // @debug
-                //if (session.breakpoints.items.len == 0) tmpblk: {
-                //    const line = std.fmt.parseUnsigned(u32, text_buf_num, 0) catch break :tmpblk;
-                //    try session.setBreakpointAtSrc(.{ .dir = "src", .file = text_buf_file, .line = line, .column = 0 });
-                //}
-
+                _ = ui.textBoxF("Child pid: {}", .{session.pid});
+                ui.topParent().last.?.pref_size[0] = Size.percent(1, 1);
                 _ = ui.textBoxF("Child Status: {s}", .{@tagName(session.status)});
                 ui.topParent().last.?.pref_size[0] = Size.percent(1, 1);
                 _ = ui.textBoxF("wait_status: 0x{x}", .{session.wait_status});
                 ui.topParent().last.?.pref_size[0] = Size.percent(1, 1);
+                _ = ui.textBoxF("src_loc: {?}", .{session.src_loc});
+                ui.topParent().last.?.pref_size[0] = Size.percent(1, 1);
 
-                const table_regs = .{ "rip", "rsp" };
+                const table_regs = .{ "rax", "rcx", "rbx", "rdx", "rip", "rsp" };
                 const regs = session.regs;
                 inline for (table_regs) |reg_name| {
                     _ = ui.textBoxF(reg_name ++ ": 0x{x:0>16}", .{@field(regs, reg_name)});
@@ -268,16 +266,9 @@ pub fn main() !void {
 
                 const button_size = [2]Size{ Size.percent(0.5, 1), Size.text_dim(1) };
                 ui.pushStyle(.{ .pref_size = button_size });
-                if (ui.button("Continue Running").clicked) session.continueRunning();
-                if (ui.button("Pause Child").clicked) session.pauseRunning();
-                if (ui.button("Next Line").clicked) {
-                    if (session.src_loc) |src| {
-                        std.debug.print("we're at line={}\n", .{src.line});
-                        if (try session.putBreakpointAtNextSrc(src)) {
-                            session.continueRunning();
-                        }
-                    }
-                }
+                if (ui.button("Continue Running").clicked) session.unpause();
+                if (ui.button("Pause Child").clicked) session.pause();
+                if (ui.button("Next Line").clicked) try session.stepLine();
                 if (ui.button("Next Instruction").clicked) try session.stepInstructions(1);
                 _ = ui.popStyle();
 
