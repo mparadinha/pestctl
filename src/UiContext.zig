@@ -112,6 +112,8 @@ pub const Flags = packed struct {
     draw_hot_effects: bool = false,
     draw_active_effects: bool = false,
 
+    floating_x: bool = false,
+    floating_y: bool = false,
     special_error_pop_up_layout: bool = false,
 
     no_id: bool = false,
@@ -141,7 +143,9 @@ pub const Node = struct {
     hover_cursor: window.CursorType,
     font_type: FontType,
 
+    // per-frame sizing information
     text_rect: Rect, // @hack
+    floating_rel_pos: vec2, // relative to bottom left (0, 0) corner of the parent
 
     // post-size-determination data
     calc_size: vec2,
@@ -575,6 +579,7 @@ pub fn render(self: *UiContext) !void {
     self.solveUpwardDependent(self.root_node);
     self.solveDownwardDependent(self.root_node);
     self.solveViolations(self.root_node);
+    self.solveFinalPos(self.root_node);
 
     // this struct must have the exact layout expected by the shader
     const ShaderInput = extern struct {
@@ -1025,6 +1030,12 @@ fn solveViolations(self: *UiContext, node: *Node) void {
     layoutRecurseHelperPre(work_fn, .{ .self = self, .node = node, .axis = .y });
 }
 
+fn solveFinalPos(self: *UiContext, node: *Node) void {
+    const work_fn = solveFinalPosWorkFn;
+    layoutRecurseHelperPre(work_fn, .{ .self = self, .node = node, .axis = .x });
+    layoutRecurseHelperPre(work_fn, .{ .self = self, .node = node, .axis = .y });
+}
+
 fn solveIndependentSizesWorkFn(self: *UiContext, node: *Node, axis: Axis) void {
     _ = self;
     const axis_idx: usize = @enumToInt(axis);
@@ -1095,6 +1106,77 @@ fn solveViolationsWorkFn(self: *UiContext, node: *Node, axis: Axis) void {
     if (node.child_count == 0) return;
 
     const axis_idx: usize = @enumToInt(axis);
+    const is_layout_axis = (axis == node.child_layout_axis);
+
+    // collect sizing information about children
+    var total_children_size: f32 = 0;
+    var max_child_size: f32 = 0;
+    var zero_strict_take_budget: f32 = 0;
+    var other_children_leeway: f32 = 0;
+    var zero_strict_children = std.BoundedArray(*Node, 1000).init(0) catch unreachable;
+    var other_children = std.BoundedArray(*Node, 1000).init(0) catch unreachable;
+    var child = node.first;
+    while (child) |child_node| : (child = child_node.next) {
+        const is_floating = switch (axis) {
+            .x => child_node.flags.floating_x,
+            .y => child_node.flags.floating_y,
+        };
+        if (is_floating) continue;
+
+        const strictness = child_node.pref_size[axis_idx].getStrictness();
+        const child_size = child_node.calc_size[axis_idx];
+
+        total_children_size += child_size;
+        max_child_size = std.math.max(max_child_size, child_size);
+        if (strictness == 0) {
+            zero_strict_take_budget += child_size;
+            zero_strict_children.append(child_node) catch unreachable;
+        } else {
+            other_children_leeway += (1 - strictness);
+            other_children.append(child_node) catch unreachable;
+        }
+    }
+
+    const total_size = if (is_layout_axis) total_children_size else max_child_size;
+    var overflow = std.math.max(0, total_size - node.calc_size[axis_idx]);
+
+    // shrink zero strictness children as much as we can (to 0 size if needed) before
+    // trying to shrink other children with strictness > 0
+    const zero_strict_remove_amount = std.math.min(overflow, zero_strict_take_budget);
+    for (zero_strict_children.slice()) |z_child| {
+        if (is_layout_axis) {
+            const z_child_percent = z_child.calc_size[axis_idx] / zero_strict_take_budget;
+            z_child.calc_size[axis_idx] -= zero_strict_remove_amount * z_child_percent;
+        } else {
+            const extra_size = z_child.calc_size[axis_idx] - node.calc_size[axis_idx];
+            z_child.calc_size[axis_idx] -= std.math.min(0, extra_size);
+        }
+    }
+    overflow -= zero_strict_remove_amount;
+
+    // if there's still overflow, shrink the other children as much as we can
+    // (proportionally to their strictness values, i.e least strict shrinks the most)
+    if (overflow > 0) {
+        for (other_children.slice()) |child_node| {
+            const strictness = child_node.pref_size[axis_idx].getStrictness();
+            const child_size = child_node.calc_size[axis_idx];
+            const child_take_budget = child_size * strictness;
+            const leeway_percent = (1 - strictness) / other_children_leeway;
+            const remove_amount = if (is_layout_axis)
+                overflow * leeway_percent
+            else
+                std.math.max(0, child_size - node.calc_size[axis_idx]);
+            child_node.calc_size[axis_idx] -= std.math.min(child_take_budget, remove_amount);
+        }
+    }
+}
+
+fn solveFinalPosWorkFn(self: *UiContext, node: *Node, axis: Axis) void {
+    _ = self;
+    if (node.child_count == 0) return;
+
+    const axis_idx: usize = @enumToInt(axis);
+    const is_layout_axis = (axis == node.child_layout_axis);
 
     // start layout at the top left
     const start_rel_pos: f32 = switch (axis) {
@@ -1102,58 +1184,20 @@ fn solveViolationsWorkFn(self: *UiContext, node: *Node, axis: Axis) void {
         .y => node.calc_size[1],
     };
 
-    var child: ?*Node = undefined;
-
-    // solve size violations
-    var total_children_size: f32 = 0;
-    child = node.first;
-    while (child) |child_node| : (child = child_node.next) {
-        if (axis == node.child_layout_axis)
-            total_children_size += child_node.calc_size[axis_idx]
-        else
-            total_children_size = std.math.max(total_children_size, child_node.calc_size[axis_idx]);
-    }
-
-    var overflow = std.math.max(0, total_children_size - node.calc_size[axis_idx]);
-
-    var total_leeway: f32 = 0;
-    child = node.first;
-    while (child) |child_node| : (child = child_node.next) {
-        const strictness = child_node.pref_size[axis_idx].getStrictness();
-        const leeway = 1 - strictness;
-        if (axis == node.child_layout_axis) {
-            // for the special case where we have 0 strictness, because of spacers
-            // (if we don't do this here, then even a 100% leeway value will still
-            // be a small percentage of the total remove take, if there are other
-            // nodes in the axis)
-            if (leeway == 1) {
-                const remove_size = std.math.min(overflow, child_node.calc_size[axis_idx]);
-                child_node.calc_size[axis_idx] -= remove_size;
-                overflow -= remove_size;
-            } else {
-                total_leeway += leeway;
-            }
-        } else {
-            total_leeway = std.math.min(total_leeway, leeway);
-        }
-    }
-
-    if (overflow > 0) {
-        child = node.first;
-        while (child) |child_node| : (child = child_node.next) {
-            const strictness = child_node.pref_size[axis_idx].getStrictness();
-            if (strictness == 0) continue; // already handled before
-            const remove_weight = (1 - strictness) / total_leeway;
-            const max_remove_budget = child_node.calc_size[axis_idx] * (1 - strictness);
-            child_node.calc_size[axis_idx] -= std.math.min(overflow * remove_weight, max_remove_budget);
-        }
-    }
-
     // position all the children
     var rel_pos: f32 = start_rel_pos;
-    child = node.first;
+    var child = node.first;
     while (child) |child_node| : (child = child_node.next) {
-        if (axis == node.child_layout_axis) {
+        const is_floating = switch (axis) {
+            .x => child_node.flags.floating_x,
+            .y => child_node.flags.floating_y,
+        };
+        if (is_floating) {
+            child_node.calc_rel_pos[axis_idx] = child_node.floating_rel_pos[axis_idx];
+            continue;
+        }
+
+        if (is_layout_axis) {
             const rel_pos_advance = child_node.calc_size[axis_idx];
             switch (axis) {
                 .x => {

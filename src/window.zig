@@ -200,6 +200,7 @@ pub const Window = struct {
         c.glfwWindowHint(c.GLFW_CONTEXT_VERSION_MINOR, 3);
         c.glfwWindowHint(c.GLFW_OPENGL_PROFILE, c.GLFW_OPENGL_CORE_PROFILE);
         c.glfwWindowHint(c.GLFW_OPENGL_FORWARD_COMPAT, gl.TRUE);
+        //c.glfwWindowHint(c.GLFW_SAMPLES, 4);
         const handle = c.glfwCreateWindow(
             @intCast(c_int, width),
             @intCast(c_int, height),
