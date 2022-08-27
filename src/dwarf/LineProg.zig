@@ -35,7 +35,7 @@ pub const FileInfo = struct {
     len: usize,
 };
 
-const State = struct {
+pub const State = struct {
     address: u64 = 0,
     op_index: u32 = 0,
     file: u32 = 1,
@@ -288,7 +288,7 @@ pub fn findAddrForSrc(self: LineProg, file: u32, line: u32) !?State {
     while ((try stream.getPos()) < self.ops.len) {
         const new_row = try self.updateState(&state, reader);
         if (new_row) |row| {
-            if (row.file == file and row.line >= line) return row;
+            if (row.file == file and row.line == line) return row;
             if (row.end_sequence) break;
         }
     }
@@ -393,4 +393,69 @@ pub fn updateState(self: LineProg, state: *State, reader: anytype) !?State {
     }
 
     return new_row;
+}
+
+pub fn dump(self: LineProg) !void {
+    std.debug.print("version: {}\n", .{self.version});
+    std.debug.print("address_size: {}\n", .{self.address_size});
+    std.debug.print("segment_selector_size: {}\n", .{self.segment_selector_size});
+    std.debug.print("min_instr_len: {}\n", .{self.min_instr_len});
+    std.debug.print("max_ops_per_instr: {}\n", .{self.max_ops_per_instr});
+    std.debug.print("default_is_stmt: {}\n", .{self.default_is_stmt});
+    std.debug.print("line_base: {}\n", .{self.line_base});
+    std.debug.print("line_range: {}\n", .{self.line_range});
+    std.debug.print("opcode_base: {}\n", .{self.opcode_base});
+    std.debug.print("standard_opcode_lens: {d}\n", .{self.standard_opcode_lens});
+    std.debug.print("include_dirs:\n", .{});
+    for (self.include_dirs) |dir, i| std.debug.print("[{:0>2}] {s}\n", .{ i, dir });
+    std.debug.print("files:\n", .{});
+    for (self.files) |file, i| {
+        std.debug.print("[{:0>3}] dir={:0>2} | {s}\n", .{ i, file.dir, file.name });
+    }
+
+    std.debug.print("post-init data:\n", .{});
+    std.debug.print("  address range (inclusive): 0x{x:0>12} -> 0x{x:0>12}\n", .{
+        self.address_range[0], self.address_range[1],
+    });
+    std.debug.print("  line range (inclusive): {} -> {}\n", .{
+        self.file_line_range[0], self.file_line_range[1],
+    });
+
+    std.debug.print("full matrix:\n", .{});
+    var state = State{ .is_stmt = self.default_is_stmt };
+    var stream = std.io.fixedBufferStream(self.ops);
+    var reader = stream.reader();
+    var op_idx: usize = 0;
+    while ((try stream.getPos()) < self.ops.len) : (op_idx += 1) {
+        const new_row = try self.updateState(&state, reader);
+        const row = new_row orelse continue;
+        const bool_str = [2][]const u8{ "", "true" };
+        std.debug.print("[{d:0>6}]" ++
+            " | addr=0x{x:0>12}" ++
+            " | op_index={d: >2}" ++
+            " | file={d: >3}" ++
+            " | line={d: >4}" ++
+            " | col={d: >3}" ++
+            " | stmt={s: >4}" ++
+            " | block={s: >4}" ++
+            " | end_seq={s: >4}" ++
+            " | prologue={s: >4}" ++
+            " | epilogue={s: >4}" ++
+            " | isa={: >2}" ++
+            " | discrim={}\n", .{
+            op_idx,
+            row.address,
+            row.op_index,
+            row.file,
+            row.line,
+            row.column,
+            bool_str[if (row.is_stmt) 1 else 0],
+            bool_str[if (row.basic_block) 1 else 0],
+            bool_str[if (row.end_sequence) 1 else 0],
+            bool_str[if (row.prologue_end) 1 else 0],
+            bool_str[if (row.epilogue_begin) 1 else 0],
+            row.isa,
+            row.discriminator,
+        });
+    }
 }

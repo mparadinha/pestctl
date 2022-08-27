@@ -16,11 +16,20 @@ elf: Elf,
 breakpoints: std.ArrayList(BreakPoint),
 src_loc: ?SrcLoc,
 regs: Registers,
+watched_vars: FreeList(WatchedVar),
 
 const BreakPoint = struct {
     addr: usize,
     saved_byte: u8,
     only_once: bool = false,
+};
+
+pub const WatchedVar = struct {
+    name: []const u8,
+    rbp_offset: i32, // TODO: all other types of storage lmao
+    value: union(enum) {
+        Float: f32,
+    },
 };
 
 pub const SrcLoc = Elf.SrcLoc;
@@ -36,8 +45,10 @@ pub fn init(allocator: Allocator, exec_path: []const u8) !Session {
         .breakpoints = std.ArrayList(BreakPoint).init(allocator),
         .src_loc = null,
         .regs = undefined,
+        .watched_vars = FreeList(WatchedVar).init(allocator),
     };
     try self.startTracing();
+
     return self;
 }
 
@@ -46,6 +57,7 @@ pub fn deinit(self: *Session) void {
     self.allocator.free(self.exec_path);
     self.elf.deinit();
     self.breakpoints.deinit();
+    self.watched_vars.deinit();
 }
 
 pub fn startTracing(self: *Session) !void {
@@ -64,7 +76,8 @@ pub fn startTracing(self: *Session) !void {
 
 pub fn pause(self: *Session) void {
     if (self.status != .Running) return;
-    _ = c.kill(self.pid, c.SIGTRAP);
+    //_ = c.kill(self.pid, c.SIGTRAP);
+    _ = c.kill(self.pid, c.SIGSTOP);
     // waitpid also isn't working for this case, but I'm not sure why
     self.status = .Stopped;
 }
@@ -109,19 +122,31 @@ pub fn update(self: *Session) !void {
         const saved = self.insertByteAtAddr(breakpt.addr, 0xcc);
         if (saved != 0xcc) breakpt.saved_byte = saved;
     }
-}
 
-pub fn setBreakpointAtSrc(self: *Session, src: SrcLoc) !void {
-    const addr = (try self.elf.translateSrcToAddr(src)) orelse
-        std.debug.panic("could not translate src={} to an address\n", .{src});
-    try self.setBreakpointAtAddr(addr);
+    // update watched vars
+    var var_node = self.watched_vars.first;
+    while (var_node) |node| : (var_node = node.next) {
+        var var_info = &node.value;
+        switch (var_info.value) {
+            .Float => |*float| {
+                std.debug.print("rbp=0x{x:0>16}, offset={}\n", .{ self.regs.rbp, var_info.rbp_offset });
+                const tmp = @intCast(isize, self.regs.rbp) + var_info.rbp_offset;
+                if (tmp < 0) continue; // TODO
+                const addr = @intCast(usize, tmp);
+                const bytes = self.getBytesAtAddr(addr, 4);
+                float.* = @bitCast(f32, std.mem.readIntLittle(u32, &bytes));
+                std.debug.print("rbp_offset={}, addr=0x{x:0>16}, bytes={d}, float={d}\n", .{ var_info.rbp_offset, addr, bytes, float });
+            },
+        }
+    }
 }
 
 pub fn setBreakpointAtAddr(self: *Session, addr: usize) !void {
     const was_running = (self.status == .Running);
     if (was_running) self.pause();
-    defer if (was_running) self.unpause();
+    //defer if (was_running) self.unpause();
 
+    std.debug.print("status={}\n", .{self.status});
     std.debug.print("rip=0x{x} when setting breakpoint\n", .{self.getRegisters().rip});
 
     for (self.breakpoints.items) |breakpt| {
@@ -134,6 +159,12 @@ pub fn setBreakpointAtAddr(self: *Session, addr: usize) !void {
         .addr = addr,
         .saved_byte = saved_byte,
     });
+}
+
+pub fn setBreakpointAtSrc(self: *Session, src: SrcLoc) !void {
+    const addr = (try self.findAddrForThisLineOrNextOne(src)) orelse
+        std.debug.panic("could not translate src={} to an address\n", .{src});
+    try self.setBreakpointAtAddr(addr);
 }
 
 pub fn stepInstructions(self: *Session, num_instrs: usize) !void {
@@ -166,11 +197,109 @@ pub fn stepLine(self: *Session) !void {
     }
 }
 
-pub fn currentSrcLoc(self: *Session) !?SrcLoc {
+pub fn addWatchedVariable(self: *Session, name: []const u8) !void {
+    const dwarf = self.elf.dwarf;
+    const DW = @import("Dwarf.zig").DW;
+    const forms = @import("Dwarf.zig").forms;
+    for (dwarf.units) |unit| {
+        var stream = std.io.fixedBufferStream(unit.entries_buf);
+        var reader = stream.reader();
+        const skip_info = forms.SkipInfo{ .address_size = unit.address_size, .is_64 = unit.is_64 };
+        const read_info = forms.ReadInfo{
+            .address_size = unit.address_size,
+            .is_64 = unit.is_64,
+            .version = unit.version,
+            .debug_info_opt = unit.debug_info,
+            .debug_str_opt = dwarf.debug_str,
+        };
+
+        var child_level: usize = 0;
+        while ((try stream.getPos()) < unit.entries_buf.len) {
+            const abbrev_code = try std.leb.readULEB128(usize, reader);
+            const abbrev = unit.abbrevs[abbrev_code];
+
+            if (abbrev.has_children) child_level += 1;
+            if (abbrev.tag == 0) {
+                child_level -= 1;
+                if (child_level == 0) break;
+            }
+
+            switch (abbrev.tag) {
+                DW.TAG.variable => {
+                    var varloc_opt: ?[]const u8 = null;
+                    var name_opt: ?[]const u8 = null;
+                    for (abbrev.attribs) |pair| {
+                        switch (pair.attrib) {
+                            DW.AT.location => {
+                                if (pair.form != DW.FORM.exprloc) {
+                                    try forms.skip(skip_info, reader, pair.form);
+                                    continue;
+                                }
+                                varloc_opt = try forms.readExprLoc(read_info, reader, pair.form);
+                            },
+                            DW.AT.name => {
+                                name_opt = try forms.readString(read_info, reader, pair.form);
+                            },
+                            else => try forms.skip(skip_info, reader, pair.form),
+                        }
+                    }
+                    if (name_opt == null or varloc_opt == null) continue;
+
+                    if (std.mem.eql(u8, name, name_opt.?)) {
+                        const exprloc = varloc_opt.?;
+                        std.debug.assert(exprloc[0] == DW.OP.fbreg);
+                        var tmp_stream = std.io.fixedBufferStream(exprloc[1..]);
+                        var tmp_reader = tmp_stream.reader();
+                        const rbp_offset = try std.leb.readILEB128(i32, tmp_reader);
+                        try self.watched_vars.append(.{
+                            .name = name_opt.?,
+                            .rbp_offset = rbp_offset,
+                            .value = undefined,
+                        });
+                        //std.debug.print("found var '{s}' w/ exprloc={} (rsp_offset={})\n", .{
+                        //    name, std.fmt.fmtSliceHexLower(varloc_opt.?), rsp_offset,
+                        //});
+                        return;
+                    }
+                },
+                else => {
+                    for (abbrev.attribs) |pair| try forms.skip(skip_info, reader, pair.form);
+                },
+            }
+        }
+    }
+    std.debug.panic("couldn't find debug info for variable named '{s}'\n", .{name});
+}
+
+// translate addr to src location
+// if no addr matches this line exactly tries the next line until it matches
+fn findAddrForThisLineOrNextOne(self: *Session, src: SrcLoc) !?usize {
+    prog_blk: for (self.elf.dwarf.line_progs) |prog| {
+        var file_idx: usize = 0;
+        for (prog.files) |file, i| {
+            file_idx = i;
+            if (std.mem.eql(u8, src.file, file.name)) break;
+        } else continue :prog_blk;
+
+        // TODO: this speedup check doesn't work because lineprog dirs are full paths
+        //for (prog.include_dirs) |dir| {
+        //    if (std.mem.eql(u8, src.dir, dir)) break;
+        //} else continue :prog_blk;
+
+        var search_loc = src;
+        while (search_loc.line <= prog.file_line_range[1]) : (search_loc.line += 1) {
+            const state = try prog.findAddrForSrc(@intCast(u32, file_idx), search_loc.line);
+            if (state) |s| return s.address;
+        }
+    }
+    return null;
+}
+
+fn currentSrcLoc(self: *Session) !?SrcLoc {
     return (try self.elf.translateAddrToSrc(self.getRegisters().rip));
 }
 
-pub fn updateStatus(self: *Session) void {
+fn updateStatus(self: *Session) void {
     const flags = c.WNOHANG | c.WUNTRACED | c.WCONTINUED;
     const wait_ret = std.os.linux.waitpid(self.pid, &self.wait_status, flags);
     const errno = std.os.linux.getErrno(wait_ret);
@@ -194,7 +323,7 @@ pub fn updateStatus(self: *Session) void {
     if (!no_state_change) self.status = if (is_stopped) .Stopped else .Running;
 }
 
-pub fn waitForStatusChange(self: *Session) void {
+fn waitForStatusChange(self: *Session) void {
     const wait_ret = std.os.linux.waitpid(self.pid, &self.wait_status, 0);
     const errno = std.os.linux.getErrno(wait_ret);
     if (errno != .SUCCESS) {
@@ -211,6 +340,20 @@ fn insertByteAtAddr(self: *Session, addr: usize, byte: u8) u8 {
     const new_data = (data & 0xffff_ffff_ffff_ff00) | byte;
     _ = c.ptrace(.POKETEXT, self.pid, @intToPtr(*anyopaque, addr), @intToPtr(*anyopaque, new_data));
     return @truncate(u8, data);
+}
+
+fn getBytesAtAddr(self: *Session, addr: usize, comptime N: u4) [N]u8 {
+    std.debug.assert(N <= 8);
+    const data = c.ptrace(.PEEKTEXT, self.pid, @intToPtr(*anyopaque, addr), null);
+    return switch (N) {
+        4 => [4]u8{
+            @intCast(u8, (data & 0x0000_00ff)),
+            @intCast(u8, (data & 0x0000_ff00) >> 8),
+            @intCast(u8, (data & 0x00ff_0000) >> 16),
+            @intCast(u8, (data & 0xff00_0000) >> 24),
+        },
+        else => @panic("TODO"),
+    };
 }
 
 pub const Registers = struct {
@@ -369,4 +512,56 @@ fn setRegisters(self: *Session, registers: Registers) void {
         @sizeOf(@TypeOf(registers.xmm)),
     );
     _ = c.ptrace(.SETFPREGS, self.pid, null, &fp_regs);
+}
+
+/// A doubly-linked list that manages it's own memory
+pub fn FreeList(comptime T: type) type {
+    return struct {
+        allocator: Allocator,
+        first: ?*Node,
+        last: ?*Node, // helpfull for adding at the end
+
+        const Self = @This();
+
+        pub const Node = struct {
+            prev: ?*Node,
+            next: ?*Node,
+            list: *Self,
+            value: T,
+
+            pub fn removeFromList(self: *Node) void {
+                if (self.list.first == self) self.list.first = self.next;
+                if (self.list.last == self) self.list.last = self.prev;
+                if (self.prev) |p| p.next = self.next;
+                if (self.next) |n| n.prev = self.prev;
+
+                self.list.allocator.destroy(self);
+                self.prev = null;
+                self.next = null;
+                self.list = null;
+            }
+        };
+
+        pub fn init(allocator: Allocator) Self {
+            return .{ .allocator = allocator, .first = null, .last = null };
+        }
+
+        pub fn deinit(self: *Self) void {
+            while (self.first) |node| {
+                self.first = node.next;
+                self.allocator.destroy(node);
+            }
+        }
+
+        pub fn append(self: *Self, item: T) !void {
+            const new_node_ptr = try self.allocator.create(Node);
+            new_node_ptr.prev = self.last;
+            new_node_ptr.next = null;
+            new_node_ptr.list = self;
+            new_node_ptr.value = item;
+
+            if (self.first == null) self.first = new_node_ptr;
+            self.last = new_node_ptr;
+        }
+    };
 }

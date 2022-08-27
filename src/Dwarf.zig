@@ -1,7 +1,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const c = @import("c.zig");
-const forms = @import("dwarf/forms.zig");
+pub const forms = @import("dwarf/forms.zig");
 pub const LineProg = @import("dwarf/LineProg.zig");
 pub const DW = @import("dwarf/constants.zig");
 
@@ -268,7 +268,7 @@ pub const DebugUnit = struct {
         for (abbrev.attribs) |pair| {
             switch (pair.attrib) {
                 DW.AT.comp_dir => return forms.readString(read_info, reader, pair.form),
-                else => try forms.skip(pair.form, reader, skip_info),
+                else => try forms.skip(skip_info, reader, pair.form),
             }
         }
         @panic("didn't find a comp_dir attribute");
@@ -378,14 +378,14 @@ pub const DebugUnit = struct {
     //            //        if (pair.attrib == DW.AT.name) {
     //            //            std.debug.print("constant with name: {s}\n", .{readString(read_info, reader, pair.form)});
     //            //        } else {
-    //            //            try skipFORM(pair.form, reader, skip_info);
+    //            //            try forms.skip(skip_info, reader, pair.form);
     //            //        }
     //            //    }
     //            //},
 
     //            else => {
     //                std.debug.assert(DW.TAG.isValid(abbrev.tag));
-    //                for (abbrev.attribs) |pair| try forms.skip(pair.form, reader, skip_info);
+    //                for (abbrev.attribs) |pair| try forms.skip(skip_info, reader, pair.form);
     //            },
     //        }
     //    }

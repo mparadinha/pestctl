@@ -84,13 +84,13 @@ pub fn main() !void {
     var text_buf: []u8 = &backing_buf;
     text_buf.len = 0;
     var backing_buf_num: [0x1000]u8 = undefined;
-    var text_buf_num = try std.fmt.bufPrint(&backing_buf_num, "100", .{});
+    var text_buf_num = try std.fmt.bufPrint(&backing_buf_num, "105", .{});
     var backing_buf_file: [0x1000]u8 = undefined;
     var text_buf_file = try std.fmt.bufPrint(&backing_buf_file, "main.zig", .{});
     var backing_buf_exec: [0x1000]u8 = undefined;
     var text_buf_exec = try std.fmt.bufPrint(&backing_buf_exec, "", .{});
     var backing_buf_var: [0x1000]u8 = undefined;
-    var text_buf_var = try std.fmt.bufPrint(&backing_buf_var, "", .{});
+    var text_buf_var = try std.fmt.bufPrint(&backing_buf_var, "cur_time", .{});
 
     var file_tab = FileTab.init(allocator);
     defer file_tab.deinit();
@@ -231,17 +231,23 @@ pub fn main() !void {
                     }
                     _ = ui.popParent();
 
-                    //const row0_parent = ui.addNode(.{}, "###row0_parent", .{ .child_layout_axis = .x });
-                    //row0_parent.pref_size = row_size;
-                    //ui.pushParent(row0_parent);
-                    //{
-                    //    ui.pushStyle(.{ .pref_size = column_box_size });
-                    //    _ = ui.textBox("my_var_is_cool");
-                    //    _ = ui.textBox("ComplexType");
-                    //    _ = ui.textBox(".{ 1, 2, 3 }");
-                    //    _ = ui.popStyle();
-                    //}
-                    //_ = ui.popParent();
+                    var var_node = session.watched_vars.first;
+                    while (var_node) |node| : (var_node = node.next) {
+                        const var_info = node.value;
+                        const row_parent = ui.addNodeF(.{}, "###row_parent{s}", .{var_info.name}, .{ .child_layout_axis = .x });
+                        row_parent.pref_size = row_size;
+                        ui.pushParent(row_parent);
+                        {
+                            ui.pushStyle(.{ .pref_size = column_box_size });
+                            _ = ui.textBoxF("{s}", .{var_info.name});
+                            _ = ui.textBoxF("{s}", .{@tagName(std.meta.activeTag(var_info.value))});
+                            switch (var_info.value) {
+                                .Float => |value| _ = ui.textBoxF("{d}", .{value}),
+                            }
+                            _ = ui.popStyle();
+                        }
+                        _ = ui.popParent();
+                    }
                 }
                 _ = ui.popParent();
 
@@ -256,9 +262,7 @@ pub fn main() !void {
                     const text_sig = ui.textInput("add_var_textinput", &backing_buf_var, &text_buf_var.len);
                     _ = ui.popStyle();
                     _ = ui.popStyle();
-                    if (button_sig.clicked or text_sig.enter_pressed) {
-                        std.debug.print("STUB: add var '{s}' to watched vars table\n", .{text_buf_var});
-                    }
+                    if (button_sig.clicked or text_sig.enter_pressed) try session.addWatchedVariable(text_buf_var);
                 }
                 _ = ui.popParent();
 
@@ -310,6 +314,8 @@ pub fn main() !void {
         gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
         try ui.render();
 
+        file_tab.updateAnimation(dt);
+
         ui.endFrame(dt);
         window.update();
         tracy.FrameMark();
@@ -321,6 +327,7 @@ const FileTab = struct {
     files: std.ArrayList(FileInfo),
     active_file: ?usize,
     highlight_box: SrcBox,
+    highlight_box_target: SrcBox,
 
     pub const SrcBox = struct {
         file_idx: usize,
@@ -340,12 +347,16 @@ const FileTab = struct {
             .allocator = allocator,
             .files = std.ArrayList(FileInfo).init(allocator),
             .active_file = null,
-            .highlight_box = undefined,
-            //.highlight_box = .{
-            //    .file_idx = 0,
-            //    .min = .{ .line = 0, .column = 0 },
-            //    .max = .{ .line = 0, .column = 0 },
-            //},
+            .highlight_box = .{
+                .file_idx = undefined,
+                .min = .{ .line = 0, .column = 0 },
+                .max = .{ .line = 0, .column = 0 },
+            },
+            .highlight_box_target = .{
+                .file_idx = undefined,
+                .min = .{ .line = 0, .column = 0 },
+                .max = .{ .line = 0, .column = 0 },
+            },
         };
     }
 
@@ -390,7 +401,7 @@ const FileTab = struct {
         self.files.items[file_idx].lock_line = src.line;
         //self.active_file = file_idx;
 
-        self.highlight_box = .{
+        self.highlight_box_target = .{
             .file_idx = file_idx,
             .min = .{ .line = @intToFloat(f32, src.line), .column = @intToFloat(f32, src.column) },
             .max = .{ .line = @intToFloat(f32, src.line), .column = @intToFloat(f32, src.column) },
@@ -408,6 +419,17 @@ const FileTab = struct {
         const path = try std.fs.path.join(self.allocator, &.{ src.dir, src.file });
         defer self.allocator.free(path);
         return self.findFile(path);
+    }
+
+    pub fn updateAnimation(self: *FileTab, dt: f32) void {
+        const fast_rate = 1 - std.math.pow(f32, 2, -20.0 * dt);
+        const target = self.highlight_box_target;
+        const cur = &self.highlight_box;
+        cur.file_idx = target.file_idx;
+        cur.min.line += (target.min.line - cur.min.line) * fast_rate;
+        cur.min.column += (target.min.column - cur.min.column) * fast_rate;
+        cur.max.line += (target.max.line - cur.max.line) * fast_rate;
+        cur.max.column += (target.max.column - cur.max.column) * fast_rate;
     }
 
     pub fn display(self: *FileTab, ui: *UiContext) !void {
@@ -489,7 +511,7 @@ const FileTab = struct {
     }
 };
 
-/// `line` index starts at 1
+// line 1 to 1 is the first line
 fn textDisplay(ui: *UiContext, label: []const u8, text: []const u8, lock_line: ?usize, highlight_box: ?FileTab.SrcBox) !void {
     const parent = ui.addNodeF(.{
         .clip_children = true,
@@ -524,8 +546,9 @@ fn textDisplay(ui: *UiContext, label: []const u8, text: []const u8, lock_line: ?
     y_off.* = std.math.min(y_off.*, 0);
     y_off.* = std.math.max(y_off.*, -max_offset[1]);
 
-    if (highlight_box) |box| {
-        _ = box;
+    if (highlight_box) |box| blk: {
+        if (box.min.line == 0 and box.max.line == 0) break :blk;
+
         const ui_style = ui.topStyle();
         var box_node = @as(UiContext.Node, undefined);
         box_node.flags = UiContext.Flags{ .draw_border = true };
@@ -534,11 +557,14 @@ fn textDisplay(ui: *UiContext, label: []const u8, text: []const u8, lock_line: ?
         box_node.border_thickness = ui_style.border_thickness;
         box_node.pref_size = undefined; // can't set to zero
         box_node.clip_rect = ui.topParent().clip_rect;
-        const box_y_start = parent.rect.max[1] - y_off.* - (box.min.line * line_size + text_padd[1]);
-        const box_y_size = (box.max.line + 1 - box.min.line) * line_size;
+        const text_y_start = parent.rect.max[1] - y_off.*;
+        const line_y_start = std.math.max(0, box.min.line - 1) * line_size;
+        const box_y_top = text_y_start - (line_y_start + text_padd[1]);
+        const line_y_size = std.math.max(1, box.max.line - box.min.line);
+        const box_y_size = line_size * line_y_size;
         box_node.rect = UiContext.Rect{
-            .min = vec2{ parent.rect.min[0], box_y_start },
-            .max = vec2{ parent.rect.max[0], box_y_start + box_y_size },
+            .min = vec2{ parent.rect.min[0], box_y_top - box_y_size },
+            .max = vec2{ parent.rect.max[0], box_y_top },
         };
         try ui.on_top_nodes.append(box_node);
     }

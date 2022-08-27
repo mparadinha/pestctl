@@ -79,7 +79,6 @@ pub fn readExprLoc(read_info: ReadInfo, reader: ReaderType, form: u16) ![]const 
     if (form != DW.FORM.exprloc) std.debug.panic("{s} is not a valid exprloc form\n", .{DW.FORM.asStr(form)});
     const len = try std.leb.readULEB128(usize, reader);
     const loc_start = try reader.context.getPos();
-    std.debug.print("len = {}, loc_start=0x{x}\n", .{ len, loc_start });
     try reader.skipBytes(len, .{});
     return reader.context.buffer[loc_start .. loc_start + len];
 }
@@ -210,7 +209,7 @@ pub const SkipInfo = struct {
     is_64: bool,
 };
 
-pub fn skip(form: u16, reader: anytype, skip_info: SkipInfo) !void {
+pub fn skip(skip_info: SkipInfo, reader: anytype, form: u16) !void {
     switch (form) {
         // address
         DW.FORM.addr => try reader.skipBytes(skip_info.address_size, .{}),
