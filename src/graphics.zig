@@ -92,6 +92,7 @@ pub const Texture = struct {
     }
 
     pub fn updateData(self: Texture, data: ?[]const u8) void {
+        gl.bindTexture(self.tex_type, self.id);
         // zig fmt: off
         gl.texImage2D(
             self.tex_type, 0, @intCast(i32, self.format),

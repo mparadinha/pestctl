@@ -17,6 +17,7 @@ pub usingnamespace @import("ui_widgets.zig");
 allocator: Allocator,
 generic_shader: gfx.Shader,
 font: Font,
+icon_font: Font,
 string_arena: std.heap.ArenaAllocator,
 node_table: NodeTable,
 prng: PRNG,
@@ -32,6 +33,7 @@ first_error_name: []const u8,
 // per-frame data
 parent_stack: Stack(*Node),
 style_stack: Stack(Style),
+auto_pop_style: bool,
 root_node: *Node,
 screen_size: vec2,
 mouse_pos: vec2, // in pixels
@@ -49,7 +51,7 @@ on_top_nodes: std.ArrayList(Node),
 const NodeKey = NodeTable.Hash;
 
 // call `deinit` to cleanup resources
-pub fn init(allocator: Allocator, font_path: []const u8, window_ptr: *window.Window) !UiContext {
+pub fn init(allocator: Allocator, font_path: []const u8, icon_font_path: []const u8, window_ptr: *window.Window) !UiContext {
     var self = UiContext{
         .allocator = allocator,
         .generic_shader = gfx.Shader.from_srcs(allocator, "ui_generic", .{
@@ -58,6 +60,7 @@ pub fn init(allocator: Allocator, font_path: []const u8, window_ptr: *window.Win
             .fragment = fragment_shader_src,
         }),
         .font = try Font.from_ttf(allocator, font_path, 18),
+        .icon_font = try Font.from_ttf(allocator, icon_font_path, 18),
         .string_arena = std.heap.ArenaAllocator.init(allocator),
         .node_table = NodeTable.init(allocator),
         .prng = PRNG.init(0),
@@ -69,6 +72,7 @@ pub fn init(allocator: Allocator, font_path: []const u8, window_ptr: *window.Win
 
         .parent_stack = Stack(*Node).init(allocator),
         .style_stack = Stack(Style).init(allocator),
+        .auto_pop_style = false,
         .root_node = undefined,
         .screen_size = undefined,
         .mouse_pos = undefined,
@@ -91,6 +95,7 @@ pub fn deinit(self: *UiContext) void {
     self.node_table.deinit();
     self.string_arena.deinit();
     self.font.deinit();
+    self.icon_font.deinit();
     self.generic_shader.deinit();
 }
 
@@ -134,6 +139,7 @@ pub const Node = struct {
     pref_size: [2]Size,
     child_layout_axis: Axis,
     hover_cursor: window.CursorType,
+    font_type: FontType,
 
     text_rect: Rect, // @hack
 
@@ -156,6 +162,8 @@ pub const Node = struct {
 
 pub const Axis = enum { x, y };
 
+pub const FontType = enum { text, icon };
+
 pub const Style = struct {
     bg_color: vec4 = vec4{ 0.24, 0.27, 0.31, 1 },
     border_color: vec4 = vec4{ 0.5, 0.5, 0.5, 0.5 },
@@ -165,6 +173,7 @@ pub const Style = struct {
     pref_size: [2]Size = .{ Size.text_dim(1), Size.text_dim(1) },
     child_layout_axis: Axis = .y,
     hover_cursor: window.CursorType = .arrow,
+    font_type: FontType = .text,
 };
 
 pub const Size = union(enum) {
@@ -285,9 +294,13 @@ pub fn addNodeRaw(self: *UiContext, flags: Flags, string: []const u8, init_args:
     node.pref_size = style.pref_size;
     node.child_layout_axis = style.child_layout_axis;
     node.hover_cursor = style.hover_cursor;
+    node.font_type = style.font_type;
 
     // @hack: calling textRect is too expensive to do multiple times per frame
-    const font_rect = try self.font.textRect(display_string);
+    const font_rect = try ((switch (node.font_type) {
+        .text => &self.font,
+        .icon => &self.icon_font,
+    }).textRect(display_string));
     node.text_rect = .{ .min = font_rect.min, .max = font_rect.max };
 
     // reset layout data (but not the final screen rect which we need for signal stuff)
@@ -301,12 +314,18 @@ pub fn addNodeRaw(self: *UiContext, flags: Flags, string: []const u8, init_args:
         node.scroll_offset = vec2{ 0, 0 };
     }
 
+    // user overrides of node data
     inline for (@typeInfo(@TypeOf(init_args)).Struct.fields) |field_type_info| {
         const field_name = field_type_info.name;
         if (!@hasField(Node, field_name)) {
             @compileError("Node does not have a field named '" ++ field_name ++ "'");
         }
         @field(node, field_name) = @field(init_args, field_name);
+    }
+
+    if (self.auto_pop_style) {
+        _ = self.popStyle();
+        self.auto_pop_style = false;
     }
 
     return node;
@@ -349,6 +368,12 @@ pub fn popStyle(self: *UiContext) Style {
 }
 pub fn topStyle(self: *UiContext) Style {
     return self.style_stack.top().?;
+}
+/// same as `pushStyle` but the it gets auto-pop'd after the next `addNode`
+pub fn pushTmpStyle(self: *UiContext, partial_style: anytype) void {
+    self.pushStyle(partial_style);
+    if (self.auto_pop_style) std.debug.panic("only one auto-pop'd style can be in the stack\n", .{});
+    self.auto_pop_style = true;
 }
 
 pub fn getNodeSignal(self: *UiContext, node: *Node) Signal {
@@ -563,9 +588,10 @@ pub fn render(self: *UiContext) !void {
         border_thickness: f32,
         clip_rect_min: [2]f32,
         clip_rect_max: [2]f32,
+        use_icon_font: f32,
     };
     // stage2 won't let me put [2]f32 fields in packed structs so I make sure this way instead
-    std.debug.assert(@sizeOf(ShaderInput) == (2 + (6 * 2) + (2 * 4)) * @sizeOf(f32));
+    std.debug.assert(@sizeOf(ShaderInput) == (3 + (6 * 2) + (2 * 4)) * @sizeOf(f32));
     var shader_inputs = std.ArrayList(ShaderInput).init(self.allocator);
     defer shader_inputs.deinit();
 
@@ -639,6 +665,8 @@ pub fn render(self: *UiContext) !void {
     self.generic_shader.set("screen_size", self.screen_size);
     self.generic_shader.set("text_atlas", @as(i32, 0));
     self.font.texture.bind(0);
+    self.generic_shader.set("icon_atlas", @as(i32, 1));
+    self.icon_font.texture.bind(1);
     gl.bindVertexArray(inputs_vao);
     gl.drawArrays(gl.POINTS, 0, @intCast(i32, shader_inputs.items.len));
 }
@@ -665,6 +693,10 @@ fn addShaderInputsForNode(self: *UiContext, comptime ShaderInput: type, shader_i
         .border_thickness = node.border_thickness,
         .clip_rect_min = node.clip_rect.min,
         .clip_rect_max = node.clip_rect.max,
+        .use_icon_font = switch (node.font_type) {
+            .text => 0,
+            .icon => 1,
+        },
     };
 
     // draw background
@@ -709,9 +741,14 @@ fn addShaderInputsForNode(self: *UiContext, comptime ShaderInput: type, shader_i
 
     // draw text
     if (node.flags.draw_text) {
+        const font = switch (node.font_type) {
+            .text => &self.font,
+            .icon => &self.icon_font,
+        };
+
         var text_pos = self.textPosFromNode(node);
         if (node.flags.draw_active_effects) {
-            text_pos[1] -= 0.1 * self.font.pixel_size * node.active_trans;
+            text_pos[1] -= 0.1 * font.pixel_size * node.active_trans;
         }
 
         // TODO: manually clip text rectangles that are completly off the clip rect
@@ -719,7 +756,8 @@ fn addShaderInputsForNode(self: *UiContext, comptime ShaderInput: type, shader_i
         // line file)
 
         const display_text = node.display_string;
-        const quads = try self.font.buildQuads(self.allocator, display_text);
+
+        const quads = try font.buildQuads(self.allocator, display_text);
         defer self.allocator.free(quads);
         for (quads) |quad| {
             var quad_rect = Rect{ .min = quad.points[0].pos, .max = quad.points[2].pos };
@@ -737,6 +775,7 @@ fn addShaderInputsForNode(self: *UiContext, comptime ShaderInput: type, shader_i
                 .border_thickness = 0,
                 .clip_rect_min = base_rect.clip_rect_min,
                 .clip_rect_max = base_rect.clip_rect_max,
+                .use_icon_font = base_rect.use_icon_font,
             });
         }
     }
@@ -755,6 +794,7 @@ const vertex_shader_src =
     \\layout (location = 7) in float attrib_border_thickness;
     \\layout (location = 8) in vec2 attrib_clip_rect_min;
     \\layout (location = 9) in vec2 attrib_clip_rect_max;
+    \\layout (location = 10) in float attrib_use_icon_font;
     \\
     \\uniform vec2 screen_size; // in pixels
     \\
@@ -769,6 +809,7 @@ const vertex_shader_src =
     \\    vec2 border_thickness;
     \\    vec2 clip_rect_min;
     \\    vec2 clip_rect_max;
+    \\    float use_icon_font;
     \\} vs_out;
     \\
     \\void main() {
@@ -786,6 +827,7 @@ const vertex_shader_src =
     \\    vs_out.border_thickness = vec2(attrib_border_thickness) / (attrib_top_right_pos - attrib_bottom_left_pos);
     \\    vs_out.clip_rect_min = attrib_clip_rect_min;
     \\    vs_out.clip_rect_max = attrib_clip_rect_max;
+    \\    vs_out.use_icon_font = attrib_use_icon_font;
     \\}
     \\
 ;
@@ -808,6 +850,7 @@ const geometry_shader_src =
     \\    vec2 border_thickness;
     \\    vec2 clip_rect_min;
     \\    vec2 clip_rect_max;
+    \\    float use_icon_font;
     \\} gs_in[];
     \\
     \\out GS_Out {
@@ -819,6 +862,7 @@ const geometry_shader_src =
     \\    vec2 border_thickness;
     \\    vec2 clip_rect_min;
     \\    vec2 clip_rect_max;
+    \\    float use_icon_font;
     \\} gs_out;
     \\
     \\void main() {
@@ -839,6 +883,7 @@ const geometry_shader_src =
     \\    gs_out.quad_size_ratio = (quad_size.x / quad_size.y) * (screen_size.x / screen_size.y);
     \\    gs_out.clip_rect_min = gs_in[0].clip_rect_min;
     \\    gs_out.clip_rect_max = gs_in[0].clip_rect_max;
+    \\    gs_out.use_icon_font = gs_in[0].use_icon_font;
     \\
     \\    gl_Position        = bottom_left_pos;
     \\    gs_out.uv          = bottom_left_uv;
@@ -891,10 +936,12 @@ const fragment_shader_src =
     \\    vec2 border_thickness; // 0 is no border, 1 is "oops! all border!"
     \\    vec2 clip_rect_min;
     \\    vec2 clip_rect_max;
+    \\    float use_icon_font;
     \\} fs_in;
     \\
     \\uniform vec2 screen_size; // in pixels
     \\uniform sampler2D text_atlas;
+    \\uniform sampler2D icon_atlas;
     \\
     \\out vec4 FragColor;
     \\
@@ -939,7 +986,9 @@ const fragment_shader_src =
     \\    vec4 color = fs_in.color;
     \\    vec2 quad_coords = fs_in.quad_coords;
     \\
-    \\    float alpha = texture(text_atlas, uv).r;
+    \\    float text_alpha = texture(text_atlas, uv).r;
+    \\    float icon_alpha = texture(icon_atlas, uv).r;
+    \\    float alpha = (fs_in.use_icon_font == 0) ? text_alpha : icon_alpha;
     \\    if (uv == vec2(0, 0)) alpha = 1;
     \\
     \\    float border_size = fs_in.border_thickness.y;

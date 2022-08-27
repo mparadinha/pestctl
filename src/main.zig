@@ -34,6 +34,21 @@ fn parseCmdlineArgs(arg_slices: [][:0]const u8) CmdlineArgs {
     return args;
 }
 
+// icon font (and this mapping) was generated using fontello.com
+const Icons = struct {
+    pub const cancel = "\u{e800}";
+    pub const th_list = "\u{e801}";
+    pub const search = "\u{e802}";
+    pub const plus_circle = "\u{e803}";
+    pub const cog = "\u{e804}";
+    pub const ok = "\u{e805}";
+    pub const circle = "\u{f111}";
+    pub const up_open = "\u{e806}";
+    pub const right_open = "\u{e807}";
+    pub const left_open = "\u{e808}";
+    pub const down_opwn = "\u{e809}";
+};
+
 pub fn main() !void {
     var general_purpose_allocator = std.heap.GeneralPurposeAllocator(.{
         .stack_trace_frames = 8,
@@ -71,7 +86,7 @@ pub fn main() !void {
     gl.depthFunc(gl.LEQUAL);
     gl.enable(gl.LINE_SMOOTH);
 
-    var ui = try UiContext.init(allocator, "VictorMono-Regular.ttf", &window);
+    var ui = try UiContext.init(allocator, "VictorMono-Regular.ttf", "icons.ttf", &window);
     defer ui.deinit();
 
     var session_opt = if (cmdline_args.exec_path) |path| try Session.init(allocator, path) else null;

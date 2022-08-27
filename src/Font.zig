@@ -43,7 +43,7 @@ pub fn from_ttf(allocator: Allocator, filepath: []const u8, size: f32) !Font {
 
     if (c.stbtt_InitFont(&self.font_info, &self.file_data[0], 0) == 0) @panic("");
 
-    try self.setupPacking(64);
+    try self.setupPacking(512);
 
     return self;
 }
