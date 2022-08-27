@@ -1159,6 +1159,7 @@ fn solveViolationsWorkFn(self: *UiContext, node: *Node, axis: Axis) void {
     if (overflow > 0) {
         for (other_children.slice()) |child_node| {
             const strictness = child_node.pref_size[axis_idx].getStrictness();
+            if (strictness == 1) continue;
             const child_size = child_node.calc_size[axis_idx];
             const child_take_budget = child_size * strictness;
             const leeway_percent = (1 - strictness) / other_children_leeway;
