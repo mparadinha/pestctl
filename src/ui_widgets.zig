@@ -1,5 +1,4 @@
-// there's no need to manually include this file, it's already provided
-// by UiContext.zig
+// there's no need to manually include this file, it's already provided by UiContext.zig
 
 const std = @import("std");
 const c = @import("c.zig");
@@ -168,23 +167,19 @@ pub fn scrollableText(self: *UiContext, hash_string: []const u8, string: []const
     return self.getNodeSignal(top_node);
 }
 
-/// if `buf` runs out of space input is truncated
-/// unlike other widgets, the string here is only used for the hash and not display
-pub fn textInput(self: *UiContext, hash_string: []const u8, buf: []u8, buf_len: *usize) Signal {
-    // * widget/parent node (layout in x)
+pub fn textInput(self: *UiContext, hash_string: []const u8, buffer: []u8, buf_len: *usize) Signal {
+    // * widget node (layout in x)
     // | * text node (layout in x)
-    // | | * cursor node y padding node
-    // | | | * cursor node
-
-    const display_buf = buf[0..buf_len.*];
+    // | | * cursor node
 
     // this is a really hacky way to see if this is the first time we using this node
     // (we need to initialize the cursor on first use)
     const first_time = !self.node_table.hasKey(hash_string);
 
-    // NOTE: the text_cursor is in characters/codepoints *not* bytes into buf
-    // (this will still be wrong for glyphs/graphemes that are several codepoints
-    // long, like emoji with modifiers, for example)
+    const display_str = buffer[0..buf_len.*];
+    buffer[buf_len.*] = 0;
+
+    // note: the node cursor/mark is in bytes into buffer
 
     const widget_node = self.addNodeF(.{
         .clip_children = true,
@@ -195,134 +190,302 @@ pub fn textInput(self: *UiContext, hash_string: []const u8, buf: []u8, buf_len: 
         .child_layout_axis = .x,
         .hover_cursor = .ibeam,
     });
-    if (first_time) widget_node.text_cursor = @intToFloat(f32, std.unicode.utf8CountCodepoints(display_buf) catch unreachable);
-
+    if (first_time) {
+        widget_node.cursor = buf_len.*;
+        widget_node.mark = buf_len.*;
+    }
     const node_key = self.keyFromNode(widget_node);
-    var sig = self.getNodeSignal(widget_node);
+    const sig = self.getNodeSignal(widget_node);
+
+    self.pushParent(widget_node);
+    defer _ = self.popParent();
 
     // make input box darker when not in focus
     if (self.active_node_key != node_key)
         widget_node.bg_color = math.times(widget_node.bg_color, 0.85);
 
-    self.pushParent(widget_node);
-    defer _ = self.popParent();
+    const text_node = self.addNode(.{
+        .no_id = true,
+        .ignore_hash_sep = true,
+        .draw_text = true,
+        .floating_x = true,
+    }, display_str, .{});
+    text_node.text_color = vec4{ 0, 0, 0, 1 };
+    text_node.rel_pos = vec2{ 0, 0 };
 
-    // text until the cursor
-    const partial_text_buf = Utf8Viewer.init(display_buf).bytesRange(0, @floatToInt(usize, widget_node.text_cursor));
-    const partial_text_rect = self.font.textRect(partial_text_buf) catch unreachable;
+    const cursor_node = self.addNode(.{
+        .no_id = true,
+        .draw_background = true,
+        .floating_x = true,
+        .floating_y = true,
+    }, "", .{});
+    cursor_node.bg_color = vec4{ 0, 0, 0, 1 };
+    const cursor_height = self.font.getScaledMetrics().line_advance - UiContext.text_vpadding;
+    cursor_node.pref_size = [2]Size{ Size.pixels(1, 1), Size.pixels(cursor_height, 1) };
+    const text_before_cursor = buffer[0..widget_node.cursor];
+    const partial_text_rect = self.font.textRect(text_before_cursor) catch unreachable;
+    cursor_node.rel_pos = vec2{ partial_text_rect.max[0], 0 } + UiContext.text_padd;
 
-    const cursor_rel_pos = partial_text_rect.max[0] + text_hpadding;
-    const max_cursor_rel_pos = widget_node.rect.size()[0] - text_hpadding;
-    const cursor_overflow = std.math.max(0, cursor_rel_pos - max_cursor_rel_pos);
-    self.spacer(.x, Size.pixels(-cursor_overflow, 1));
-
-    const text_node = self.addNode(.{ .no_id = true, .draw_text = true }, display_buf, .{
-        .text_color = vec4{ 0, 0, 0, 1 },
-        .child_layout_axis = .x,
-    });
-    self.pushParent(text_node);
-    defer _ = self.popParent();
-
-    self.spacer(.x, Size.pixels(partial_text_rect.max[0], 1));
-    self.spacer(.x, Size.pixels(text_hpadding, 1)); // TODO: implement general padding and the we can remove the ad-hoc text padding
-    {
-        const v_pad_node = self.addNode(.{ .no_id = true }, "", .{ .child_layout_axis = .y });
-        self.pushParent(v_pad_node);
-        defer _ = self.popParent();
-        self.spacer(.y, Size.pixels(text_vpadding, 1)); // TODO: implement general padding and the we can remove the ad-hoc text padding
-
-        const cursor_node = self.addNode(.{ .no_id = true, .draw_background = true }, "", .{
-            .bg_color = vec4{ 0.2, 0.2, 0.2, 1 },
-        });
-        cursor_node.pref_size[0] = Size.pixels(2, 1);
-        cursor_node.pref_size[1] = Size.percent(0.75, 1);
-    }
+    const selection_node = self.addNode(.{
+        .no_id = true,
+        .draw_background = true,
+        .floating_x = true,
+        .floating_y = true,
+    }, "", .{});
+    selection_node.bg_color = vec4{ 0, 0, 1, 0.25 };
+    const text_before_mark = buffer[0..widget_node.mark];
+    const partial_text_rect_mark = self.font.textRect(text_before_mark) catch unreachable;
+    const selection_size = abs(partial_text_rect_mark.max[0] - partial_text_rect.max[0]);
+    selection_node.pref_size = [2]Size{ Size.pixels(selection_size, 1), cursor_node.pref_size[1] };
+    selection_node.rel_pos = vec2{
+        std.math.min(partial_text_rect_mark.max[0], partial_text_rect.max[0]),
+        0,
+    } + UiContext.text_padd;
 
     if (self.active_node_key != node_key) return sig;
 
-    self.events.iter_idx = null;
-    var next_event = self.events.next();
-    while (next_event) |ev| : (next_event = self.events.next()) {
-        var remove_ev = true;
-        const cur_buf = buf[0..buf_len.*];
-        const view = Utf8Viewer.init(cur_buf);
-        var cur_buf_len = buf_len.*;
-        switch (ev) {
-            // for control type key presses (backspace, ctrl+arrows, etc)
-            // actual text is handled with the Char inputs
-            .KeyDown, .KeyRepeat => |key_ev| switch (key_ev.key) {
-                c.GLFW_KEY_ENTER => {
-                    sig.enter_pressed = true;
-                    self.active_node_key = null;
-                },
-                c.GLFW_KEY_BACKSPACE => {
-                    const old_cursor = @floatToInt(usize, widget_node.text_cursor);
-                    const new_cursor = if (key_ev.mods.control) blk: {
-                        if (view.findLast(' ')) |space_pos| {
-                            break :blk if (space_pos < old_cursor) space_pos + 1 else 0;
-                        } else break :blk 0;
-                    } else blk: {
-                        break :blk if (old_cursor == 0) 0 else old_cursor - 1;
-                    };
-                    const old_bytes_cursor = view.charPosIntoBytes(old_cursor);
-                    const new_bytes_cursor = view.charPosIntoBytes(new_cursor);
+    var text_actions = std.BoundedArray(TextAction, 100).init(0) catch unreachable;
 
-                    widget_node.text_cursor = @intToFloat(f32, new_cursor);
+    while (self.window_ptr.event_queue.next()) |event| {
+        const has_selection = widget_node.cursor != widget_node.mark;
+        var ev_was_used = true;
+        switch (event) {
+            // TODO: mouse input
+            // [ ] click to position cursor
+            // [ ] hold+drag to change mark
+            // [ ] double click to select work
+            // [ ] click while selection if valid to reset selection+cursor
+            // [ ] triple click to select all
+            // [ ] drag while selection is the double-click work selection does word scan type drag
 
-                    std.debug.assert(new_bytes_cursor <= old_bytes_cursor);
-                    // erase buf[new_bytes_cursor .. old_bytes_cursor]
-                    // move buf[old_bytes_cursor ..] to buf[new_bytes_cursor ..]
-                    for (cur_buf[old_bytes_cursor..]) |b, i| {
-                        buf[new_bytes_cursor + i] = b;
-                    }
-                    cur_buf_len -= (old_bytes_cursor - new_bytes_cursor);
-                },
-                c.GLFW_KEY_DELETE => {
-                    const n_chars = std.unicode.utf8CountCodepoints(cur_buf) catch unreachable;
-                    const cur_cursor = @floatToInt(usize, widget_node.text_cursor);
-                    if (cur_cursor >= n_chars) continue;
-
-                    const old_byte_cursor = view.charPosIntoBytes(cur_cursor);
-                    const new_byte_cursor = old_byte_cursor + view.byteSizeAt(cur_cursor);
-
-                    // note: cursor stays in the same place
-
-                    // erase the character at cursor. move everything back one char's worth
-                    // (i.e move buf[new_byte_cursor ..] to  buf[old_byte_cursor ..])
-                    for (cur_buf[new_byte_cursor..]) |b, i| {
-                        buf[old_byte_cursor + i] = b;
-                    }
-                    cur_buf_len -= (new_byte_cursor - old_byte_cursor);
-                },
-                c.GLFW_KEY_LEFT => {
-                    if (widget_node.text_cursor > 0) widget_node.text_cursor -= 1;
-                },
-                c.GLFW_KEY_RIGHT => {
-                    const max_cursor = std.unicode.utf8CountCodepoints(cur_buf) catch unreachable;
-                    if (widget_node.text_cursor != @intToFloat(f32, max_cursor)) widget_node.text_cursor += 1;
-                },
-                c.GLFW_KEY_HOME => {},
-                c.GLFW_KEY_END => {},
-                else => remove_ev = false,
+            .KeyDown, .KeyRepeat => |ev| {
+                var action = TextAction{ .flags = .{}, .delta = 0, .codepoint = undefined };
+                action.flags.keep_mark = ev.mods.shift;
+                action.flags.word_scan = ev.mods.control;
+                switch (ev.key) {
+                    c.GLFW_KEY_LEFT => action.delta = -1,
+                    c.GLFW_KEY_RIGHT => action.delta = 1,
+                    c.GLFW_KEY_HOME => action.delta = std.math.minInt(isize),
+                    c.GLFW_KEY_END => action.delta = std.math.maxInt(isize),
+                    c.GLFW_KEY_DELETE => {
+                        if (!has_selection) action.delta = 1;
+                        action.flags.delete = true;
+                    },
+                    c.GLFW_KEY_BACKSPACE => {
+                        if (!has_selection) action.delta = -1;
+                        action.flags.delete = true;
+                    },
+                    c.GLFW_KEY_C => {
+                        if (ev.mods.control) {
+                            action.flags.copy = true;
+                        } else ev_was_used = false;
+                    },
+                    c.GLFW_KEY_V => {
+                        if (ev.mods.control) {
+                            action.flags.paste = true;
+                        } else ev_was_used = false;
+                    },
+                    c.GLFW_KEY_X => {
+                        if (ev.mods.control) {
+                            action.flags.copy = true;
+                            action.flags.delete = true;
+                        } else ev_was_used = false;
+                    },
+                    // TODO: ctrl+a to select everything
+                    else => ev_was_used = false,
+                }
+                if (ev_was_used) text_actions.append(action) catch unreachable;
             },
             .Char => |codepoint| {
-                const unicode_pt = @intCast(u21, codepoint);
-                const buf_space_left = buf.len - buf_len.*;
-                const codepoint_len = std.unicode.utf8CodepointSequenceLength(unicode_pt) catch
-                    unreachable; // it was broken when I got here officer. it's GLFW's fault, I swear!
-                if (codepoint_len > buf_space_left) break;
-                var write_buf = buf[buf_len.*..];
-                cur_buf_len += std.unicode.utf8Encode(unicode_pt, write_buf) catch
-                    unreachable; // maybe we're all at fault here??? no, it is GLFW who is wrong.
-                widget_node.text_cursor += 1;
+                const add_codepoint_action = TextAction{
+                    .flags = .{},
+                    .delta = 0,
+                    .codepoint = @intCast(u21, codepoint),
+                };
+                text_actions.append(add_codepoint_action) catch unreachable;
             },
-            else => remove_ev = false,
+            else => ev_was_used = false,
         }
-        buf_len.* = cur_buf_len;
-        if (remove_ev) self.events.removeCurrent();
+        if (ev_was_used) self.window_ptr.event_queue.removeCurrent();
+    }
+
+    for (text_actions.slice()) |action| {
+        var unicode_buf: [4]u8 = undefined;
+        std.debug.print("action={}\n", .{action});
+        const text_op = textOpFromAction(action, widget_node.cursor, widget_node.mark, &unicode_buf, buffer, buf_len.*);
+        std.debug.print("text_op={}\n", .{text_op});
+
+        replaceRange(buffer, buf_len, .{ .start = text_op.range.start, .end = text_op.range.end }, text_op.replace_str);
+        if (text_op.copy_str.len > 0) {
+            // TODO: clipboard
+        }
+        widget_node.cursor = text_op.byte_cursor;
+        widget_node.mark = text_op.byte_mark;
     }
 
     return sig;
+}
+
+const TextAction = struct {
+    flags: struct {
+        keep_mark: bool = false,
+        word_scan: bool = false,
+        delete: bool = false,
+        copy: bool = false,
+        paste: bool = false,
+    },
+    delta: isize,
+    codepoint: u21,
+};
+
+const TextOp = struct {
+    range: struct { start: usize, end: usize },
+    replace_str: []const u8, // contents to replace range with
+    copy_str: []const u8, // contents to send to clipboard
+    byte_cursor: usize, // new cursor position after applying this op
+    byte_mark: usize, // new mark position after applying this op
+};
+
+// helper function for `textInput`
+// note: if we're pasting data from the clipboard (i.e. action.flags.paste == true) the `replace_str` is only valid until
+// the next call to this function that uses the clipboard.
+fn textOpFromAction(action: TextAction, cursor: usize, mark: usize, unicode_buf: []u8, buffer: []const u8, buf_len: usize) TextOp {
+    var text_op = TextOp{
+        .range = .{ .start = 0, .end = 0 },
+        .replace_str = &[0]u8{},
+        .copy_str = &[0]u8{},
+        .byte_cursor = cursor,
+        .byte_mark = mark,
+    };
+
+    // translate high level char/word delta into a buffer specific byte delta
+    const delta_sign: isize = if (action.delta > 0) 1 else -1;
+    var byte_delta: isize = 0;
+
+    if (action.delta == 0) {
+        _ = byte_delta; // nothing to do;
+    } else if (action.delta == std.math.minInt(isize) or action.delta == std.math.maxInt(isize)) {
+        byte_delta = delta_sign * @intCast(isize, buf_len);
+    } else if (action.flags.word_scan) {
+        // note: because all of our words separators are ASCII we can use a non-unicode aware search
+        // zig fmt: off
+        const word_seps = [_]u8{
+            '`', '~', '!', '@', '#', '$', '%', '^', '&', '*', '(', ')', '-', '=', '+',
+            '[', '{', ']', '}', '\\', '|',
+            ';', ':', '\'', '"',
+            ',', '<', '.', '>', '/', '?',
+        };
+        // zig fmt: on
+
+        // when moving the cursor to the next 'word' most programs have slightly different behaviours.
+        // for example: firefox jumps over the word separator and always put the cursor on the right
+        // of the separator (and jumps over multiple sep. if they're contiguous) while my terminal
+        // puts the cursor on the left of the sep. and does not jump over multiple ones.
+        // in my OS (using gnome) it does jump over multiple sep. but puts the cursor on the left.
+        // Here's the version I'm implementing:
+        // when doing a word scan the cursor should jump the next word, i.e. the next character
+        // (after the end of the current word) that is a word-valid character (i.e. not a sep.)
+        // (so: cursor on left/right side of sep. depending on search direction, jump over contiguous sep.)
+        // In short there are two steps:
+        // find the end of the current word (i.e. the next char that is a sep.)
+        // find the start of the next word after that (i.e. the next char that is *not* a sep.)
+        var i = cursor;
+        end_word_loop: while (i >= 0 and i <= buf_len) : (i = castWrappedAdd(i, delta_sign)) {
+            for (word_seps) |sep| {
+                if (buffer[i] == sep and !(delta_sign < 0 and i == cursor)) break :end_word_loop;
+            }
+            if (i == 0 and delta_sign < 0) break;
+        }
+        start_word_loop: while (i >= 0 and i <= buf_len) : (i = castWrappedAdd(i, delta_sign)) {
+            for (word_seps) |sep| {
+                if (buffer[i] == sep) continue :start_word_loop;
+            }
+            if (i == 0 and delta_sign < 0) break;
+            if (delta_sign < 0 and i < buf_len) i += 1;
+            break :start_word_loop;
+        }
+
+        byte_delta = castAndSub(isize, i, cursor);
+    } else {
+        if (action.delta == 1 and cursor < buf_len) {
+            byte_delta = std.unicode.utf8ByteSequenceLength(buffer[cursor]) catch unreachable;
+        } else if (action.delta == -1 and cursor > 0) {
+            const utf8_viewer = Utf8Viewer.init(buffer[0..cursor]);
+            const char_size = utf8_viewer.lastCharByteSize();
+            byte_delta = -@intCast(isize, char_size);
+        }
+    }
+
+    if (action.codepoint != 0) {
+        const codepoint_len = std.unicode.utf8Encode(action.codepoint, unicode_buf) catch
+            unreachable; // it was broken when I got here officer. it's GLFW's fault, I swear!
+        text_op.replace_str = unicode_buf[0..codepoint_len];
+    }
+
+    // calculate the range we're gonna operate on
+    const new_byte_cursor = @intCast(isize, text_op.byte_cursor) + byte_delta;
+    const size_diff = castAndSub(isize, text_op.replace_str.len, text_op.range.end - text_op.range.start);
+    const new_buf_len = castWrappedAdd(buf_len, size_diff);
+    text_op.byte_cursor = @intCast(usize, std.math.clamp(new_byte_cursor, 0, new_buf_len));
+    text_op.range = .{
+        .start = std.math.min(text_op.byte_cursor, text_op.byte_mark),
+        .end = std.math.max(text_op.byte_cursor, text_op.byte_mark),
+    };
+    if (text_op.replace_str.len == 0 and text_op.copy_str.len == 0 and !action.flags.delete) text_op.range = .{ .start = 0, .end = 0 };
+
+    // set the new cursor/mark position after the op is done
+    const range_len = text_op.range.end - text_op.range.start;
+    // adjust cursor if we changed the size of the buffer (deleting/inserting)
+    if (text_op.replace_str.len != range_len and text_op.byte_cursor == text_op.range.end) {
+        const diff = castAndSub(isize, text_op.replace_str.len, range_len);
+        text_op.byte_cursor = castWrappedAdd(text_op.byte_cursor, diff);
+    }
+    if (!action.flags.keep_mark) text_op.byte_mark = text_op.byte_cursor;
+
+    return text_op;
+}
+
+// helper function for `textInput`. `range.end` is exclusive
+fn replaceRange(buffer: []u8, buf_len: *usize, range: struct { start: usize, end: usize }, new: []const u8) void {
+    const range_len = range.end - range.start;
+
+    // move contents after the range forward if we need more space
+    const space_needed = if (new.len > range_len) new.len - range_len else 0;
+    if (space_needed > 0) {
+        var i: usize = buf_len.* + space_needed - 1;
+        while (i >= range.end + space_needed) : (i -= 1) {
+            buffer[i] = buffer[i - space_needed];
+        }
+        buf_len.* += space_needed;
+    }
+
+    // move contents after the range backward to fill empty space
+    const space_shrink = if (range_len > new.len) range_len - new.len else 0;
+    if (space_shrink > 0) {
+        for (buffer[range.start + new.len .. buf_len.* - space_shrink]) |i| {
+            buffer[i] = buffer[i + space_shrink];
+        }
+        buf_len.* -= space_shrink;
+    }
+
+    // copy the new contents in
+    for (new) |byte, i| buffer[range.start + i] = byte;
+}
+
+// I can't believe this isn't in the std lib
+fn abs(value: anytype) @TypeOf(value) {
+    return if (value < 0) -value else value;
+}
+
+fn castWrappedAdd(src: anytype, diff: anytype) @TypeOf(src) {
+    const SrcType = @TypeOf(src);
+    const DiffType = @TypeOf(diff);
+    std.debug.print("src={}, diff={}\n", .{ src, diff });
+    return @intCast(SrcType, @intCast(DiffType, src) + diff);
+}
+
+fn castAndSub(comptime T: type, a: anytype, b: anytype) T {
+    return @intCast(T, a) - @intCast(T, b);
 }
 
 const Utf8Viewer = struct {

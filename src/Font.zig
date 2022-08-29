@@ -15,7 +15,6 @@ allocator: Allocator,
 file_data: [:0]u8,
 
 pixel_size: f32,
-
 texture: gfx.Texture,
 texture_data: []u8,
 
@@ -221,7 +220,7 @@ fn setupPacking(self: *Font, texture_size: u32) !void {
         1, // padding between characters
         null,
     ) == 0) @panic("");
-    c.stbtt_PackSetOversampling(&self.packing_ctx, 2, 2);
+    //c.stbtt_PackSetOversampling(&self.packing_ctx, 2, 2);
 }
 
 fn resetPacking(self: *Font) void {

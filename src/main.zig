@@ -98,14 +98,11 @@ pub fn main() !void {
     var backing_buf: [0x1000]u8 = undefined;
     var text_buf: []u8 = &backing_buf;
     text_buf.len = 0;
-    var backing_buf_num: [0x1000]u8 = undefined;
-    var text_buf_num = try std.fmt.bufPrint(&backing_buf_num, "105", .{});
-    var backing_buf_file: [0x1000]u8 = undefined;
-    var text_buf_file = try std.fmt.bufPrint(&backing_buf_file, "main.zig", .{});
-    var backing_buf_exec: [0x1000]u8 = undefined;
-    var text_buf_exec = try std.fmt.bufPrint(&backing_buf_exec, "", .{});
-    var backing_buf_var: [0x1000]u8 = undefined;
-    var text_buf_var = try std.fmt.bufPrint(&backing_buf_var, "cur_time", .{});
+
+    var num_buf = try std.BoundedArray(u8, 0x1000).init(0);
+    var file_buf = try std.BoundedArray(u8, 0x1000).init(0);
+    var exec_buf = try std.BoundedArray(u8, 0x1000).init(0);
+    var var_buf = try std.BoundedArray(u8, 0x1000).init(0);
 
     var file_tab = FileTab.init(allocator);
     defer file_tab.deinit();
@@ -167,12 +164,12 @@ pub fn main() !void {
                 const text_input_size = [2]Size{ Size.percent(1, 0), Size.text_dim(1) };
                 ui.pushStyle(.{ .pref_size = text_input_size });
                 ui.pushStyle(.{ .bg_color = vec4{ 0.75, 0.75, 0.75, 1 } });
-                const text_input_sig = ui.textInput("openexecinput", &backing_buf_exec, &text_buf_exec.len);
+                const text_input_sig = ui.textInput("openexecinput", &exec_buf.buffer, &exec_buf.len);
                 _ = ui.popStyle();
                 _ = ui.popStyle();
-                if (text_buf_exec.len > 0 and (open_button_sig.clicked or text_input_sig.enter_pressed)) {
+                if (exec_buf.len > 0 and (open_button_sig.clicked or text_input_sig.enter_pressed)) {
                     if (session_opt) |*session| session.deinit();
-                    session_opt = Session.init(allocator, text_buf_exec) catch |err| blk: {
+                    session_opt = Session.init(allocator, &exec_buf.buffer) catch |err| blk: {
                         ui.openErrorPopUpF("Got an unhandled error: {s}\n{?}", .{ @errorName(err), @errorReturnTrace() });
                         break :blk null;
                     };
@@ -210,12 +207,20 @@ pub fn main() !void {
         right_side_parent.pref_size = [2]Size{ Size.percent(0.5, 1), Size.percent(1, 0) };
         ui.pushParent(right_side_parent);
         {
+            _ = ui.textBoxF("nodes allocated: {}", .{ui.node_table.key_mappings.items.len});
+
             if (session_opt) |*session| {
                 try session.update();
 
                 _ = ui.textBoxF("Child pid: {}", .{session.pid});
                 ui.topParent().last.?.pref_size[0] = Size.percent(1, 1);
-                _ = ui.textBoxF("Child Status: {s}", .{@tagName(session.status)});
+                switch (session.status) {
+                    .Stopped => {
+                        _ = ui.textBox("Child Status: Stopped");
+                        ui.topParent().last.?.text_color = vec4{ 1, 0.5, 0, 1 };
+                    },
+                    .Running => _ = ui.textBox("Child Status: Running"),
+                }
                 ui.topParent().last.?.pref_size[0] = Size.percent(1, 1);
                 _ = ui.textBoxF("wait_status: 0x{x}", .{session.wait_status});
                 ui.topParent().last.?.pref_size[0] = Size.percent(1, 1);
@@ -274,10 +279,10 @@ pub fn main() !void {
                     const button_sig = ui.button("Add Variable");
                     ui.pushStyle(.{ .bg_color = vec4{ 0.75, 0.75, 0.75, 1 } });
                     ui.pushStyle(.{ .pref_size = var_input_size });
-                    const text_sig = ui.textInput("add_var_textinput", &backing_buf_var, &text_buf_var.len);
+                    const text_sig = ui.textInput("add_var_textinput", &var_buf.buffer, &var_buf.len);
                     _ = ui.popStyle();
                     _ = ui.popStyle();
-                    if (button_sig.clicked or text_sig.enter_pressed) try session.addWatchedVariable(text_buf_var);
+                    if (button_sig.clicked or text_sig.enter_pressed) try session.addWatchedVariable(&var_buf.buffer);
                 }
                 _ = ui.popParent();
 
@@ -296,15 +301,15 @@ pub fn main() !void {
                 ui.pushParent(set_break_parent);
                 {
                     if (ui.button("Set Breakpoint").clicked) {
-                        const line = try std.fmt.parseUnsigned(u32, text_buf_num, 0);
-                        try session.setBreakpointAtSrc(.{ .dir = "src", .file = text_buf_file, .line = line, .column = 0 });
+                        const line = try std.fmt.parseUnsigned(u32, &num_buf.buffer, 0);
+                        try session.setBreakpointAtSrc(.{ .dir = "src", .file = &file_buf.buffer, .line = line, .column = 0 });
                     }
 
                     const line_input_size = [2]Size{ Size.percent(0.5, 0.25), Size.text_dim(1) };
                     _ = ui.textBox("Line Number");
                     ui.pushStyle(.{ .bg_color = vec4{ 0.75, 0.75, 0.75, 1 } });
                     ui.pushStyle(.{ .pref_size = line_input_size });
-                    _ = ui.textInput("src_linenum_textinput", &backing_buf_num, &text_buf_num.len);
+                    _ = ui.textInput("src_linenum_textinput", &num_buf.buffer, &num_buf.len);
                     _ = ui.popStyle();
                     _ = ui.popStyle();
 
@@ -312,7 +317,7 @@ pub fn main() !void {
                     _ = ui.textBox("File Name");
                     ui.pushStyle(.{ .bg_color = vec4{ 0.75, 0.75, 0.75, 1 } });
                     ui.pushStyle(.{ .pref_size = file_input_size });
-                    _ = ui.textInput("src_filename_textinput", &backing_buf_file, &text_buf_file.len);
+                    _ = ui.textInput("src_filename_textinput", &file_buf.buffer, &file_buf.len);
                     _ = ui.popStyle();
                     _ = ui.popStyle();
                 }
@@ -335,6 +340,19 @@ pub fn main() !void {
         window.update();
         tracy.FrameMark();
     }
+}
+
+fn separator(ui: *UiContext) void {
+    const parent = ui.topParent();
+    const size = switch (parent.child_layout_axis) {
+        .x => [2]Size{ Size.pixels(1, 1), Size.percent(1, 1) },
+        .y => [2]Size{ Size.percent(1, 1), Size.pixels(1, 1) },
+    };
+    //const bg_color = vec4{ 0, 0, 0, 1 };
+    _ = ui.addNode(.{ .draw_background = true, .no_id = true }, "", .{
+        .pref_size = size,
+        //.bg_color = bg_color,
+    });
 }
 
 const FileTab = struct {

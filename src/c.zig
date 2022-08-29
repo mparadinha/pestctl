@@ -55,6 +55,10 @@ pub const ptrace_request = enum(u32) {
     GET_RSEQ_CONFIGURATION = 0x420f,
 };
 
+pub const ptrace_options = enum(u32) {
+    EXITKILL = 1 << 20,
+};
+
 pub fn ptrace(req: ptrace_request, pid: std.os.pid_t, _addr: ?*anyopaque, _data: ?*anyopaque) usize {
     var addr = if (_addr) |a| @ptrToInt(a) else 0;
     var data = if (_data) |d| @ptrToInt(d) else 0;

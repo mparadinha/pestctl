@@ -145,7 +145,7 @@ pub const Node = struct {
 
     // per-frame sizing information
     text_rect: Rect, // @hack
-    floating_rel_pos: vec2, // relative to bottom left (0, 0) corner of the parent
+    rel_pos: vec2, // for floating nodes; relative to bottom left (0, 0) corner of the parent
 
     // post-size-determination data
     calc_size: vec2,
@@ -160,7 +160,8 @@ pub const Node = struct {
     active_trans: f32,
     first_frame_touched: usize,
     last_frame_touched: usize,
-    text_cursor: f32, // used for text input // TODO: make this an int
+    cursor: usize, // used for text input
+    mark: usize, // used for text input
     scroll_offset: vec2,
 };
 
@@ -555,11 +556,17 @@ pub fn endFrame(self: *UiContext, dt: f32) void {
 
     std.debug.assert(self.parent_stack.len() == 0);
 
-    // TODO: stale node pruning (I don't get what the point of that is?)
+    // stale node pruning, or else they just keep taking up memory forever
+    var node_iter = self.node_table.valueIterator();
+    while (node_iter.next()) |node_ptr| {
+        if (node_ptr.last_frame_touched < self.frame_idx) {
+            node_iter.removeCurrent() catch unreachable;
+        }
+    }
 
     // update the transition/animation values
     const fast_rate = 1 - std.math.pow(f32, 2, -20.0 * dt);
-    var node_iter = self.node_table.valueIterator();
+    node_iter = self.node_table.valueIterator();
     while (node_iter.next()) |node_ptr| {
         const node_key = self.keyFromNode(node_ptr);
         const is_hot = (self.hot_node_key == node_key);
@@ -950,34 +957,32 @@ const fragment_shader_src =
     \\
     \\out vec4 FragColor;
     \\
-    \\float distance_to_edge(vec2 quad_coords) {
-    \\    // because this calculation is identical for all 4 corners we can do some mirroring
-    \\    // to simplify the maths and only worry about one corner
-    \\    vec2 coords = abs((quad_coords * 2) - vec2(1));
-    \\
-    \\    // turn the `quad_coords` (which go from (0, 0) to (1, 1)) into a "scaled" quad coords
-    \\    // for example: if our quad has a ratio of 2, our scaled coords would go from (0, 0) to
-    \\    // (2, 1). this way the calculation on the corner is still a "distance from circle" type
-    \\    // calculation and not the more general (and complicated) "distance from ellipse" one.
-    \\    coords = coords * vec2(fs_in.quad_size_ratio, 1);
-    \\
-    \\    float corner_radius = min(fs_in.quad_size_ratio, 1) * fs_in.corner_roundness;
-    \\    vec2 circle_center = vec2(fs_in.quad_size_ratio, 1) - vec2(corner_radius);
-    \\    vec2 diff_from_center = max(coords - circle_center, 0);
-    \\
-    \\    float corner_dist = corner_radius - length(diff_from_center);
-    \\    vec2 edge_dist = vec2(fs_in.quad_size_ratio, 1) - coords;
-    \\
-    \\    float dist = min(edge_dist.x, edge_dist.y);
-    \\    if (fs_in.corner_roundness != 0) dist = min(dist, corner_dist);
-    \\
-    \\    // this dist is in this "mirrored" space so we have to get it back to the scaled quad space
-    \\    return dist / 2;
-    \\}
-    \\
     \\bool rectContains(vec2 rect_min, vec2 rect_max, vec2 point) {
     \\    return (rect_min.x <= point.x && point.x <= rect_max.x) &&
     \\           (rect_min.y <= point.y && point.y <= rect_max.y);
+    \\}
+    \\
+    \\bool insideBorder(vec2 quad_coords) {
+    \\    if (fs_in.border_thickness == vec2(0, 0)) return true;
+    \\
+    \\    //vec2 coords = abs((quad_coords * 2) - vec2(1));
+    \\    //vec2 border = vec2(1) - fs_in.border_thickness;
+    \\    //return coords.x > border.x || coords.y > border.y;
+    \\
+    \\    vec2 coords = abs((quad_coords * 2) - vec2(1)) * vec2(fs_in.quad_size_ratio, 1);
+    \\    vec2 border = vec2(fs_in.quad_size_ratio, 1) - vec2(fs_in.border_thickness.y);
+    \\    return coords.x > border.x || coords.y > border.y;
+    \\
+    \\    //vec2 coords = abs((quad_coords * 2) - vec2(1));
+    \\    //coords = coords * (1 + fs_in.border_thickness);
+    \\    //coords = coords * vec2(fs_in.quad_size_ratio, 1);
+    \\
+    \\    //vec2 half_width = (1 - fs_in.border_thickness); 
+    \\    //half_width = half_width * vec2(fs_in.quad_size_ratio, 1);
+    \\
+    \\    //float dist = length(max(coords - half_width, 0)) - fs_in.border_thickness.y;
+    \\    //return dist < 2 * fs_in.border_thickness.y && dist > fs_in.border_thickness.y;
+    \\    ////return dist > 0 && dist < fs_in.border_thickness.y;
     \\}
     \\
     \\void main() {
@@ -996,10 +1001,7 @@ const fragment_shader_src =
     \\    float alpha = (fs_in.use_icon_font == 0) ? text_alpha : icon_alpha;
     \\    if (uv == vec2(0, 0)) alpha = 1;
     \\
-    \\    float border_size = fs_in.border_thickness.y;
-    \\    float edge_dist = distance_to_edge(quad_coords);
-    \\    if (edge_dist < 0) alpha = 0;
-    \\    if (edge_dist > border_size && fs_in.border_thickness != vec2(0)) alpha = 0;
+    \\    if (!insideBorder(quad_coords)) alpha = 0;
     \\
     \\    FragColor = color * vec4(1, 1, 1, alpha);
     \\}
@@ -1194,7 +1196,7 @@ fn solveFinalPosWorkFn(self: *UiContext, node: *Node, axis: Axis) void {
             .y => child_node.flags.floating_y,
         };
         if (is_floating) {
-            child_node.calc_rel_pos[axis_idx] = child_node.floating_rel_pos[axis_idx];
+            child_node.calc_rel_pos[axis_idx] = child_node.rel_pos[axis_idx];
             continue;
         }
 
@@ -1253,6 +1255,7 @@ fn layoutRecurseHelperPost(work_fn: LayoutWorkFn, args: LayoutWorkFnArgs) void {
 
 pub const text_hpadding: f32 = 4;
 pub const text_vpadding: f32 = 4;
+pub const text_padd = vec2{ text_hpadding, text_vpadding };
 
 pub fn textPosFromNode(self: *UiContext, node: *Node) vec2 {
     _ = self;
@@ -1351,10 +1354,8 @@ pub fn Stack(comptime T: type) type {
 
 /// Hash map where pointers to entries remains stable when adding new ones.
 /// Supports removing entries while iterating over them.
-/// Uses an arena allocator under the hood to allocate new entries, which is not great
-/// if we have a *lot* of entries. (1000 is not a lot btw)
 pub const NodeTable = struct {
-    arena: std.heap.ArenaAllocator,
+    allocator: Allocator,
     ctx: HashContext,
 
     key_mappings: KeyMap,
@@ -1381,15 +1382,15 @@ pub const NodeTable = struct {
 
     pub fn init(allocator: Allocator) NodeTable {
         return .{
-            .arena = std.heap.ArenaAllocator.init(allocator),
+            .allocator = allocator,
             .ctx = HashContext{},
             .key_mappings = KeyMap.init(allocator),
         };
     }
 
     pub fn deinit(self: *NodeTable) void {
+        for (self.key_mappings.items) |map| self.allocator.destroy(map.value_ptr);
         self.key_mappings.deinit();
-        self.arena.deinit();
     }
 
     pub const GetOrPutResult = struct { found_existing: bool, value_ptr: *V };
@@ -1402,7 +1403,7 @@ pub const NodeTable = struct {
             }
         }
 
-        const value_ptr = try self.arena.allocator().create(V);
+        const value_ptr = try self.allocator.create(V);
         try self.key_mappings.append(.{ .key_hash = key_hash, .value_ptr = value_ptr });
 
         return GetOrPutResult{ .found_existing = false, .value_ptr = value_ptr };
@@ -1422,7 +1423,8 @@ pub const NodeTable = struct {
         const key_hash = self.ctx.hash(key);
         for (self.key_mappings.items) |key_map, i| {
             if (key_map.key_hash == key_hash) {
-                self.key_mappings.swapRemove(i);
+                self.allocator.destroy(key_map.value_ptr);
+                _ = self.key_mappings.swapRemove(i);
                 return;
             }
         }
@@ -1437,11 +1439,11 @@ pub const NodeTable = struct {
     }
 
     pub fn valueIterator(self: *NodeTable) ValueIterator {
-        return ValueIterator{ .key_mappings = &self.key_mappings, .iter_idx = null };
+        return ValueIterator{ .table = self, .iter_idx = null };
     }
 
     pub const ValueIterator = struct {
-        key_mappings: *KeyMap,
+        table: *NodeTable,
         iter_idx: ?usize, // non-null while iterating
 
         pub fn next(self: *ValueIterator) ?*V {
@@ -1451,9 +1453,9 @@ pub const NodeTable = struct {
             };
             self.iter_idx.? += 1;
 
-            if (idx >= self.key_mappings.items.len) return null;
+            if (idx >= self.table.key_mappings.items.len) return null;
 
-            return self.key_mappings.items[idx].value_ptr;
+            return self.table.key_mappings.items[idx].value_ptr;
         }
 
         pub const RemoveError = error{NotIterating};
@@ -1462,9 +1464,10 @@ pub const NodeTable = struct {
         /// sets the removed entry to undefined memory
         pub fn removeCurrent(self: *ValueIterator) RemoveError!void {
             const idx = if (self.iter_idx) |idx| idx else return RemoveError.NotIterating;
-            if (idx > self.key_mappings.items.len) return RemoveError.NotIterating;
+            if (idx > self.table.key_mappings.items.len) return RemoveError.NotIterating;
 
-            _ = self.key_mappings.swapRemove(idx - 1);
+            self.table.allocator.destroy(self.table.key_mappings.items[idx - 1].value_ptr);
+            _ = self.table.key_mappings.swapRemove(idx - 1);
             self.iter_idx.? -= 1;
         }
     };

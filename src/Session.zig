@@ -61,6 +61,10 @@ pub fn deinit(self: *Session) void {
 }
 
 pub fn startTracing(self: *Session) !void {
+    // TODO: use ptrace attach in all cases instead of TRACEME so we can use
+    // the PTRACE_INTERRUPT call
+    // (or maybe not, because of the yama linux module)
+
     self.pid = try std.os.fork();
     if (self.pid == 0) {
         _ = c.ptrace(.TRACEME, 0, null, null);
@@ -72,13 +76,19 @@ pub fn startTracing(self: *Session) !void {
         );
         unreachable;
     }
+
+    // TODO: this should not disabled when attaching to an already running tracee
+    //const opts = @enumToInt(c.ptrace_options.EXITKILL);
+    //_ = c.ptrace(.SETOPTIONS, self.pid, null, @intToPtr(*anyopaque, opts));
+    //_ = c.ptrace(.SETOPTIONS, 0, null, @intToPtr(*anyopaque, opts));
 }
 
 pub fn pause(self: *Session) void {
     if (self.status != .Running) return;
     //_ = c.kill(self.pid, c.SIGTRAP);
-    _ = c.kill(self.pid, c.SIGSTOP);
     // waitpid also isn't working for this case, but I'm not sure why
+    _ = c.kill(self.pid, c.SIGSTOP);
+    //_ = c.ptrace(.INTERRUPT, self.pid, null, null);
     self.status = .Stopped;
 }
 
