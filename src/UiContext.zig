@@ -43,10 +43,7 @@ events: *window.EventQueue,
 frame_idx: usize,
 hot_node_key: ?NodeKey,
 active_node_key: ?NodeKey,
-
-// hack!
-pop_up_key: ?NodeKey,
-on_top_nodes: std.ArrayList(Node),
+focused_node_key: ?NodeKey,
 
 const NodeKey = NodeTable.Hash;
 
@@ -81,15 +78,12 @@ pub fn init(allocator: Allocator, font_path: []const u8, icon_font_path: []const
         .frame_idx = 0,
         .hot_node_key = null,
         .active_node_key = null,
-
-        .pop_up_key = null,
-        .on_top_nodes = std.ArrayList(Node).init(allocator),
+        .focused_node_key = null,
     };
     return self;
 }
 
 pub fn deinit(self: *UiContext) void {
-    self.on_top_nodes.deinit();
     self.style_stack.deinit();
     self.parent_stack.deinit();
     self.node_table.deinit();
@@ -103,7 +97,6 @@ pub const Flags = packed struct {
     clickable: bool = false,
     selectable: bool = false, // maintains focus when clicked
     scrollable: bool = false, // makes it so scroll wheel updates the Node.scroll_offset
-    closeable: bool = false, // hack for pop ups! pressing escape closes it
 
     clip_children: bool = false,
     draw_text: bool = false,
@@ -114,7 +107,6 @@ pub const Flags = packed struct {
 
     floating_x: bool = false,
     floating_y: bool = false,
-    special_error_pop_up_layout: bool = false,
 
     no_id: bool = false,
     ignore_hash_sep: bool = false,
@@ -162,6 +154,8 @@ pub const Node = struct {
     last_frame_touched: usize,
     cursor: usize, // used for text input
     mark: usize, // used for text input
+    last_click_time: f32, // used for double/triple clicking
+    last_double_click_time: f32, // used for double/triple clicking
     scroll_offset: vec2,
 };
 
@@ -237,11 +231,15 @@ pub const Signal = struct {
     clicked: bool,
     pressed: bool,
     released: bool,
+    double_clicked: bool,
+    triple_clicked: bool,
     hovering: bool,
+    mouse_pos: vec2, // these are relative to bottom-left corner of node
     held_down: bool,
     enter_pressed: bool,
-
+    mouse_drag: ?Rect, // relative coordinates, just like `Signal.mouse_pos`
     scroll_offset: vec2,
+    focused: bool,
 };
 
 pub fn addNode(self: *UiContext, flags: Flags, string: []const u8, init_args: anytype) *Node {
@@ -316,6 +314,8 @@ pub fn addNodeRaw(self: *UiContext, flags: Flags, string: []const u8, init_args:
     node.last_frame_touched = self.frame_idx;
     if (!lookup_result.found_existing) {
         node.first_frame_touched = self.frame_idx;
+        node.last_click_time = 0;
+        node.last_double_click_time = 0;
         node.scroll_offset = vec2{ 0, 0 };
     }
 
@@ -386,10 +386,15 @@ pub fn getNodeSignal(self: *UiContext, node: *Node) Signal {
         .clicked = false,
         .pressed = false,
         .released = false,
+        .double_clicked = false,
+        .triple_clicked = false,
         .hovering = false,
+        .mouse_pos = self.window_ptr.mouse_pos() - node.rect.min,
         .held_down = false,
         .enter_pressed = false,
+        .mouse_drag = null,
         .scroll_offset = vec2{ 0, 0 },
+        .focused = false,
     };
 
     const mouse_is_over = node.rect.contains(self.mouse_pos);
@@ -397,31 +402,30 @@ pub fn getNodeSignal(self: *UiContext, node: *Node) Signal {
 
     const hot_key_matches = if (self.hot_node_key) |key| key == node_key else false;
     const active_key_matches = if (self.active_node_key) |key| key == node_key else false;
+    const focused_key_matches = if (self.focused_node_key) |key| key == node_key else false;
+
+    var is_hot = mouse_is_over;
+    var is_active = active_key_matches;
+    var is_focused = focused_key_matches;
+
+    const mouse_down_ev = self.events.find(.MouseDown, c.GLFW_MOUSE_BUTTON_LEFT);
+    var used_mouse_down_ev = false;
+    const mouse_up_ev = self.events.find(.MouseUp, c.GLFW_MOUSE_BUTTON_LEFT);
+    var used_mouse_up_ev = false;
+    const enter_ev = self.events.match(.KeyUp, .{ .key = c.GLFW_KEY_ENTER });
+    var used_enter_ev = false;
 
     if (node.flags.clickable) {
-        const is_hot = mouse_is_over;
-        var is_active = active_key_matches;
-
-        if (hot_key_matches and !is_hot) self.hot_node_key = null;
-        if (!hot_key_matches and is_hot) {
-            self.hot_node_key = node_key;
-        }
-
         // begin/end a click if there was a mouse down/up event on this node
-        if (is_hot) {
-            const mouse_down_ev = self.events.find(.MouseDown, c.GLFW_MOUSE_BUTTON_LEFT);
-            if (!is_active and mouse_down_ev != null) {
-                signal.pressed = true;
-                self.active_node_key = node_key;
-                _ = self.events.removeAt(mouse_down_ev.?);
-            }
-            const mouse_up_ev = self.events.find(.MouseUp, c.GLFW_MOUSE_BUTTON_LEFT);
-            if (is_active and mouse_up_ev != null) {
-                signal.released = true;
-                signal.clicked = true;
-                self.active_node_key = null;
-                _ = self.events.removeAt(mouse_up_ev.?);
-            }
+        if (is_hot and !active_key_matches and mouse_down_ev != null) {
+            signal.pressed = true;
+            is_active = true;
+            used_mouse_down_ev = true;
+        } else if (is_hot and active_key_matches and mouse_up_ev != null) {
+            signal.released = true;
+            signal.clicked = true;
+            is_active = false;
+            used_mouse_up_ev = true;
         }
 
         signal.hovering = is_hot;
@@ -431,36 +435,19 @@ pub fn getNodeSignal(self: *UiContext, node: *Node) Signal {
     }
 
     if (node.flags.selectable) {
-        const is_hot = mouse_is_over;
-        const is_active = active_key_matches;
+        if (mouse_down_ev != null) is_focused = hot_key_matches;
 
-        if (hot_key_matches and !is_hot) self.hot_node_key = null;
-        if (!hot_key_matches and is_hot) {
-            self.hot_node_key = node_key;
-            signal.hovering = true;
+        // TODO: maybe we should remove the whole enter_pressed thing
+        // and just have it use the clicked one instead?
+        if (is_focused and enter_ev != null) {
+            signal.enter_pressed = true;
+            used_enter_ev = true;
         }
-
-        const mouse_down_ev = self.events.find(.MouseDown, c.GLFW_MOUSE_BUTTON_LEFT);
-        // give focus if we click down on the node
-        if (is_hot) {
-            if (!is_active and mouse_down_ev != null) {
-                signal.pressed = true;
-                self.active_node_key = node_key;
-                _ = self.events.removeAt(mouse_down_ev.?);
-            }
-        }
-        // if we click anywhere else remove focus
-        else if (mouse_down_ev != null) {
-            signal.released = true;
-            self.active_node_key = null;
-        }
-        signal.hovering = is_hot;
 
         if (is_active) self.window_ptr.set_cursor(node.hover_cursor);
     }
 
     if (node.flags.scrollable) {
-        const is_hot = mouse_is_over;
         if (is_hot) {
             // HACK for scrollable regions. we should remove the event when consuming it
             // I prob need to implement "floating" (whatever that is)
@@ -473,18 +460,29 @@ pub fn getNodeSignal(self: *UiContext, node: *Node) Signal {
         signal.scroll_offset = node.scroll_offset;
     }
 
-    if (node.flags.special_error_pop_up_layout and node.flags.closeable) {
-        if (self.events.searchAndRemove(.KeyUp, .{ .key = c.GLFW_KEY_ESCAPE, .mods = .{
-            .shift = false,
-            .control = false,
-            .alt = false,
-            .super = false,
-            .caps_lock = false,
-            .num_lock = false,
-        } })) {
-            self.pop_up_key = null;
-        }
-    }
+    signal.focused = is_focused;
+
+    // set/reset the hot and active keys
+    if (is_hot and !hot_key_matches) self.hot_node_key = node_key;
+    if (!is_hot and hot_key_matches) self.hot_node_key = null;
+    if (is_active and !active_key_matches) self.active_node_key = node_key;
+    if (!is_active and active_key_matches) self.active_node_key = null;
+    if (is_focused and !focused_key_matches) self.focused_node_key = node_key;
+    if (!is_focused and focused_key_matches) self.focused_node_key = null;
+
+    if (used_mouse_down_ev) _ = self.events.removeAt(mouse_down_ev.?);
+    if (used_mouse_up_ev) _ = self.events.removeAt(mouse_up_ev.?);
+    if (used_enter_ev) _ = self.events.removeAt(enter_ev.?);
+
+    // double/triple click logic
+    const delay_time = 0.5; // 500 milliseconds
+    const cur_time = @floatCast(f32, c.glfwGetTime());
+    if (signal.clicked and node.last_click_time + delay_time > cur_time)
+        signal.double_clicked = true;
+    if (signal.double_clicked and node.last_double_click_time + delay_time > cur_time)
+        signal.triple_clicked = true;
+    if (signal.clicked) node.last_click_time = cur_time;
+    if (signal.double_clicked) node.last_double_click_time = cur_time;
 
     return signal;
 }
@@ -495,8 +493,6 @@ pub fn startFrame(self: *UiContext, screen_w: u32, screen_h: u32, mouse_pos: vec
     while (node_iter.next()) |node| {
         if (node.flags.no_id) try node_iter.removeCurrent();
     }
-
-    self.on_top_nodes.clearRetainingCapacity();
 
     const screen_size = vec2{ @intToFloat(f32, screen_w), @intToFloat(f32, screen_h) };
     self.screen_size = screen_size;
@@ -528,21 +524,6 @@ pub fn startFrame(self: *UiContext, screen_w: u32, screen_h: u32, mouse_pos: vec
 
     if (self.active_node_key == null and self.hot_node_key == null)
         self.window_ptr.set_cursor(.arrow);
-
-    // pop up hack!
-    if (self.pop_up_key) |key| {
-        const pop_up_node: *Node = blk: {
-            for (self.node_table.key_mappings.items) |key_map| {
-                if (key_map.key_hash == key) break :blk key_map.value_ptr;
-            } else unreachable;
-        };
-        pop_up_node.parent = self.root_node;
-        pop_up_node.next = null;
-        pop_up_node.prev = null;
-        self.root_node.first = pop_up_node;
-        self.root_node.last = pop_up_node;
-        self.root_node.child_count += 1;
-    }
 }
 
 pub fn endFrame(self: *UiContext, dt: f32) void {
@@ -612,17 +593,6 @@ pub fn render(self: *UiContext) !void {
 
     var node_iterator = DepthFirstNodeIterator{ .cur_node = self.root_node };
     while (node_iterator.next()) |node| {
-        if (node.flags.special_error_pop_up_layout) {
-            start_swap_idx = shader_inputs.items.len;
-            try self.addShaderInputsForNode(ShaderInput, &shader_inputs, node);
-            end_swap_idx = shader_inputs.items.len;
-            _ = self.getNodeSignal(node);
-        } else {
-            try self.addShaderInputsForNode(ShaderInput, &shader_inputs, node);
-        }
-    }
-
-    for (self.on_top_nodes.items) |*node| {
         try self.addShaderInputsForNode(ShaderInput, &shader_inputs, node);
     }
 
@@ -685,15 +655,6 @@ pub fn render(self: *UiContext) !void {
 
 // small helper for `UiContext.render`
 fn addShaderInputsForNode(self: *UiContext, comptime ShaderInput: type, shader_inputs: *std.ArrayList(ShaderInput), node: *Node) !void {
-    if (node.flags.special_error_pop_up_layout) {
-        //const text_rect = try self.font.textRect(node.display_string);
-        const text_rect = node.text_rect;
-        const text_size = text_rect.max - text_rect.min;
-        const hsize = math.div(text_size, 2);
-        const center = math.div(self.screen_size, 2);
-        node.rect = .{ .min = center - hsize, .max = center + hsize };
-    }
-
     const base_rect = ShaderInput{
         .bottom_left_pos = node.rect.min,
         .top_right_pos = node.rect.max,
@@ -1234,20 +1195,16 @@ const LayoutWorkFn = fn (*UiContext, *Node, Axis) void;
 const LayoutWorkFnArgs = struct { self: *UiContext, node: *Node, axis: Axis };
 /// do the work before recursing
 fn layoutRecurseHelperPre(work_fn: LayoutWorkFn, args: LayoutWorkFnArgs) void {
-    if (args.node.flags.special_error_pop_up_layout) return;
     work_fn(args.self, args.node, args.axis);
     var child = args.node.first;
     while (child) |child_node| : (child = child_node.next) {
-        if (child_node.flags.special_error_pop_up_layout) continue;
         layoutRecurseHelperPre(work_fn, .{ .self = args.self, .node = child_node, .axis = args.axis });
     }
 }
 /// do the work after recursing
 fn layoutRecurseHelperPost(work_fn: LayoutWorkFn, args: LayoutWorkFnArgs) void {
-    if (args.node.flags.special_error_pop_up_layout) return;
     var child = args.node.first;
     while (child) |child_node| : (child = child_node.next) {
-        if (child_node.flags.special_error_pop_up_layout) continue;
         layoutRecurseHelperPost(work_fn, .{ .self = args.self, .node = child_node, .axis = args.axis });
     }
     work_fn(args.self, args.node, args.axis);
@@ -1491,21 +1448,6 @@ pub fn randomString(prng: *PRNG) [32]u8 {
     var buf: [32]u8 = undefined;
     _ = std.fmt.bufPrint(&buf, "{x:0>16}{x:0>16}", .{ prng.next(), prng.next() }) catch unreachable;
     return buf;
-}
-
-pub fn openErrorPopUpF(self: *UiContext, comptime fmt: []const u8, args: anytype) void {
-    self.pushParent(self.root_node);
-    defer _ = self.popParent();
-
-    var bg_color = self.topStyle().bg_color;
-    bg_color[3] = 1;
-    self.pushStyle(.{ .bg_color = bg_color });
-    _ = self.textBoxF(fmt, args);
-    const pop_up_node = self.root_node.last.?;
-    pop_up_node.flags.closeable = true;
-    pop_up_node.flags.special_error_pop_up_layout = true;
-
-    self.pop_up_key = self.keyFromNode(pop_up_node);
 }
 
 pub fn dumpNodeTree(self: *UiContext) void {

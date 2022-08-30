@@ -58,9 +58,6 @@ pub fn main() !void {
     const allocator = general_purpose_allocator.allocator();
     //const allocator = std.heap.c_allocator;
 
-    //var tmpbuf: [0x1000]u8 = undefined;
-    //std.debug.print("cwd={s}\n", .{try std.os.getcwd(&tmpbuf)});
-
     const arg_slices = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, arg_slices);
     const cmdline_args = parseCmdlineArgs(arg_slices);
@@ -69,7 +66,7 @@ pub fn main() !void {
     var height: u32 = 900;
     // setup GLFW
     var window = Window.init(allocator, width, height, "pestctl");
-    window.setup_callbacks();
+    window.finish_setup();
     defer window.deinit();
     // setup OpenGL
     try gl.load(window.handle, get_proc_address_fn);
@@ -116,8 +113,7 @@ pub fn main() !void {
         const dt = cur_time - last_time;
         last_time = cur_time;
 
-        const window_mouse_pos = window.mouse_pos();
-        const mouse_pos = vec2{ window_mouse_pos[0], @intToFloat(f32, height) - window_mouse_pos[1] };
+        const mouse_pos = window.mouse_pos();
         //var mouse_diff = mouse_pos - last_mouse_pos;
         last_mouse_pos = mouse_pos;
 
@@ -148,6 +144,11 @@ pub fn main() !void {
 
         ui.topParent().child_layout_axis = .x;
 
+        //const test_sig = ui.button("click test");
+        //if (test_sig.clicked) std.debug.print("clicked\n", .{});
+        //if (test_sig.double_clicked) std.debug.print("double_clicked\n", .{});
+        //if (test_sig.triple_clicked) std.debug.print("triple_clicked\n", .{});
+
         const left_side_parent = ui.addNode(.{
             .draw_border = true,
             .draw_background = true,
@@ -169,10 +170,7 @@ pub fn main() !void {
                 _ = ui.popStyle();
                 if (exec_buf.len > 0 and (open_button_sig.clicked or text_input_sig.enter_pressed)) {
                     if (session_opt) |*session| session.deinit();
-                    session_opt = Session.init(allocator, &exec_buf.buffer) catch |err| blk: {
-                        ui.openErrorPopUpF("Got an unhandled error: {s}\n{?}", .{ @errorName(err), @errorReturnTrace() });
-                        break :blk null;
-                    };
+                    session_opt = try Session.init(allocator, &exec_buf.buffer);
                 }
             }
             _ = ui.popParent(); // open_exec_parent
@@ -192,9 +190,7 @@ pub fn main() !void {
                 if (text_buf.len > 0 and (open_button_sig.clicked or text_input_sig.enter_pressed)) {
                     if (file_tab.addFile(text_buf)) {
                         file_tab.active_file = file_tab.files.items.len - 1;
-                    } else |err| {
-                        ui.openErrorPopUpF("Got an unhandled error: {s}\n{?}", .{ @errorName(err), @errorReturnTrace() });
-                    }
+                    } else |err| return err;
                 }
             }
             _ = ui.popParent(); // open_file_parent
@@ -582,24 +578,20 @@ fn textDisplay(ui: *UiContext, label: []const u8, text: []const u8, lock_line: ?
     if (highlight_box) |box| blk: {
         if (box.min.line == 0 and box.max.line == 0) break :blk;
 
-        const ui_style = ui.topStyle();
-        var box_node = @as(UiContext.Node, undefined);
-        box_node.flags = UiContext.Flags{ .draw_border = true };
-        box_node.border_color = ui_style.border_color;
-        box_node.corner_roundness = 0;
-        box_node.border_thickness = ui_style.border_thickness;
-        box_node.pref_size = undefined; // can't set to zero
-        box_node.clip_rect = ui.topParent().clip_rect;
         const text_y_start = parent.rect.max[1] - y_off.*;
         const line_y_start = std.math.max(0, box.min.line - 1) * line_size;
-        const box_y_top = text_y_start - (line_y_start + text_padd[1]);
         const line_y_size = std.math.max(1, box.max.line - box.min.line);
+
+        const box_y_top = text_y_start - line_y_start - 2 * text_padd[1];
         const box_y_size = line_size * line_y_size;
-        box_node.rect = UiContext.Rect{
-            .min = vec2{ parent.rect.min[0], box_y_top - box_y_size },
-            .max = vec2{ parent.rect.max[0], box_y_top },
-        };
-        try ui.on_top_nodes.append(box_node);
+
+        const box_node = ui.addNode(.{
+            .no_id = true,
+            .draw_border = true,
+            .floating_y = true,
+        }, "", .{});
+        box_node.pref_size = [2]Size{ Size.percent(1, 1), Size.pixels(box_y_size, 1) };
+        box_node.rel_pos[1] = box_y_top - box_y_size;
     }
 
     _ = ui.popParent();

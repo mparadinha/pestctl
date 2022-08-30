@@ -11,6 +11,7 @@ pub const InputEvent = union(enum) {
     KeyRepeat: KeyEvent,
     MouseUp: i32,
     MouseDown: i32,
+    MouseDrag: struct { x: f32, y: f32, held_button: i32 }, // NOTE: this uses GLFW mouse coordinates that are relative to top-left corner
     MouseScroll: struct { x: f32, y: f32, shift_held: bool },
     GamepadUp: usize,
     GamepadDown: usize,
@@ -29,26 +30,33 @@ pub const InputEvent = union(enum) {
     //};
 
     pub const Modifiers = struct {
-        shift: bool,
-        control: bool,
-        alt: bool,
-        super: bool,
-        caps_lock: bool,
-        num_lock: bool,
+        shift: bool = false,
+        control: bool = false,
+        alt: bool = false,
+        super: bool = false,
+        caps_lock: bool = false,
+        num_lock: bool = false,
     };
 
-    pub fn payload(self: InputEvent, comptime E: std.meta.Tag(InputEvent)) std.meta.TagPayload(InputEvent, E) {
-        return switch (E) {
+    pub fn payload(self: InputEvent, comptime T: Tag) Payload(T) {
+        return switch (T) {
             .KeyUp => self.KeyUp,
             .KeyDown => self.KeyDown,
             .KeyRepeat => self.KeyRelease,
             .MouseUp => self.MouseUp,
             .MouseDown => self.MouseDown,
+            .MouseDrag => self.MouseDrag,
             .MouseScroll => self.MouseScroll,
             .GamepadUp => self.GamepadUp,
             .GamepadDown => self.GamepadDown,
             .Char => self.Char,
         };
+    }
+
+    pub const Tag = std.meta.Tag(InputEvent);
+
+    pub fn Payload(comptime ev_type: Tag) type {
+        return std.meta.TagPayload(InputEvent, ev_type);
     }
 };
 
@@ -56,6 +64,11 @@ pub const EventQueue = struct {
     events: std.ArrayList(InputEvent),
     /// valid while iterating, null otherwise
     iter_idx: ?usize,
+
+    const EventTag = std.meta.Tag(InputEvent);
+    pub fn EventPayload(comptime T: EventTag) type {
+        return InputEvent.Payload(T);
+    }
 
     /// call `deinit` to clean up
     pub fn init(allocator: Allocator) EventQueue {
@@ -94,13 +107,8 @@ pub const EventQueue = struct {
         return ev;
     }
 
-    const EventTag = std.meta.Tag(InputEvent);
-    pub fn EventPayload(comptime ev_type: EventTag) type {
-        return std.meta.TagPayload(InputEvent, ev_type);
-    }
-
     /// if an event matches, remove it from the queue and return it,
-    // or return null, if there are no matches
+    /// or return null, if there are no matches
     /// (if multiple events match, only the first one is returned/removed)
     pub fn fetchAndRemove(
         self: *EventQueue,
@@ -142,11 +150,33 @@ pub const EventQueue = struct {
     ) ?usize {
         for (self.events.items) |ev, i| {
             if (std.meta.activeTag(ev) != ev_type) continue;
-            if (match_ev_content) |match| {
-                if (!std.meta.eql(match, ev.payload(ev_type))) continue;
+            if (match_ev_content) |match_ev| {
+                if (!std.meta.eql(match_ev, ev.payload(ev_type))) continue;
             }
             return i;
         }
+        return null;
+    }
+
+    pub fn match(self: *EventQueue, comptime ev_type: EventTag, match_content: anytype) ?usize {
+        const T = @TypeOf(match_content);
+        const Payload = EventPayload(ev_type);
+        if (@typeInfo(T) != .Struct) @compileError("match_content must Struct");
+        if (@typeInfo(Payload) != .Struct) @compileError("event payload must Struct");
+
+        ev_loop: for (self.events.items) |ev, i| {
+            if (std.meta.activeTag(ev) != ev_type) continue;
+            const ev_payload: Payload = ev.payload(ev_type);
+            inline for (@typeInfo(T).Struct.fields) |field| {
+                const name = field.name;
+                if (!@hasField(Payload, name))
+                    @compileError(@typeName(T) ++ "has no field named " ++ name);
+                if (@field(ev_payload, name) != @field(match_content, name))
+                    continue :ev_loop;
+            }
+            return i;
+        }
+
         return null;
     }
 
@@ -189,7 +219,7 @@ pub const Window = struct {
         vresize: *c.GLFWcursor,
     },
 
-    /// call 'setup_callbacks' right after 'init'
+    /// call 'finish_setup' right after 'init'
     /// call 'deinit' to clean up resources
     pub fn init(allocator: Allocator, width: u32, height: u32, title: []const u8) Window {
         _ = c.glfwSetErrorCallback(glfw_error_callback); // returns previous callback
@@ -228,6 +258,23 @@ pub const Window = struct {
             },
         };
 
+        // setup callbacks
+        // these all return the previous callback, or NULL if there was none
+        _ = c.glfwSetKeyCallback(self.handle, glfw_key_callback);
+        _ = c.glfwSetMouseButtonCallback(self.handle, glfw_mouse_button_callback);
+        _ = c.glfwSetCursorPosCallback(self.handle, glfw_cursor_pos_callback);
+        _ = c.glfwSetScrollCallback(self.handle, glfw_scroll_callback);
+        _ = c.glfwSetCharCallback(self.handle, glfw_char_callback);
+
+        // setup gamepads
+        for (self.gamepads) |*pad, i| {
+            const id = @intCast(i32, i);
+            pad.id = id;
+            pad.connected = c.glfwJoystickIsGamepad(id) == c.GLFW_TRUE;
+            if (pad.connected) pad.name = std.mem.span(c.glfwGetGamepadName(id));
+        }
+        self.update_gamepads();
+
         return self;
     }
 
@@ -245,23 +292,8 @@ pub const Window = struct {
         self.event_queue.deinit();
     }
 
-    pub fn setup_callbacks(self: *Window) void {
+    pub fn finish_setup(self: *Window) void {
         c.glfwSetWindowUserPointer(self.handle, self);
-        // these all return the previous callback, or NULL if there was none
-        _ = c.glfwSetKeyCallback(self.handle, glfw_key_callback);
-        _ = c.glfwSetMouseButtonCallback(self.handle, glfw_mouse_button_callback);
-        //_ = c.glfwSetCursorPosCallback(self.handle, glfw_mouse_pos_callback);
-        _ = c.glfwSetScrollCallback(self.handle, glfw_scroll_callback);
-        _ = c.glfwSetCharCallback(self.handle, glfw_char_callback);
-
-        // setup gamepads
-        for (self.gamepads) |*pad, i| {
-            const id = @intCast(i32, i);
-            pad.id = id;
-            pad.connected = c.glfwJoystickIsGamepad(id) == c.GLFW_TRUE;
-            if (pad.connected) pad.name = std.mem.span(c.glfwGetGamepadName(id));
-        }
-        self.update_gamepads();
     }
 
     pub fn should_close(self: *Window) bool {
@@ -386,17 +418,22 @@ pub const Window = struct {
         var xpos: f64 = undefined;
         var ypos: f64 = undefined;
         c.glfwGetCursorPos(self.handle, &xpos, &ypos);
-        return vec2{ @floatCast(f32, xpos), @floatCast(f32, ypos) };
+        var width: u32 = undefined;
+        var height: u32 = undefined;
+        self.framebuffer_size(&width, &height);
+        return vec2{ @floatCast(f32, xpos), @intToFloat(f32, height) - @floatCast(f32, ypos) };
     }
 
     pub fn mouse_pos_ndc(self: Window) vec2 {
-        const pos = self.mouse_pos();
+        var xpos: f64 = undefined;
+        var ypos: f64 = undefined;
+        c.glfwGetCursorPos(self.handle, &xpos, &ypos);
         var width: u32 = undefined;
         var height: u32 = undefined;
         self.framebuffer_size(&width, &height);
         return vec2{
-            (2 * (pos[0] / @intToFloat(f32, width)) - 1),
-            -(2 * (pos[1] / @intToFloat(f32, height)) - 1),
+            (2 * (xpos / @intToFloat(f32, width)) - 1),
+            -(2 * (ypos / @intToFloat(f32, height)) - 1),
         };
     }
 
@@ -433,6 +470,26 @@ pub const Window = struct {
         if (action == c.GLFW_RELEASE)
             self.event_queue.append(.{ .MouseUp = button }) catch unreachable;
         _ = mods;
+    }
+
+    fn glfw_cursor_pos_callback(glfw_window: ?*c.GLFWwindow, xpos: f64, ypos: f64) callconv(.C) void {
+        const self = @ptrCast(*Window, @alignCast(8, c.glfwGetWindowUserPointer(glfw_window).?));
+
+        const held_mouse_button: ?i32 =
+            if (c.glfwGetMouseButton(self.handle, c.GLFW_MOUSE_BUTTON_LEFT) == c.GLFW_TRUE)
+            c.GLFW_MOUSE_BUTTON_LEFT
+        else if (c.glfwGetMouseButton(self.handle, c.GLFW_MOUSE_BUTTON_RIGHT) == c.GLFW_TRUE)
+            c.GLFW_MOUSE_BUTTON_RIGHT
+        else
+            null;
+
+        if (held_mouse_button) |button| {
+            self.event_queue.append(.{ .MouseDrag = .{
+                .x = @floatCast(f32, xpos),
+                .y = @floatCast(f32, ypos),
+                .held_button = button,
+            } }) catch unreachable;
+        }
     }
 
     fn glfw_scroll_callback(glfw_window: ?*c.GLFWwindow, xoffset: f64, yoffset: f64) callconv(.C) void {

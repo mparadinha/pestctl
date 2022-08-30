@@ -182,8 +182,9 @@ pub fn textInput(self: *UiContext, hash_string: []const u8, buffer: []u8, buf_le
     // note: the node cursor/mark is in bytes into buffer
 
     const widget_node = self.addNodeF(.{
-        .clip_children = true,
+        .clickable = true,
         .selectable = true,
+        .clip_children = true,
         .draw_background = true,
         .draw_border = true,
     }, "###{s}", .{hash_string}, .{
@@ -194,15 +195,13 @@ pub fn textInput(self: *UiContext, hash_string: []const u8, buffer: []u8, buf_le
         widget_node.cursor = buf_len.*;
         widget_node.mark = buf_len.*;
     }
-    const node_key = self.keyFromNode(widget_node);
     const sig = self.getNodeSignal(widget_node);
 
     self.pushParent(widget_node);
     defer _ = self.popParent();
 
     // make input box darker when not in focus
-    if (self.active_node_key != node_key)
-        widget_node.bg_color = math.times(widget_node.bg_color, 0.85);
+    if (!sig.focused) widget_node.bg_color = math.times(widget_node.bg_color, 0.85);
 
     const text_node = self.addNode(.{
         .no_id = true,
@@ -242,7 +241,7 @@ pub fn textInput(self: *UiContext, hash_string: []const u8, buffer: []u8, buf_le
         0,
     } + UiContext.text_padd;
 
-    if (self.active_node_key != node_key) return sig;
+    if (!sig.focused) return sig;
 
     var text_actions = std.BoundedArray(TextAction, 100).init(0) catch unreachable;
 
@@ -257,9 +256,12 @@ pub fn textInput(self: *UiContext, hash_string: []const u8, buffer: []u8, buf_le
             // [ ] click while selection if valid to reset selection+cursor
             // [ ] triple click to select all
             // [ ] drag while selection is the double-click work selection does word scan type drag
+            .MouseDown => {},
+            .MouseDrag => {},
+            .MouseUp => {},
 
             .KeyDown, .KeyRepeat => |ev| {
-                var action = TextAction{ .flags = .{}, .delta = 0, .codepoint = undefined };
+                var action = TextAction{ .flags = .{}, .delta = 0, .codepoint = null };
                 action.flags.keep_mark = ev.mods.shift;
                 action.flags.word_scan = ev.mods.control;
                 switch (ev.key) {
@@ -278,6 +280,7 @@ pub fn textInput(self: *UiContext, hash_string: []const u8, buffer: []u8, buf_le
                     c.GLFW_KEY_C => {
                         if (ev.mods.control) {
                             action.flags.copy = true;
+                            action.flags.keep_mark = true;
                         } else ev_was_used = false;
                     },
                     c.GLFW_KEY_V => {
@@ -291,7 +294,15 @@ pub fn textInput(self: *UiContext, hash_string: []const u8, buffer: []u8, buf_le
                             action.flags.delete = true;
                         } else ev_was_used = false;
                     },
-                    // TODO: ctrl+a to select everything
+                    c.GLFW_KEY_A => {
+                        if (ev.mods.control) {
+                            // `ctrl+a` is the same as doing `Home` followed by `shift+End`
+                            const home_action = TextAction{ .flags = .{}, .delta = std.math.minInt(isize), .codepoint = null };
+                            text_actions.append(home_action) catch unreachable;
+                            action.flags.keep_mark = true;
+                            action.delta = std.math.maxInt(isize);
+                        } else ev_was_used = false;
+                    },
                     else => ev_was_used = false,
                 }
                 if (ev_was_used) text_actions.append(action) catch unreachable;
@@ -311,13 +322,13 @@ pub fn textInput(self: *UiContext, hash_string: []const u8, buffer: []u8, buf_le
 
     for (text_actions.slice()) |action| {
         var unicode_buf: [4]u8 = undefined;
-        std.debug.print("action={}\n", .{action});
         const text_op = textOpFromAction(action, widget_node.cursor, widget_node.mark, &unicode_buf, buffer, buf_len.*);
-        std.debug.print("text_op={}\n", .{text_op});
 
         replaceRange(buffer, buf_len, .{ .start = text_op.range.start, .end = text_op.range.end }, text_op.replace_str);
         if (text_op.copy_str.len > 0) {
-            // TODO: clipboard
+            const c_str = self.allocator.dupeZ(u8, text_op.copy_str) catch unreachable;
+            defer self.allocator.free(c_str);
+            c.glfwSetClipboardString(null, c_str);
         }
         widget_node.cursor = text_op.byte_cursor;
         widget_node.mark = text_op.byte_mark;
@@ -335,7 +346,7 @@ const TextAction = struct {
         paste: bool = false,
     },
     delta: isize,
-    codepoint: u21,
+    codepoint: ?u21,
 };
 
 const TextOp = struct {
@@ -373,7 +384,7 @@ fn textOpFromAction(action: TextAction, cursor: usize, mark: usize, unicode_buf:
             '`', '~', '!', '@', '#', '$', '%', '^', '&', '*', '(', ')', '-', '=', '+',
             '[', '{', ']', '}', '\\', '|',
             ';', ':', '\'', '"',
-            ',', '<', '.', '>', '/', '?',
+            ' ', ',', '<', '.', '>', '/', '?',
         };
         // zig fmt: on
 
@@ -416,10 +427,19 @@ fn textOpFromAction(action: TextAction, cursor: usize, mark: usize, unicode_buf:
         }
     }
 
-    if (action.codepoint != 0) {
-        const codepoint_len = std.unicode.utf8Encode(action.codepoint, unicode_buf) catch
+    if (action.codepoint) |codepoint| {
+        const codepoint_len = std.unicode.utf8Encode(codepoint, unicode_buf) catch
             unreachable; // it was broken when I got here officer. it's GLFW's fault, I swear!
         text_op.replace_str = unicode_buf[0..codepoint_len];
+    }
+
+    // clipboard
+    if (action.flags.copy) {
+        text_op.copy_str = if (cursor >= mark) buffer[mark..cursor] else buffer[cursor..mark];
+    }
+    if (action.flags.paste) {
+        const clipboard_str = c.glfwGetClipboardString(null);
+        text_op.replace_str = clipboard_str[0..c.strlen(clipboard_str)];
     }
 
     // calculate the range we're gonna operate on
@@ -431,7 +451,7 @@ fn textOpFromAction(action: TextAction, cursor: usize, mark: usize, unicode_buf:
         .start = std.math.min(text_op.byte_cursor, text_op.byte_mark),
         .end = std.math.max(text_op.byte_cursor, text_op.byte_mark),
     };
-    if (text_op.replace_str.len == 0 and text_op.copy_str.len == 0 and !action.flags.delete) text_op.range = .{ .start = 0, .end = 0 };
+    if (text_op.replace_str.len == 0 and !action.flags.delete) text_op.range = .{ .start = 0, .end = 0 };
 
     // set the new cursor/mark position after the op is done
     const range_len = text_op.range.end - text_op.range.start;
@@ -480,7 +500,6 @@ fn abs(value: anytype) @TypeOf(value) {
 fn castWrappedAdd(src: anytype, diff: anytype) @TypeOf(src) {
     const SrcType = @TypeOf(src);
     const DiffType = @TypeOf(diff);
-    std.debug.print("src={}, diff={}\n", .{ src, diff });
     return @intCast(SrcType, @intCast(DiffType, src) + diff);
 }
 
