@@ -152,10 +152,12 @@ pub const Node = struct {
     active_trans: f32,
     first_frame_touched: usize,
     last_frame_touched: usize,
+
+    // cross-frame state for specific features
     cursor: usize, // used for text input
     mark: usize, // used for text input
-    last_click_time: f32, // used for double/triple clicking
-    last_double_click_time: f32, // used for double/triple clicking
+    last_click_time: f32, // used for double click checks
+    last_double_click_time: f32, // used for triple click checks
     scroll_offset: vec2,
 };
 
@@ -233,8 +235,8 @@ pub const Signal = struct {
     released: bool,
     double_clicked: bool,
     triple_clicked: bool,
-    hovering: bool,
     mouse_pos: vec2, // these are relative to bottom-left corner of node
+    hovering: bool,
     held_down: bool,
     enter_pressed: bool,
     mouse_drag: ?Rect, // relative coordinates, just like `Signal.mouse_pos`
@@ -388,8 +390,8 @@ pub fn getNodeSignal(self: *UiContext, node: *Node) Signal {
         .released = false,
         .double_clicked = false,
         .triple_clicked = false,
-        .hovering = false,
         .mouse_pos = self.window_ptr.mouse_pos() - node.rect.min,
+        .hovering = false,
         .held_down = false,
         .enter_pressed = false,
         .mouse_drag = null,
@@ -437,6 +439,14 @@ pub fn getNodeSignal(self: *UiContext, node: *Node) Signal {
     if (node.flags.selectable) {
         if (mouse_down_ev != null) is_focused = hot_key_matches;
 
+        // selectables support recieving clicks when the mouse up event happens outside
+        if (is_focused and active_key_matches and mouse_up_ev != null) {
+            signal.released = true;
+            signal.clicked = true;
+            is_active = false;
+            used_mouse_up_ev = true;
+        }
+
         // TODO: maybe we should remove the whole enter_pressed thing
         // and just have it use the clicked one instead?
         if (is_focused and enter_ev != null) {
@@ -475,7 +485,7 @@ pub fn getNodeSignal(self: *UiContext, node: *Node) Signal {
     if (used_enter_ev) _ = self.events.removeAt(enter_ev.?);
 
     // double/triple click logic
-    const delay_time = 0.5; // 500 milliseconds
+    const delay_time = 0.4; // 400 milliseconds
     const cur_time = @floatCast(f32, c.glfwGetTime());
     if (signal.clicked and node.last_click_time + delay_time > cur_time)
         signal.double_clicked = true;

@@ -168,6 +168,13 @@ pub fn scrollableText(self: *UiContext, hash_string: []const u8, string: []const
 }
 
 pub fn textInput(self: *UiContext, hash_string: []const u8, buffer: []u8, buf_len: *usize) Signal {
+    return textInputRaw(self, hash_string, buffer, buf_len) catch |e| blk: {
+        self.setErrorInfo(@errorReturnTrace(), @errorName(e));
+        break :blk std.mem.zeroes(Signal);
+    };
+}
+
+pub fn textInputRaw(self: *UiContext, hash_string: []const u8, buffer: []u8, buf_len: *usize) !Signal {
     // * widget node (layout in x)
     // | * text node (layout in x)
     // | | * cursor node
@@ -212,6 +219,8 @@ pub fn textInput(self: *UiContext, hash_string: []const u8, buffer: []u8, buf_le
     text_node.text_color = vec4{ 0, 0, 0, 1 };
     text_node.rel_pos = vec2{ 0, 0 };
 
+    // TODO: scrolling text if it doesn't fit
+
     const cursor_node = self.addNode(.{
         .no_id = true,
         .draw_background = true,
@@ -222,7 +231,7 @@ pub fn textInput(self: *UiContext, hash_string: []const u8, buffer: []u8, buf_le
     const cursor_height = self.font.getScaledMetrics().line_advance - UiContext.text_vpadding;
     cursor_node.pref_size = [2]Size{ Size.pixels(1, 1), Size.pixels(cursor_height, 1) };
     const text_before_cursor = buffer[0..widget_node.cursor];
-    const partial_text_rect = self.font.textRect(text_before_cursor) catch unreachable;
+    const partial_text_rect = try self.font.textRect(text_before_cursor);
     cursor_node.rel_pos = vec2{ partial_text_rect.max[0], 0 } + UiContext.text_padd;
 
     const selection_node = self.addNode(.{
@@ -233,7 +242,7 @@ pub fn textInput(self: *UiContext, hash_string: []const u8, buffer: []u8, buf_le
     }, "", .{});
     selection_node.bg_color = vec4{ 0, 0, 1, 0.25 };
     const text_before_mark = buffer[0..widget_node.mark];
-    const partial_text_rect_mark = self.font.textRect(text_before_mark) catch unreachable;
+    const partial_text_rect_mark = try self.font.textRect(text_before_mark);
     const selection_size = abs(partial_text_rect_mark.max[0] - partial_text_rect.max[0]);
     selection_node.pref_size = [2]Size{ Size.pixels(selection_size, 1), cursor_node.pref_size[1] };
     selection_node.rel_pos = vec2{
@@ -243,23 +252,47 @@ pub fn textInput(self: *UiContext, hash_string: []const u8, buffer: []u8, buf_le
 
     if (!sig.focused) return sig;
 
-    var text_actions = std.BoundedArray(TextAction, 100).init(0) catch unreachable;
+    var text_actions = try std.BoundedArray(TextAction, 100).init(0);
+
+    // triple click is the same as ctrl+a (which is the same as `Home` followed by `shift+End`)
+    if (sig.triple_clicked) {
+        var action = TextAction{ .flags = .{}, .delta = 0, .codepoint = null };
+        action.delta = std.math.minInt(isize);
+        try text_actions.append(action);
+        action.flags.keep_mark = true;
+        action.delta = std.math.maxInt(isize);
+        try text_actions.append(action);
+    }
+    // double click selects the current word
+    else if (sig.double_clicked) {
+        widget_node.mark = if (findFirstDiff(display_str, widget_node.cursor, .left)) |idx| blk: {
+            break :blk std.math.min(idx + 1, display_str.len);
+        } else 0;
+        widget_node.cursor = findFirstDiff(display_str, widget_node.cursor, .right) orelse
+            display_str.len;
+    }
+    // use mouse press to select cursor position
+    else if (sig.pressed or sig.held_down) {
+        // find the index where the mouse is
+        var idx: usize = 0;
+        while (idx < buf_len.*) {
+            const codepoint_len = try std.unicode.utf8ByteSequenceLength(display_str[idx]);
+            const partial_text_buf = display_str[0 .. idx + codepoint_len];
+            const partial_rect = try self.font.textRect(partial_text_buf);
+            if (partial_rect.max[0] + UiContext.text_hpadding > sig.mouse_pos[0]) break;
+            idx += codepoint_len;
+        }
+
+        if (sig.held_down) widget_node.cursor = idx;
+        if (sig.pressed) widget_node.mark = idx;
+    }
+    // TODO: doing a click followed by press and drag in the same timing as a double-click
+    // does a selection but using the same "word scan" as the double click code path
 
     while (self.window_ptr.event_queue.next()) |event| {
         const has_selection = widget_node.cursor != widget_node.mark;
         var ev_was_used = true;
         switch (event) {
-            // TODO: mouse input
-            // [ ] click to position cursor
-            // [ ] hold+drag to change mark
-            // [ ] double click to select work
-            // [ ] click while selection if valid to reset selection+cursor
-            // [ ] triple click to select all
-            // [ ] drag while selection is the double-click work selection does word scan type drag
-            .MouseDown => {},
-            .MouseDrag => {},
-            .MouseUp => {},
-
             .KeyDown, .KeyRepeat => |ev| {
                 var action = TextAction{ .flags = .{}, .delta = 0, .codepoint = null };
                 action.flags.keep_mark = ev.mods.shift;
@@ -298,14 +331,14 @@ pub fn textInput(self: *UiContext, hash_string: []const u8, buffer: []u8, buf_le
                         if (ev.mods.control) {
                             // `ctrl+a` is the same as doing `Home` followed by `shift+End`
                             const home_action = TextAction{ .flags = .{}, .delta = std.math.minInt(isize), .codepoint = null };
-                            text_actions.append(home_action) catch unreachable;
+                            try text_actions.append(home_action);
                             action.flags.keep_mark = true;
                             action.delta = std.math.maxInt(isize);
                         } else ev_was_used = false;
                     },
                     else => ev_was_used = false,
                 }
-                if (ev_was_used) text_actions.append(action) catch unreachable;
+                if (ev_was_used) try text_actions.append(action);
             },
             .Char => |codepoint| {
                 const add_codepoint_action = TextAction{
@@ -313,7 +346,7 @@ pub fn textInput(self: *UiContext, hash_string: []const u8, buffer: []u8, buf_le
                     .delta = 0,
                     .codepoint = @intCast(u21, codepoint),
                 };
-                text_actions.append(add_codepoint_action) catch unreachable;
+                try text_actions.append(add_codepoint_action);
             },
             else => ev_was_used = false,
         }
@@ -322,11 +355,14 @@ pub fn textInput(self: *UiContext, hash_string: []const u8, buffer: []u8, buf_le
 
     for (text_actions.slice()) |action| {
         var unicode_buf: [4]u8 = undefined;
-        const text_op = textOpFromAction(action, widget_node.cursor, widget_node.mark, &unicode_buf, buffer, buf_len.*);
+        const cur_buf = buffer[0..buf_len.*];
+        const text_op = try textOpFromAction(action, widget_node.cursor, widget_node.mark, &unicode_buf, cur_buf);
+        std.debug.print("text action: {}\n", .{action});
+        std.debug.print("text op: {}\n", .{text_op});
 
         replaceRange(buffer, buf_len, .{ .start = text_op.range.start, .end = text_op.range.end }, text_op.replace_str);
         if (text_op.copy_str.len > 0) {
-            const c_str = self.allocator.dupeZ(u8, text_op.copy_str) catch unreachable;
+            const c_str = try self.allocator.dupeZ(u8, text_op.copy_str);
             defer self.allocator.free(c_str);
             c.glfwSetClipboardString(null, c_str);
         }
@@ -357,10 +393,19 @@ const TextOp = struct {
     byte_mark: usize, // new mark position after applying this op
 };
 
+// zig fmt: off
+const word_seps = [_]u8{
+    '`', '~', '!', '@', '#', '$', '%', '^', '&', '*', '(', ')', '-', '=', '+',
+    '[', '{', ']', '}', '\\', '|',
+    ';', ':', '\'', '"',
+    ' ', ',', '<', '.', '>', '/', '?',
+};
+// zig fmt: on
+
 // helper function for `textInput`
 // note: if we're pasting data from the clipboard (i.e. action.flags.paste == true) the `replace_str` is only valid until
 // the next call to this function that uses the clipboard.
-fn textOpFromAction(action: TextAction, cursor: usize, mark: usize, unicode_buf: []u8, buffer: []const u8, buf_len: usize) TextOp {
+fn textOpFromAction(action: TextAction, cursor: usize, mark: usize, unicode_buf: []u8, buf: []const u8) !TextOp {
     var text_op = TextOp{
         .range = .{ .start = 0, .end = 0 },
         .replace_str = &[0]u8{},
@@ -369,25 +414,15 @@ fn textOpFromAction(action: TextAction, cursor: usize, mark: usize, unicode_buf:
         .byte_mark = mark,
     };
 
-    // translate high level char/word delta into a buffer specific byte delta
     const delta_sign: isize = if (action.delta > 0) 1 else -1;
     var byte_delta: isize = 0;
 
+    // translate high level char/word delta into a buffer specific byte delta
     if (action.delta == 0) {
         _ = byte_delta; // nothing to do;
     } else if (action.delta == std.math.minInt(isize) or action.delta == std.math.maxInt(isize)) {
-        byte_delta = delta_sign * @intCast(isize, buf_len);
+        byte_delta = delta_sign * @intCast(isize, buf.len);
     } else if (action.flags.word_scan) {
-        // note: because all of our words separators are ASCII we can use a non-unicode aware search
-        // zig fmt: off
-        const word_seps = [_]u8{
-            '`', '~', '!', '@', '#', '$', '%', '^', '&', '*', '(', ')', '-', '=', '+',
-            '[', '{', ']', '}', '\\', '|',
-            ';', ':', '\'', '"',
-            ' ', ',', '<', '.', '>', '/', '?',
-        };
-        // zig fmt: on
-
         // when moving the cursor to the next 'word' most programs have slightly different behaviours.
         // for example: firefox jumps over the word separator and always put the cursor on the right
         // of the separator (and jumps over multiple sep. if they're contiguous) while my terminal
@@ -401,27 +436,33 @@ fn textOpFromAction(action: TextAction, cursor: usize, mark: usize, unicode_buf:
         // find the end of the current word (i.e. the next char that is a sep.)
         // find the start of the next word after that (i.e. the next char that is *not* a sep.)
         var i = cursor;
-        end_word_loop: while (i >= 0 and i <= buf_len) : (i = castWrappedAdd(i, delta_sign)) {
-            for (word_seps) |sep| {
-                if (buffer[i] == sep and !(delta_sign < 0 and i == cursor)) break :end_word_loop;
+        if (buf.len != 0) {
+            end_word_loop: while (i >= 0 and i <= buf.len) : (i = castWrappedAdd(i, delta_sign)) {
+                if (i == buf.len and delta_sign > 0) break;
+                if (i == buf.len and delta_sign < 0) continue;
+                for (word_seps) |sep| {
+                    if (buf[i] == sep and !(delta_sign < 0 and i == cursor)) break :end_word_loop;
+                }
+                if (i == 0 and delta_sign < 0) break;
             }
-            if (i == 0 and delta_sign < 0) break;
-        }
-        start_word_loop: while (i >= 0 and i <= buf_len) : (i = castWrappedAdd(i, delta_sign)) {
-            for (word_seps) |sep| {
-                if (buffer[i] == sep) continue :start_word_loop;
+            start_word_loop: while (i >= 0 and i <= buf.len) : (i = castWrappedAdd(i, delta_sign)) {
+                if (i == buf.len and delta_sign > 0) break;
+                if (i == buf.len and delta_sign < 0) continue;
+                for (word_seps) |sep| {
+                    if (buf[i] == sep) continue :start_word_loop;
+                }
+                if (i == 0 and delta_sign < 0) break;
+                if (delta_sign < 0 and i < buf.len) i += 1;
+                break :start_word_loop;
             }
-            if (i == 0 and delta_sign < 0) break;
-            if (delta_sign < 0 and i < buf_len) i += 1;
-            break :start_word_loop;
         }
 
         byte_delta = castAndSub(isize, i, cursor);
     } else {
-        if (action.delta == 1 and cursor < buf_len) {
-            byte_delta = std.unicode.utf8ByteSequenceLength(buffer[cursor]) catch unreachable;
+        if (action.delta == 1 and cursor < buf.len) {
+            byte_delta = try std.unicode.utf8ByteSequenceLength(buf[cursor]);
         } else if (action.delta == -1 and cursor > 0) {
-            const utf8_viewer = Utf8Viewer.init(buffer[0..cursor]);
+            const utf8_viewer = Utf8Viewer.init(buf[0..cursor]);
             const char_size = utf8_viewer.lastCharByteSize();
             byte_delta = -@intCast(isize, char_size);
         }
@@ -435,7 +476,7 @@ fn textOpFromAction(action: TextAction, cursor: usize, mark: usize, unicode_buf:
 
     // clipboard
     if (action.flags.copy) {
-        text_op.copy_str = if (cursor >= mark) buffer[mark..cursor] else buffer[cursor..mark];
+        text_op.copy_str = if (cursor >= mark) buf[mark..cursor] else buf[cursor..mark];
     }
     if (action.flags.paste) {
         const clipboard_str = c.glfwGetClipboardString(null);
@@ -445,7 +486,7 @@ fn textOpFromAction(action: TextAction, cursor: usize, mark: usize, unicode_buf:
     // calculate the range we're gonna operate on
     const new_byte_cursor = @intCast(isize, text_op.byte_cursor) + byte_delta;
     const size_diff = castAndSub(isize, text_op.replace_str.len, text_op.range.end - text_op.range.start);
-    const new_buf_len = castWrappedAdd(buf_len, size_diff);
+    const new_buf_len = castWrappedAdd(buf.len, size_diff);
     text_op.byte_cursor = @intCast(usize, std.math.clamp(new_byte_cursor, 0, new_buf_len));
     text_op.range = .{
         .start = std.math.min(text_op.byte_cursor, text_op.byte_mark),
@@ -465,9 +506,64 @@ fn textOpFromAction(action: TextAction, cursor: usize, mark: usize, unicode_buf:
     return text_op;
 }
 
+const SearchDir = enum { left, right };
+
+// return the index of the first separator to the left/right of `start_idx` or
+// null if we couldn't find any in that direction
+fn findFirstSep(buf: []const u8, start_idx: usize, search_dir: SearchDir) ?usize {
+    const delta: isize = switch (search_dir) {
+        .left => -1,
+        .right => 1,
+    };
+
+    // note: because all of our words separators are ASCII we can use a non-unicode aware search
+    var search_idx: isize = @intCast(isize, start_idx);
+    while (search_idx >= 0 and search_idx < buf.len) : (search_idx += delta) {
+        const idx = @intCast(usize, search_idx);
+        for (word_seps) |sep| {
+            if (buf[idx] == sep) return idx;
+        }
+    }
+
+    return null;
+}
+fn findFirstNonSep(buf: []const u8, start_idx: usize, search_dir: SearchDir) ?usize {
+    const delta: isize = switch (search_dir) {
+        .left => -1,
+        .right => 1,
+    };
+
+    // note: because all of our words separators are ASCII we can use a non-unicode aware search
+    var search_idx: isize = @intCast(isize, start_idx);
+    outer_loop: while (search_idx >= 0 and search_idx < buf.len) : (search_idx += delta) {
+        const idx = @intCast(usize, search_idx);
+        for (word_seps) |sep| {
+            if (buf[idx] == sep) continue :outer_loop;
+        }
+        return idx;
+    }
+
+    return null;
+}
+
+// if `start_idx` is a separator this is the same `findFirstNonSep`
+// if `start_idx` is a not separator this is the same `findFirstSep`
+fn findFirstDiff(buf: []const u8, start_idx: usize, search_dir: SearchDir) ?usize {
+    if (buf.len == 0) return 0;
+    if (start_idx == buf.len) return null;
+
+    const start_char = buf[start_idx];
+    for (word_seps) |sep| {
+        if (start_char == sep) return findFirstNonSep(buf, start_idx, search_dir);
+    }
+    return findFirstSep(buf, start_idx, search_dir);
+}
+
 // helper function for `textInput`. `range.end` is exclusive
 fn replaceRange(buffer: []u8, buf_len: *usize, range: struct { start: usize, end: usize }, new: []const u8) void {
     const range_len = range.end - range.start;
+
+    std.debug.print("replacing '{s}' with '{s}'\n", .{ buffer[range.start..range.end], new });
 
     // move contents after the range forward if we need more space
     const space_needed = if (new.len > range_len) new.len - range_len else 0;
@@ -482,8 +578,8 @@ fn replaceRange(buffer: []u8, buf_len: *usize, range: struct { start: usize, end
     // move contents after the range backward to fill empty space
     const space_shrink = if (range_len > new.len) range_len - new.len else 0;
     if (space_shrink > 0) {
-        for (buffer[range.start + new.len .. buf_len.* - space_shrink]) |i| {
-            buffer[i] = buffer[i + space_shrink];
+        for (buffer[range.start + new.len .. buf_len.* - space_shrink]) |*byte, i| {
+            byte.* = buffer[range.end + i];
         }
         buf_len.* -= space_shrink;
     }
