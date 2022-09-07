@@ -357,8 +357,6 @@ pub fn textInputRaw(self: *UiContext, hash_string: []const u8, buffer: []u8, buf
         var unicode_buf: [4]u8 = undefined;
         const cur_buf = buffer[0..buf_len.*];
         const text_op = try textOpFromAction(action, widget_node.cursor, widget_node.mark, &unicode_buf, cur_buf);
-        std.debug.print("text action: {}\n", .{action});
-        std.debug.print("text op: {}\n", .{text_op});
 
         replaceRange(buffer, buf_len, .{ .start = text_op.range.start, .end = text_op.range.end }, text_op.replace_str);
         if (text_op.copy_str.len > 0) {
@@ -562,8 +560,6 @@ fn findFirstDiff(buf: []const u8, start_idx: usize, search_dir: SearchDir) ?usiz
 // helper function for `textInput`. `range.end` is exclusive
 fn replaceRange(buffer: []u8, buf_len: *usize, range: struct { start: usize, end: usize }, new: []const u8) void {
     const range_len = range.end - range.start;
-
-    std.debug.print("replacing '{s}' with '{s}'\n", .{ buffer[range.start..range.end], new });
 
     // move contents after the range forward if we need more space
     const space_needed = if (new.len > range_len) new.len - range_len else 0;

@@ -187,7 +187,7 @@ pub fn stepInstructions(self: *Session, num_instrs: usize) !void {
     }
 }
 
-/// this steps over functions
+/// note: this steps into functions
 pub fn stepLine(self: *Session) !void {
     if (self.status != .Stopped) return;
 
@@ -199,9 +199,8 @@ pub fn stepLine(self: *Session) !void {
     var old_src = self.src_loc orelse return;
     while (true) {
         try self.stepInstructions(1);
-        //std.debug.print("step one instruction. addr is now 0x{x}\n", .{self.getRegisters().rip});
         var new_src = (try self.currentSrcLoc()) orelse continue;
-        if (old_src.line != new_src.line or old_src.column != new_src.column) {
+        if (old_src.line != new_src.line or !std.mem.eql(u8, old_src.file, new_src.file) or !std.mem.eql(u8, old_src.dir, new_src.dir)) {
             return;
         }
     }

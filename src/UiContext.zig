@@ -170,7 +170,7 @@ pub const Style = struct {
     border_color: vec4 = vec4{ 0.5, 0.5, 0.5, 0.5 },
     text_color: vec4 = vec4{ 1, 1, 1, 1 },
     corner_roundness: f32 = 0,
-    border_thickness: f32 = 2,
+    border_thickness: f32 = 1,
     pref_size: [2]Size = .{ Size.text_dim(1), Size.text_dim(1) },
     child_layout_axis: Axis = .y,
     hover_cursor: window.CursorType = .arrow,
@@ -789,7 +789,8 @@ const vertex_shader_src =
     \\    vec4 top_color;
     \\    vec4 bottom_color;
     \\    float corner_roundness;
-    \\    vec2 border_thickness;
+    \\    float border_thickness;
+    \\    vec2 rect_size;
     \\    vec2 clip_rect_min;
     \\    vec2 clip_rect_max;
     \\    float use_icon_font;
@@ -807,7 +808,8 @@ const vertex_shader_src =
     \\    vs_out.top_color = attrib_top_color;
     \\    vs_out.bottom_color = attrib_bottom_color;
     \\    vs_out.corner_roundness = attrib_corner_roundness;
-    \\    vs_out.border_thickness = vec2(attrib_border_thickness) / (attrib_top_right_pos - attrib_bottom_left_pos);
+    \\    vs_out.border_thickness = attrib_border_thickness;
+    \\    vs_out.rect_size = attrib_top_right_pos - attrib_bottom_left_pos;
     \\    vs_out.clip_rect_min = attrib_clip_rect_min;
     \\    vs_out.clip_rect_max = attrib_clip_rect_max;
     \\    vs_out.use_icon_font = attrib_use_icon_font;
@@ -830,7 +832,8 @@ const geometry_shader_src =
     \\    vec4 top_color;
     \\    vec4 bottom_color;
     \\    float corner_roundness;
-    \\    vec2 border_thickness;
+    \\    float border_thickness;
+    \\    vec2 rect_size;
     \\    vec2 clip_rect_min;
     \\    vec2 clip_rect_max;
     \\    float use_icon_font;
@@ -842,7 +845,8 @@ const geometry_shader_src =
     \\    vec2 quad_coords;
     \\    float quad_size_ratio;
     \\    float corner_roundness;
-    \\    vec2 border_thickness;
+    \\    float border_thickness;
+    \\    vec2 rect_size;
     \\    vec2 clip_rect_min;
     \\    vec2 clip_rect_max;
     \\    float use_icon_font;
@@ -863,6 +867,7 @@ const geometry_shader_src =
     \\    // some things are the same for all verts of the quad
     \\    gs_out.corner_roundness = gs_in[0].corner_roundness;
     \\    gs_out.border_thickness = gs_in[0].border_thickness;
+    \\    gs_out.rect_size = gs_in[0].rect_size;
     \\    gs_out.quad_size_ratio = (quad_size.x / quad_size.y) * (screen_size.x / screen_size.y);
     \\    gs_out.clip_rect_min = gs_in[0].clip_rect_min;
     \\    gs_out.clip_rect_max = gs_in[0].clip_rect_max;
@@ -916,9 +921,13 @@ const fragment_shader_src =
     \\
     \\    float quad_size_ratio;
     \\    float corner_roundness; // 0 is square quad, 1 is full circle
-    \\    vec2 border_thickness; // 0 is no border, 1 is "oops! all border!"
+    \\
+    \\    // these are all in pixels
+    \\    float border_thickness;
+    \\    vec2 rect_size;
     \\    vec2 clip_rect_min;
     \\    vec2 clip_rect_max;
+    \\
     \\    float use_icon_font;
     \\} fs_in;
     \\
@@ -934,26 +943,11 @@ const fragment_shader_src =
     \\}
     \\
     \\bool insideBorder(vec2 quad_coords) {
-    \\    if (fs_in.border_thickness == vec2(0, 0)) return true;
+    \\    if (fs_in.border_thickness == 0) return true;
     \\
-    \\    //vec2 coords = abs((quad_coords * 2) - vec2(1));
-    \\    //vec2 border = vec2(1) - fs_in.border_thickness;
-    \\    //return coords.x > border.x || coords.y > border.y;
-    \\
-    \\    vec2 coords = abs((quad_coords * 2) - vec2(1)) * vec2(fs_in.quad_size_ratio, 1);
-    \\    vec2 border = vec2(fs_in.quad_size_ratio, 1) - vec2(fs_in.border_thickness.y);
-    \\    return coords.x > border.x || coords.y > border.y;
-    \\
-    \\    //vec2 coords = abs((quad_coords * 2) - vec2(1));
-    \\    //coords = coords * (1 + fs_in.border_thickness);
-    \\    //coords = coords * vec2(fs_in.quad_size_ratio, 1);
-    \\
-    \\    //vec2 half_width = (1 - fs_in.border_thickness); 
-    \\    //half_width = half_width * vec2(fs_in.quad_size_ratio, 1);
-    \\
-    \\    //float dist = length(max(coords - half_width, 0)) - fs_in.border_thickness.y;
-    \\    //return dist < 2 * fs_in.border_thickness.y && dist > fs_in.border_thickness.y;
-    \\    ////return dist > 0 && dist < fs_in.border_thickness.y;
+    \\    vec2 coords = abs((quad_coords * 2) - vec2(1));
+    \\    vec2 side_dist = (fs_in.rect_size / 2) * (vec2(1) - coords);
+    \\    return side_dist.x <= fs_in.border_thickness || side_dist.y <= fs_in.border_thickness;
     \\}
     \\
     \\void main() {

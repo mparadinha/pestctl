@@ -144,11 +144,6 @@ pub fn main() !void {
 
         ui.topParent().child_layout_axis = .x;
 
-        //const test_sig = ui.button("click test");
-        //if (test_sig.clicked) std.debug.print("clicked\n", .{});
-        //if (test_sig.double_clicked) std.debug.print("double_clicked\n", .{});
-        //if (test_sig.triple_clicked) std.debug.print("triple_clicked\n", .{});
-
         const left_side_parent = ui.addNode(.{
             .draw_border = true,
             .draw_background = true,
@@ -156,24 +151,25 @@ pub fn main() !void {
         left_side_parent.pref_size = [2]Size{ Size.percent(0.5, 1), Size.percent(1, 0) };
         ui.pushParent(left_side_parent);
         {
-            const open_exec_parent = ui.addNode(.{}, "###open_exec_parent", .{ .child_layout_axis = .x });
-            open_exec_parent.pref_size = [2]Size{ Size.percent(1, 1), Size.by_children(1) };
-            ui.pushParent(open_exec_parent);
-            {
-                const open_button_sig = ui.button("Open Executable");
-                _ = open_button_sig;
-                const text_input_size = [2]Size{ Size.percent(1, 0), Size.text_dim(1) };
-                ui.pushStyle(.{ .pref_size = text_input_size });
-                ui.pushStyle(.{ .bg_color = vec4{ 0.75, 0.75, 0.75, 1 } });
-                const text_input_sig = ui.textInput("openexecinput", &exec_buf.buffer, &exec_buf.len);
-                _ = ui.popStyle();
-                _ = ui.popStyle();
-                if (exec_buf.len > 0 and (open_button_sig.clicked or text_input_sig.enter_pressed)) {
-                    if (session_opt) |*session| session.deinit();
-                    session_opt = try Session.init(allocator, &exec_buf.buffer);
-                }
-            }
-            _ = ui.popParent(); // open_exec_parent
+            _ = exec_buf;
+            //const open_exec_parent = ui.addNode(.{}, "###open_exec_parent", .{ .child_layout_axis = .x });
+            //open_exec_parent.pref_size = [2]Size{ Size.percent(1, 1), Size.by_children(1) };
+            //ui.pushParent(open_exec_parent);
+            //{
+            //    const open_button_sig = ui.button("Open Executable");
+            //    _ = open_button_sig;
+            //    const text_input_size = [2]Size{ Size.percent(1, 0), Size.text_dim(1) };
+            //    ui.pushStyle(.{ .pref_size = text_input_size });
+            //    ui.pushStyle(.{ .bg_color = vec4{ 0.75, 0.75, 0.75, 1 } });
+            //    const text_input_sig = ui.textInput("openexecinput", &exec_buf.buffer, &exec_buf.len);
+            //    _ = ui.popStyle();
+            //    _ = ui.popStyle();
+            //    if (exec_buf.len > 0 and (open_button_sig.clicked or text_input_sig.enter_pressed)) {
+            //        if (session_opt) |*session| session.deinit();
+            //        session_opt = try Session.init(allocator, &exec_buf.buffer);
+            //    }
+            //}
+            //_ = ui.popParent(); // open_exec_parent
 
             const open_file_parent = ui.addNode(.{}, "###open_file_parent", .{ .child_layout_axis = .x });
             open_file_parent.pref_size = [2]Size{ Size.percent(1, 1), Size.by_children(1) };
@@ -220,7 +216,9 @@ pub fn main() !void {
                 ui.topParent().last.?.pref_size[0] = Size.percent(1, 1);
                 _ = ui.textBoxF("wait_status: 0x{x}", .{session.wait_status});
                 ui.topParent().last.?.pref_size[0] = Size.percent(1, 1);
-                _ = ui.textBoxF("src_loc: {?}", .{session.src_loc});
+                if (session.src_loc) |loc| {
+                    _ = ui.textBoxF("src_loc: {s}:{}", .{ loc.file, loc.line });
+                } else _ = ui.textBox("src_loc: null");
                 ui.topParent().last.?.pref_size[0] = Size.percent(1, 1);
 
                 const table_regs = .{ "rax", "rcx", "rbx", "rdx", "rip", "rsp" };
@@ -297,8 +295,8 @@ pub fn main() !void {
                 ui.pushParent(set_break_parent);
                 {
                     if (ui.button("Set Breakpoint").clicked) {
-                        const line = try std.fmt.parseUnsigned(u32, &num_buf.buffer, 0);
-                        try session.setBreakpointAtSrc(.{ .dir = "src", .file = &file_buf.buffer, .line = line, .column = 0 });
+                        const line = try std.fmt.parseUnsigned(u32, num_buf.slice(), 0);
+                        try session.setBreakpointAtSrc(.{ .dir = "src", .file = file_buf.slice(), .line = line, .column = 0 });
                     }
 
                     const line_input_size = [2]Size{ Size.percent(0.5, 0.25), Size.text_dim(1) };
@@ -338,19 +336,6 @@ pub fn main() !void {
     }
 }
 
-fn separator(ui: *UiContext) void {
-    const parent = ui.topParent();
-    const size = switch (parent.child_layout_axis) {
-        .x => [2]Size{ Size.pixels(1, 1), Size.percent(1, 1) },
-        .y => [2]Size{ Size.percent(1, 1), Size.pixels(1, 1) },
-    };
-    //const bg_color = vec4{ 0, 0, 0, 1 };
-    _ = ui.addNode(.{ .draw_background = true, .no_id = true }, "", .{
-        .pref_size = size,
-        //.bg_color = bg_color,
-    });
-}
-
 const FileTab = struct {
     allocator: Allocator,
     files: std.ArrayList(FileInfo),
@@ -368,7 +353,10 @@ const FileTab = struct {
     const FileInfo = struct {
         path: []const u8,
         content: []const u8,
-        lock_line: ?usize,
+        lock_line: ?f32,
+        target_lock_line: ?f32,
+        focus_box: ?SrcBox,
+        target_focus_box: ?SrcBox,
     };
 
     pub fn init(allocator: Allocator) FileTab {
@@ -409,7 +397,14 @@ const FileTab = struct {
         errdefer self.allocator.free(content);
         const dupe_path = try self.allocator.dupe(u8, path);
         errdefer self.allocator.free(dupe_path);
-        try self.files.append(.{ .path = dupe_path, .content = content, .lock_line = null });
+        try self.files.append(.{
+            .path = dupe_path,
+            .content = content,
+            .lock_line = null,
+            .target_lock_line = null,
+            .focus_box = null,
+            .target_focus_box = null,
+        });
     }
 
     /// if file was already open, this does nothing
@@ -427,7 +422,7 @@ const FileTab = struct {
         try self.addFile(path);
         const file_idx = self.findFile(path) orelse unreachable;
 
-        self.files.items[file_idx].lock_line = src.line;
+        self.files.items[file_idx].lock_line = @intToFloat(f32, src.line);
         //self.active_file = file_idx;
 
         self.highlight_box_target = .{
@@ -448,17 +443,6 @@ const FileTab = struct {
         const path = try std.fs.path.join(self.allocator, &.{ src.dir, src.file });
         defer self.allocator.free(path);
         return self.findFile(path);
-    }
-
-    pub fn updateAnimation(self: *FileTab, dt: f32) void {
-        const fast_rate = 1 - std.math.pow(f32, 2, -20.0 * dt);
-        const target = self.highlight_box_target;
-        const cur = &self.highlight_box;
-        cur.file_idx = target.file_idx;
-        cur.min.line += (target.min.line - cur.min.line) * fast_rate;
-        cur.min.column += (target.min.column - cur.min.column) * fast_rate;
-        cur.max.line += (target.max.line - cur.max.line) * fast_rate;
-        cur.max.column += (target.max.column - cur.max.column) * fast_rate;
     }
 
     pub fn display(self: *FileTab, ui: *UiContext) !void {
@@ -485,7 +469,6 @@ const FileTab = struct {
 
         const active_name = if (self.active_file) |idx| self.files.items[idx].path else "";
         const active_content = if (self.active_file) |idx| self.files.items[idx].content else "";
-        const active_line = if (self.active_file) |idx| self.files.items[idx].lock_line else null;
 
         const highlight_box = if (self.active_file == self.highlight_box.file_idx)
             self.highlight_box
@@ -521,7 +504,8 @@ const FileTab = struct {
 
             const text_box_size = [2]Size{ Size.percent(1, 0), Size.percent(1, 0) };
             ui.pushStyle(.{ .pref_size = text_box_size });
-            try textDisplay(ui, active_name, active_content, active_line, highlight_box);
+            const lock_line = if (highlight_box) |box| box.min.line else null;
+            try textDisplay(ui, active_name, active_content, lock_line, highlight_box);
             _ = ui.popStyle();
 
             // very hack and fragile
@@ -538,10 +522,20 @@ const FileTab = struct {
 
         _ = ui.popParent(); // file tab parent
     }
+
+    pub fn updateAnimation(self: *FileTab, dt: f32) void {
+        const fast_rate = 1 - std.math.pow(f32, 2, -20.0 * dt);
+        const target = self.highlight_box_target;
+        const cur = &self.highlight_box;
+        cur.file_idx = target.file_idx;
+        cur.min.line += (target.min.line - cur.min.line) * fast_rate;
+        cur.min.column += (target.min.column - cur.min.column) * fast_rate;
+        cur.max.line += (target.max.line - cur.max.line) * fast_rate;
+        cur.max.column += (target.max.column - cur.max.column) * fast_rate;
+    }
 };
 
-// line 1 to 1 is the first line
-fn textDisplay(ui: *UiContext, label: []const u8, text: []const u8, lock_line: ?usize, highlight_box: ?FileTab.SrcBox) !void {
+fn textDisplay(ui: *UiContext, label: []const u8, text: []const u8, lock_line: ?f32, highlight_box: ?FileTab.SrcBox) !void {
     const parent = ui.addNodeF(.{
         .clip_children = true,
         //.draw_border = true,
@@ -561,7 +555,7 @@ fn textDisplay(ui: *UiContext, label: []const u8, text: []const u8, lock_line: ?
     const label_node = y_scroll.last.?;
 
     if (lock_line) |line| {
-        y_off.* = -line_size * @intToFloat(f32, line) + parent.rect.size()[1] / 2;
+        y_off.* = -line_size * line + parent.rect.size()[1] / 2;
     }
 
     // hack to cut off scrolling at the ends of text
@@ -578,12 +572,10 @@ fn textDisplay(ui: *UiContext, label: []const u8, text: []const u8, lock_line: ?
     if (highlight_box) |box| blk: {
         if (box.min.line == 0 and box.max.line == 0) break :blk;
 
-        const text_y_start = parent.rect.max[1] - y_off.*;
+        const text_y_start = parent.rect.size()[1] - y_off.*;
         const line_y_start = std.math.max(0, box.min.line - 1) * line_size;
-        const line_y_size = std.math.max(1, box.max.line - box.min.line);
-
-        const box_y_top = text_y_start - line_y_start - 2 * text_padd[1];
-        const box_y_size = line_size * line_y_size;
+        const box_y_top = text_y_start - line_y_start - text_padd[1];
+        const box_y_size = std.math.max(1, box.max.line - box.min.line) * line_size;
 
         const box_node = ui.addNode(.{
             .no_id = true,
