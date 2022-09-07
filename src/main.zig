@@ -92,10 +92,7 @@ pub fn main() !void {
     var last_mouse_pos = vec2{ 0, 0 };
     var last_time = @floatCast(f32, c.glfwGetTime());
 
-    var backing_buf: [0x1000]u8 = undefined;
-    var text_buf: []u8 = &backing_buf;
-    text_buf.len = 0;
-
+    var src_file_buf = try std.BoundedArray(u8, 0x1000).init(0);
     var num_buf = try std.BoundedArray(u8, 0x1000).init(0);
     var file_buf = try std.BoundedArray(u8, 0x1000).init(0);
     var exec_buf = try std.BoundedArray(u8, 0x1000).init(0);
@@ -180,11 +177,11 @@ pub fn main() !void {
                 const text_input_size = [2]Size{ Size.percent(1, 0), Size.text_dim(1) };
                 ui.pushStyle(.{ .pref_size = text_input_size });
                 ui.pushStyle(.{ .bg_color = vec4{ 0.75, 0.75, 0.75, 1 } });
-                const text_input_sig = ui.textInput("textinput", &backing_buf, &text_buf.len);
+                const text_input_sig = ui.textInput("textinput", &src_file_buf.buffer, &src_file_buf.len);
                 _ = ui.popStyle();
                 _ = ui.popStyle();
-                if (text_buf.len > 0 and (open_button_sig.clicked or text_input_sig.enter_pressed)) {
-                    if (file_tab.addFile(text_buf)) {
+                if (src_file_buf.len > 0 and (open_button_sig.clicked or text_input_sig.enter_pressed)) {
+                    if (file_tab.addFile(src_file_buf.slice())) {
                         file_tab.active_file = file_tab.files.items.len - 1;
                     } else |err| return err;
                 }
@@ -199,8 +196,6 @@ pub fn main() !void {
         right_side_parent.pref_size = [2]Size{ Size.percent(0.5, 1), Size.percent(1, 0) };
         ui.pushParent(right_side_parent);
         {
-            _ = ui.textBoxF("nodes allocated: {}", .{ui.node_table.key_mappings.items.len});
-
             if (session_opt) |*session| {
                 try session.update();
 
@@ -299,7 +294,7 @@ pub fn main() !void {
                         try session.setBreakpointAtSrc(.{ .dir = "src", .file = file_buf.slice(), .line = line, .column = 0 });
                     }
 
-                    const line_input_size = [2]Size{ Size.percent(0.5, 0.25), Size.text_dim(1) };
+                    const line_input_size = [2]Size{ Size.percent(1, 0), Size.text_dim(1) };
                     _ = ui.textBox("Line Number");
                     ui.pushStyle(.{ .bg_color = vec4{ 0.75, 0.75, 0.75, 1 } });
                     ui.pushStyle(.{ .pref_size = line_input_size });
@@ -307,7 +302,7 @@ pub fn main() !void {
                     _ = ui.popStyle();
                     _ = ui.popStyle();
 
-                    const file_input_size = [2]Size{ Size.percent(0.5, 0.5), Size.text_dim(1) };
+                    const file_input_size = [2]Size{ Size.percent(1, 0), Size.text_dim(1) };
                     _ = ui.textBox("File Name");
                     ui.pushStyle(.{ .bg_color = vec4{ 0.75, 0.75, 0.75, 1 } });
                     ui.pushStyle(.{ .pref_size = file_input_size });

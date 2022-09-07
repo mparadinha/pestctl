@@ -175,10 +175,6 @@ pub fn textInput(self: *UiContext, hash_string: []const u8, buffer: []u8, buf_le
 }
 
 pub fn textInputRaw(self: *UiContext, hash_string: []const u8, buffer: []u8, buf_len: *usize) !Signal {
-    // * widget node (layout in x)
-    // | * text node (layout in x)
-    // | | * cursor node
-
     // this is a really hacky way to see if this is the first time we using this node
     // (we need to initialize the cursor on first use)
     const first_time = !self.node_table.hasKey(hash_string);
@@ -210,16 +206,13 @@ pub fn textInputRaw(self: *UiContext, hash_string: []const u8, buffer: []u8, buf
     // make input box darker when not in focus
     if (!sig.focused) widget_node.bg_color = math.times(widget_node.bg_color, 0.85);
 
-    const text_node = self.addNode(.{
-        .no_id = true,
+    const text_node = self.addNodeStringsF(.{
         .ignore_hash_sep = true,
         .draw_text = true,
         .floating_x = true,
-    }, display_str, .{});
+    }, "{s}", .{display_str}, "{s}_text_node", .{hash_string}, .{});
     text_node.text_color = vec4{ 0, 0, 0, 1 };
-    text_node.rel_pos = vec2{ 0, 0 };
-
-    // TODO: scrolling text if it doesn't fit
+    if (first_time) text_node.rel_pos = vec2{ 0, 0 };
 
     const cursor_node = self.addNode(.{
         .no_id = true,
@@ -232,7 +225,17 @@ pub fn textInputRaw(self: *UiContext, hash_string: []const u8, buffer: []u8, buf
     cursor_node.pref_size = [2]Size{ Size.pixels(1, 1), Size.pixels(cursor_height, 1) };
     const text_before_cursor = buffer[0..widget_node.cursor];
     const partial_text_rect = try self.font.textRect(text_before_cursor);
-    cursor_node.rel_pos = vec2{ partial_text_rect.max[0], 0 } + UiContext.text_padd;
+    cursor_node.rel_pos = text_node.rel_pos + vec2{ partial_text_rect.max[0], 0 } + UiContext.text_padd;
+
+    // scroll text if it doesn't fit
+    if (cursor_node.rel_pos[0] > widget_node.rect.size()[0] - UiContext.text_hpadding) {
+        const overflow = cursor_node.rel_pos[0] - (widget_node.rect.size()[0] - UiContext.text_hpadding);
+        text_node.rel_pos[0] -= overflow;
+    }
+    if (cursor_node.rel_pos[0] < UiContext.text_hpadding) {
+        const overflow = UiContext.text_hpadding - cursor_node.rel_pos[0];
+        text_node.rel_pos[0] += overflow;
+    }
 
     const selection_node = self.addNode(.{
         .no_id = true,

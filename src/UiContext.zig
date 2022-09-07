@@ -246,15 +246,57 @@ pub const Signal = struct {
 
 pub fn addNode(self: *UiContext, flags: Flags, string: []const u8, init_args: anytype) *Node {
     if (!std.unicode.utf8ValidateSlice(string)) {
-        std.debug.panic("`string` passed in for Node is not valid utf8:\nstring={}", .{
-            std.fmt.fmtSliceEscapeLower(string),
-        });
+        std.debug.panic("`string` passed in for Node is not valid utf8:\n{}", .{std.fmt.fmtSliceEscapeLower(string)});
     }
+
     const node = self.addNodeRaw(flags, string, init_args) catch |e| blk: {
         self.setErrorInfo(@errorReturnTrace(), @errorName(e));
         break :blk self.root_node;
     };
     return node;
+}
+
+pub fn addNodeF(self: *UiContext, flags: Flags, comptime fmt: []const u8, args: anytype, init_args: anytype) *Node {
+    const str = std.fmt.allocPrint(self.string_arena.allocator(), fmt, args) catch |e| blk: {
+        self.setErrorInfo(@errorReturnTrace(), @errorName(e));
+        break :blk "";
+    };
+    return self.addNode(flags, str, init_args);
+}
+
+pub fn addNodeStrings(self: *UiContext, flags: Flags, display_string: []const u8, hash_string: []const u8, init_args: anytype) *Node {
+    if (!std.unicode.utf8ValidateSlice(display_string)) {
+        std.debug.panic("`display_string` passed in for Node is not valid utf8:\n{}", .{std.fmt.fmtSliceEscapeLower(display_string)});
+    }
+    if (!std.unicode.utf8ValidateSlice(hash_string)) {
+        std.debug.panic("`hash_string` passed in for Node is not valid utf8:\n{}", .{std.fmt.fmtSliceEscapeLower(hash_string)});
+    }
+
+    const node = self.addNodeRawStrings(flags, display_string, hash_string, init_args) catch |e| blk: {
+        self.setErrorInfo(@errorReturnTrace(), @errorName(e));
+        break :blk self.root_node;
+    };
+    return node;
+}
+
+pub fn addNodeStringsF(
+    self: *UiContext,
+    flags: Flags,
+    comptime display_fmt: []const u8,
+    display_args: anytype,
+    comptime hash_fmt: []const u8,
+    hash_args: anytype,
+    init_args: anytype,
+) *Node {
+    const display_str = std.fmt.allocPrint(self.string_arena.allocator(), display_fmt, display_args) catch |e| blk: {
+        self.setErrorInfo(@errorReturnTrace(), @errorName(e));
+        break :blk "";
+    };
+    const hash_str = std.fmt.allocPrint(self.string_arena.allocator(), hash_fmt, hash_args) catch |e| blk: {
+        self.setErrorInfo(@errorReturnTrace(), @errorName(e));
+        break :blk "";
+    };
+    return self.addNodeStrings(flags, display_str, hash_str, init_args);
 }
 
 pub fn addNodeRaw(self: *UiContext, flags: Flags, string: []const u8, init_args: anytype) !*Node {
@@ -264,6 +306,10 @@ pub fn addNodeRaw(self: *UiContext, flags: Flags, string: []const u8, init_args:
         break :blk hashPartOfString(&randomString(&self.prng));
     } else if (flags.ignore_hash_sep) string else hashPartOfString(string);
 
+    return self.addNodeRawStrings(flags, display_string, hash_string, init_args);
+}
+
+pub fn addNodeRawStrings(self: *UiContext, flags: Flags, display_string: []const u8, hash_string: []const u8, init_args: anytype) !*Node {
     // if a node already exists that matches this one we just use that one
     // this way the persistant cross-frame data is possible
     const lookup_result = try self.node_table.getOrPut(hash_string);
@@ -336,14 +382,6 @@ pub fn addNodeRaw(self: *UiContext, flags: Flags, string: []const u8, init_args:
     }
 
     return node;
-}
-
-pub fn addNodeF(self: *UiContext, flags: Flags, comptime fmt: []const u8, args: anytype, init_args: anytype) *Node {
-    const str = std.fmt.allocPrint(self.string_arena.allocator(), fmt, args) catch |e| blk: {
-        self.setErrorInfo(@errorReturnTrace(), @errorName(e));
-        break :blk "";
-    };
-    return self.addNode(flags, str, init_args);
 }
 
 pub fn pushParent(self: *UiContext, node: *Node) void {
@@ -572,48 +610,10 @@ pub fn endFrame(self: *UiContext, dt: f32) void {
 }
 
 pub fn render(self: *UiContext) !void {
-    // do the whole layout right before rendering
-    self.solveIndependentSizes(self.root_node);
-    self.solveUpwardDependent(self.root_node);
-    self.solveDownwardDependent(self.root_node);
-    self.solveViolations(self.root_node);
-    self.solveFinalPos(self.root_node);
-
-    // this struct must have the exact layout expected by the shader
-    const ShaderInput = extern struct {
-        bottom_left_pos: [2]f32,
-        top_right_pos: [2]f32,
-        bottom_left_uv: [2]f32,
-        top_right_uv: [2]f32,
-        top_color: [4]f32,
-        bottom_color: [4]f32,
-        corner_roundness: f32,
-        border_thickness: f32,
-        clip_rect_min: [2]f32,
-        clip_rect_max: [2]f32,
-        use_icon_font: f32,
-    };
-    // stage2 won't let me put [2]f32 fields in packed structs so I make sure this way instead
-    std.debug.assert(@sizeOf(ShaderInput) == (3 + (6 * 2) + (2 * 4)) * @sizeOf(f32));
     var shader_inputs = std.ArrayList(ShaderInput).init(self.allocator);
     defer shader_inputs.deinit();
 
-    var start_swap_idx: ?usize = null;
-    var end_swap_idx: ?usize = null;
-
-    var node_iterator = DepthFirstNodeIterator{ .cur_node = self.root_node };
-    while (node_iterator.next()) |node| {
-        try self.addShaderInputsForNode(ShaderInput, &shader_inputs, node);
-    }
-
-    if (start_swap_idx != null and end_swap_idx != null) {
-        const start_idx = start_swap_idx.?;
-        const end_idx = end_swap_idx.?;
-        const duped = try self.allocator.dupe(ShaderInput, shader_inputs.items[start_idx..end_idx]);
-        defer self.allocator.free(duped);
-        try shader_inputs.replaceRange(start_idx, end_idx - start_idx, &.{});
-        try shader_inputs.appendSlice(duped);
-    }
+    try self.setupTreeForRender(&shader_inputs, self.root_node);
 
     // create vertex buffer
     var inputs_vao: u32 = 0;
@@ -663,8 +663,22 @@ pub fn render(self: *UiContext) !void {
     gl.drawArrays(gl.POINTS, 0, @intCast(i32, shader_inputs.items.len));
 }
 
+fn setupTreeForRender(self: *UiContext, shader_inputs: *std.ArrayList(ShaderInput), root: *Node) !void {
+    // do the whole layout right before rendering
+    self.solveIndependentSizes(root);
+    self.solveUpwardDependent(root);
+    self.solveDownwardDependent(root);
+    self.solveViolations(root);
+    self.solveFinalPos(root);
+
+    var node_iterator = DepthFirstNodeIterator{ .cur_node = root };
+    while (node_iterator.next()) |node| {
+        try self.addShaderInputsForNode(shader_inputs, node);
+    }
+}
+
 // small helper for `UiContext.render`
-fn addShaderInputsForNode(self: *UiContext, comptime ShaderInput: type, shader_inputs: *std.ArrayList(ShaderInput), node: *Node) !void {
+fn addShaderInputsForNode(self: *UiContext, shader_inputs: *std.ArrayList(ShaderInput), node: *Node) !void {
     const base_rect = ShaderInput{
         .bottom_left_pos = node.rect.min,
         .top_right_pos = node.rect.max,
@@ -763,6 +777,21 @@ fn addShaderInputsForNode(self: *UiContext, comptime ShaderInput: type, shader_i
         }
     }
 }
+
+// this struct must have the exact layout expected by the shader
+const ShaderInput = extern struct {
+    bottom_left_pos: [2]f32,
+    top_right_pos: [2]f32,
+    bottom_left_uv: [2]f32,
+    top_right_uv: [2]f32,
+    top_color: [4]f32,
+    bottom_color: [4]f32,
+    corner_roundness: f32,
+    border_thickness: f32,
+    clip_rect_min: [2]f32,
+    clip_rect_max: [2]f32,
+    use_icon_font: f32,
+};
 
 const vertex_shader_src =
     \\#version 330 core
