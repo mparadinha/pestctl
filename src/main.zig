@@ -97,6 +97,8 @@ pub fn main() !void {
     var file_buf = try std.BoundedArray(u8, 0x1000).init(0);
     var exec_buf = try std.BoundedArray(u8, 0x1000).init(0);
     var var_buf = try std.BoundedArray(u8, 0x1000).init(0);
+    var show_ctx_menu = false;
+    var ctx_menu_top_left: vec2 = undefined;
 
     var file_tab = FileTab.init(allocator);
     defer file_tab.deinit();
@@ -140,6 +142,29 @@ pub fn main() !void {
         }
 
         ui.topParent().child_layout_axis = .x;
+
+        if (window.event_queue.searchAndRemove(.MouseUp, c.GLFW_MOUSE_BUTTON_RIGHT)) {
+            show_ctx_menu = true;
+            ctx_menu_top_left = mouse_pos;
+        }
+        if (show_ctx_menu) {
+            ui.startCtxMenu(.{ .top_left = ctx_menu_top_left });
+            const ctx_menu_node = ui.topParent();
+
+            const test_size = [2]Size{ Size.percent(1, 1), Size.text_dim(1) };
+            ui.pushStyle(.{ .pref_size = test_size });
+            if (ui.button("context menu").clicked) std.debug.print("ctx menu click\n", .{});
+            if (ui.button("the missile knows where it is").clicked) std.debug.print("missile\n", .{});
+            if (ui.button("close").clicked) show_ctx_menu = false;
+            _ = ui.textInput("context_test_textinput", &src_file_buf.buffer, &src_file_buf.len);
+            _ = ui.popStyle();
+
+            if (window.event_queue.match(.MouseDown, {})) |_| {
+                if (!ctx_menu_node.rect.contains(mouse_pos)) show_ctx_menu = false;
+            }
+
+            ui.endCtxMenu();
+        }
 
         const left_side_parent = ui.addNode(.{
             .draw_border = true,

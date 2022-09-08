@@ -12,6 +12,7 @@ const Signal = UiContext.Signal;
 const Rect = UiContext.Rect;
 const Size = UiContext.Size;
 const Axis = UiContext.Axis;
+const Placement = UiContext.Placement;
 const text_hpadding = UiContext.text_hpadding;
 const text_vpadding = UiContext.text_vpadding;
 
@@ -79,6 +80,37 @@ pub fn buttonF(self: *UiContext, comptime fmt: []const u8, args: anytype) Signal
         break :blk "";
     };
     return self.button(str);
+}
+
+// don't forget to call `endCtxMenu`
+// TODO: maybe turn this into a generic window function and ctx menu would simply be a special case of a window
+pub fn startCtxMenu(self: *UiContext, placement: Placement) void {
+    // the `addNode` function is gonna use whatever parent is at the top of the stack by default
+    // so we have to trick it into thinking this is the root node
+    const saved_stack_len = self.parent_stack.len();
+    self.parent_stack.array_list.items.len = 0;
+
+    const ctx_menu_size = [2]Size{ Size.by_children(1), Size.by_children(1) };
+    const ctx_menu_root = self.addNode(.{
+        .clip_children = true,
+        .floating_x = true,
+        .floating_y = true,
+        .selectable = true,
+    }, "###INTERNAL_CTX_MENU_ROOT_NODE", .{
+        .pref_size = ctx_menu_size,
+        .rel_pos = placement.value(),
+        .rel_pos_placement = std.meta.activeTag(placement),
+    });
+
+    self.ctx_menu_root_node = ctx_menu_root;
+
+    self.parent_stack.array_list.items.len = saved_stack_len;
+    self.pushParent(ctx_menu_root);
+}
+
+pub fn endCtxMenu(self: *UiContext) void {
+    const parent = self.popParent();
+    std.debug.assert(parent == self.ctx_menu_root_node);
 }
 
 /// pushes itself as the parent. make sure to use popParent later

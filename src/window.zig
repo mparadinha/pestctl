@@ -161,18 +161,29 @@ pub const EventQueue = struct {
     pub fn match(self: *EventQueue, comptime ev_type: EventTag, match_content: anytype) ?usize {
         const T = @TypeOf(match_content);
         const Payload = EventPayload(ev_type);
-        if (@typeInfo(T) != .Struct) @compileError("match_content must Struct");
-        if (@typeInfo(Payload) != .Struct) @compileError("event payload must Struct");
+
+        if (@typeInfo(Payload) == .Struct) {
+            if (@typeInfo(T) != .Struct) @compileError("match_content must Struct");
+        } else {
+            if (T != Payload and T != void)
+                @compileError(@tagName(ev_type) ++ " has type " ++ @typeName(Payload) ++ " not " ++ @typeName(T));
+        }
 
         ev_loop: for (self.events.items) |ev, i| {
             if (std.meta.activeTag(ev) != ev_type) continue;
+            if (T == void) return i;
+
             const ev_payload: Payload = ev.payload(ev_type);
-            inline for (@typeInfo(T).Struct.fields) |field| {
-                const name = field.name;
-                if (!@hasField(Payload, name))
-                    @compileError(@typeName(T) ++ "has no field named " ++ name);
-                if (@field(ev_payload, name) != @field(match_content, name))
-                    continue :ev_loop;
+            if (@typeInfo(Payload) == .Struct) {
+                inline for (@typeInfo(T).Struct.fields) |field| {
+                    const name = field.name;
+                    if (!@hasField(Payload, name))
+                        @compileError(@typeName(T) ++ "has no field named " ++ name);
+                    if (@field(ev_payload, name) != @field(match_content, name))
+                        continue :ev_loop;
+                }
+            } else {
+                if (ev_payload != match_content) continue :ev_loop;
             }
             return i;
         }

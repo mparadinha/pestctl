@@ -35,6 +35,8 @@ parent_stack: Stack(*Node),
 style_stack: Stack(Style),
 auto_pop_style: bool,
 root_node: *Node,
+ctx_menu_root_node: ?*Node,
+tooltip_root_node: ?*Node,
 screen_size: vec2,
 mouse_pos: vec2, // in pixels
 events: *window.EventQueue,
@@ -71,6 +73,8 @@ pub fn init(allocator: Allocator, font_path: []const u8, icon_font_path: []const
         .style_stack = Stack(Style).init(allocator),
         .auto_pop_style = false,
         .root_node = undefined,
+        .tooltip_root_node = null,
+        .ctx_menu_root_node = null,
         .screen_size = undefined,
         .mouse_pos = undefined,
         .events = undefined,
@@ -137,7 +141,6 @@ pub const Node = struct {
 
     // per-frame sizing information
     text_rect: Rect, // @hack
-    rel_pos: vec2, // for floating nodes; relative to bottom left (0, 0) corner of the parent
 
     // post-size-determination data
     calc_size: vec2,
@@ -154,6 +157,8 @@ pub const Node = struct {
     last_frame_touched: usize,
 
     // cross-frame state for specific features
+    rel_pos: vec2, // for floating nodes; relative to bottom left (0, 0) corner of the parent
+    rel_pos_placement: Placement.Tag,
     cursor: usize, // used for text input
     mark: usize, // used for text input
     last_click_time: f32, // used for double click checks
@@ -223,9 +228,72 @@ pub const Rect = struct {
         return self.contains(other.min) and self.contains(other.max);
     }
 
+    pub fn snapped(self: Rect, placement: Placement) Rect {
+        const calc_size = self.size();
+        const bottom_left = placement.convertTo(.btm_left, calc_size);
+        return .{ .min = bottom_left, .max = bottom_left + calc_size };
+    }
+
     pub fn format(value: Rect, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
         _ = options;
-        try writer.print("{{ .min={" ++ fmt ++ "}, .max={" ++ fmt ++ "}}}", .{ value.min, value.max });
+        //try writer.print("{{ .min={" ++ fmt ++ "}, .max={" ++ fmt ++ "}}}", .{ value.min, value.max });
+        _ = fmt;
+        try writer.print("{{.min={d:.2}, .max={d:.2}}}", .{ value.min, value.max });
+    }
+};
+
+pub const Placement = union(enum) {
+    top_left: vec2,
+    btm_left: vec2,
+    top_right: vec2,
+    btm_right: vec2,
+    center: vec2,
+
+    const Tag = std.meta.Tag(Placement);
+
+    // `@unionInit` only works if the tag is comptime known
+    pub fn init(tag: Tag, v: vec2) Placement {
+        return switch (tag) {
+            .top_left => .{ .top_left = v },
+            .btm_left => .{ .btm_left = v },
+            .top_right => .{ .top_right = v },
+            .btm_right => .{ .btm_right = v },
+            .center => .{ .center = v },
+        };
+    }
+
+    pub fn value(self: Placement) vec2 {
+        return switch (self) {
+            .top_left => |v| v,
+            .btm_left => |v| v,
+            .top_right => |v| v,
+            .btm_right => |v| v,
+            .center => |v| v,
+        };
+    }
+
+    pub fn convertTo(self: Placement, new_tag: Tag, size: vec2) Placement {
+        if (std.meta.activeTag(self) == new_tag) return self;
+        const center = self.getCenter(size);
+        const half_size = size / vec2{ 2, 2 };
+        return switch (new_tag) {
+            .top_left => Placement{ .top_left = center + vec2{ -half_size[0], half_size[1] } },
+            .btm_left => Placement{ .btm_left = center - half_size },
+            .top_right => Placement{ .top_right = center + half_size },
+            .btm_right => Placement{ .btm_right = center + vec2{ half_size[0], -half_size[1] } },
+            .center => Placement{ .center = center },
+        };
+    }
+
+    pub fn getCenter(self: Placement, size: vec2) vec2 {
+        const half_size = size / vec2{ 2, 2 };
+        return switch (self) {
+            .top_left => |tl| tl + vec2{ half_size[0], -half_size[1] },
+            .btm_left => |bl| bl + half_size,
+            .top_right => |tr| tr - half_size,
+            .btm_right => |br| br + vec2{ -half_size[0], half_size[1] },
+            .center => |cntr| cntr,
+        };
     }
 };
 
@@ -362,6 +430,7 @@ pub fn addNodeRawStrings(self: *UiContext, flags: Flags, display_string: []const
     node.last_frame_touched = self.frame_idx;
     if (!lookup_result.found_existing) {
         node.first_frame_touched = self.frame_idx;
+        node.rel_pos_placement = .btm_left;
         node.last_click_time = 0;
         node.last_double_click_time = 0;
         node.scroll_offset = vec2{ 0, 0 };
@@ -455,6 +524,8 @@ pub fn getNodeSignal(self: *UiContext, node: *Node) Signal {
     const enter_ev = self.events.match(.KeyUp, .{ .key = c.GLFW_KEY_ENTER });
     var used_enter_ev = false;
 
+    var mouse_cursor = window.CursorType.arrow;
+
     if (node.flags.clickable) {
         // begin/end a click if there was a mouse down/up event on this node
         if (is_hot and !active_key_matches and mouse_down_ev != null) {
@@ -471,7 +542,7 @@ pub fn getNodeSignal(self: *UiContext, node: *Node) Signal {
         signal.hovering = is_hot;
         signal.held_down = is_active;
 
-        if (is_hot) self.window_ptr.set_cursor(node.hover_cursor);
+        if (is_hot) mouse_cursor = node.hover_cursor;
     }
 
     if (node.flags.selectable) {
@@ -492,7 +563,7 @@ pub fn getNodeSignal(self: *UiContext, node: *Node) Signal {
             used_enter_ev = true;
         }
 
-        if (is_active) self.window_ptr.set_cursor(node.hover_cursor);
+        if (is_focused) mouse_cursor = node.hover_cursor;
     }
 
     if (node.flags.scrollable) {
@@ -532,6 +603,8 @@ pub fn getNodeSignal(self: *UiContext, node: *Node) Signal {
     if (signal.clicked) node.last_click_time = cur_time;
     if (signal.double_clicked) node.last_double_click_time = cur_time;
 
+    if (is_hot or is_active or is_focused) self.window_ptr.set_cursor(mouse_cursor);
+
     return signal;
 }
 
@@ -556,17 +629,14 @@ pub fn startFrame(self: *UiContext, screen_w: u32, screen_h: u32, mouse_pos: vec
     const root_pref_sizes = [2]Size{ Size.pixels(screen_size[0], 1), Size.pixels(screen_size[1], 1) };
     const whole_screen_rect = Rect{ .min = vec2{ 0, 0 }, .max = screen_size };
     self.root_node = try self.addNodeRaw(.{ .clip_children = true }, "###INTERNAL_ROOT_NODE", .{
-        .first = null,
-        .last = null,
-        .next = null,
-        .prev = null,
-        .parent = null,
-        .child_count = 0,
         .pref_size = root_pref_sizes,
         .rect = whole_screen_rect,
         .clip_rect = whole_screen_rect,
     });
     try self.parent_stack.push(self.root_node);
+
+    self.ctx_menu_root_node = null;
+    self.tooltip_root_node = null;
 
     self.first_error_trace = null;
 
@@ -580,8 +650,9 @@ pub fn endFrame(self: *UiContext, dt: f32) void {
         std.debug.panic("An error occurred during the UI building phase: {s}", .{self.first_error_name});
     }
 
-    _ = self.parent_stack.pop().?;
     _ = self.style_stack.pop().?;
+    const parent = self.parent_stack.pop().?;
+    std.debug.assert(parent == self.root_node);
 
     std.debug.assert(self.parent_stack.len() == 0);
 
@@ -592,6 +663,11 @@ pub fn endFrame(self: *UiContext, dt: f32) void {
             node_iter.removeCurrent() catch unreachable;
         }
     }
+
+    // in case the hot/active/focused node key is pointing to a stale node
+    if (self.hot_node_key != null and !self.node_table.hasKeyHash(self.hot_node_key.?)) self.hot_node_key = null;
+    if (self.active_node_key != null and !self.node_table.hasKeyHash(self.active_node_key.?)) self.active_node_key = null;
+    if (self.focused_node_key != null and !self.node_table.hasKeyHash(self.focused_node_key.?)) self.focused_node_key = null;
 
     // update the transition/animation values
     const fast_rate = 1 - std.math.pow(f32, 2, -20.0 * dt);
@@ -614,6 +690,8 @@ pub fn render(self: *UiContext) !void {
     defer shader_inputs.deinit();
 
     try self.setupTreeForRender(&shader_inputs, self.root_node);
+    if (self.ctx_menu_root_node) |node| try self.setupTreeForRender(&shader_inputs, node);
+    if (self.tooltip_root_node) |node| try self.setupTreeForRender(&shader_inputs, node);
 
     // create vertex buffer
     var inputs_vao: u32 = 0;
@@ -666,8 +744,8 @@ pub fn render(self: *UiContext) !void {
 fn setupTreeForRender(self: *UiContext, shader_inputs: *std.ArrayList(ShaderInput), root: *Node) !void {
     // do the whole layout right before rendering
     self.solveIndependentSizes(root);
-    self.solveUpwardDependent(root);
     self.solveDownwardDependent(root);
+    self.solveUpwardDependent(root);
     self.solveViolations(root);
     self.solveFinalPos(root);
 
@@ -1008,16 +1086,16 @@ fn solveIndependentSizes(self: *UiContext, node: *Node) void {
     layoutRecurseHelperPre(work_fn, .{ .self = self, .node = node, .axis = .y });
 }
 
-fn solveUpwardDependent(self: *UiContext, node: *Node) void {
-    const work_fn = solveUpwardDependentWorkFn;
-    layoutRecurseHelperPre(work_fn, .{ .self = self, .node = node, .axis = .x });
-    layoutRecurseHelperPre(work_fn, .{ .self = self, .node = node, .axis = .y });
-}
-
 fn solveDownwardDependent(self: *UiContext, node: *Node) void {
     const work_fn = solveDownwardDependentWorkFn;
     layoutRecurseHelperPost(work_fn, .{ .self = self, .node = node, .axis = .x });
     layoutRecurseHelperPost(work_fn, .{ .self = self, .node = node, .axis = .y });
+}
+
+fn solveUpwardDependent(self: *UiContext, node: *Node) void {
+    const work_fn = solveUpwardDependentWorkFn;
+    layoutRecurseHelperPre(work_fn, .{ .self = self, .node = node, .axis = .x });
+    layoutRecurseHelperPre(work_fn, .{ .self = self, .node = node, .axis = .y });
 }
 
 fn solveViolations(self: *UiContext, node: *Node) void {
@@ -1037,7 +1115,12 @@ fn solveIndependentSizesWorkFn(self: *UiContext, node: *Node, axis: Axis) void {
     const axis_idx: usize = @enumToInt(axis);
     switch (node.pref_size[axis_idx]) {
         .pixels => |pixels| node.calc_size[axis_idx] = pixels.value,
-        .text_dim => {
+        // this is wrong for percent (the correct one is calculated later) but this gives
+        // and upper bound on the size, which might be needed for "downward dependent" nodes
+        // which have children with `Size.percent`
+        .percent,
+        .text_dim,
+        => {
             //const text_rect = self.font.textRect(node.display_string) catch |e| switch (e) {
             //    error.InvalidUtf8 => unreachable, // we already check this on node creation
             //    error.OutOfMemory => std.debug.panic("that's fucking unlucky!\n", .{}),
@@ -1054,44 +1137,37 @@ fn solveIndependentSizesWorkFn(self: *UiContext, node: *Node, axis: Axis) void {
     }
 }
 
-fn solveUpwardDependentWorkFn(self: *UiContext, node: *Node, axis: Axis) void {
-    _ = self;
-    const axis_idx: usize = @enumToInt(axis);
-    switch (node.pref_size[axis_idx]) {
-        .percent => |percent| {
-            // look for the first ancestor with a fixed size
-            var ancestor: ?*Node = null;
-            var search = node.parent;
-            while (search) |search_node| : (search = search_node.parent) {
-                if (std.meta.activeTag(search_node.pref_size[axis_idx]) != .by_children) {
-                    ancestor = search_node;
-                    break;
-                }
-            }
-
-            if (ancestor) |ancestor_node| {
-                node.calc_size[axis_idx] = ancestor_node.calc_size[axis_idx] * percent.value;
-            }
-        },
-        else => {},
-    }
-}
-
 fn solveDownwardDependentWorkFn(self: *UiContext, node: *Node, axis: Axis) void {
     _ = self;
+
     const axis_idx: usize = @enumToInt(axis);
+    const is_layout_axis = (axis == node.child_layout_axis);
+
     switch (node.pref_size[axis_idx]) {
         .by_children => {
             var value: f32 = 0;
             var child = node.first;
             while (child) |child_node| : (child = child_node.next) {
-                if (axis == node.child_layout_axis) {
+                if (is_layout_axis) {
                     value += child_node.calc_size[axis_idx];
                 } else {
                     value = std.math.max(value, child_node.calc_size[axis_idx]);
                 }
             }
             node.calc_size[axis_idx] = value;
+        },
+        else => {},
+    }
+}
+
+fn solveUpwardDependentWorkFn(self: *UiContext, node: *Node, axis: Axis) void {
+    _ = self;
+    const axis_idx: usize = @enumToInt(axis);
+    switch (node.pref_size[axis_idx]) {
+        .percent => |percent| {
+            if (node.parent) |parent| {
+                node.calc_size[axis_idx] = parent.calc_size[axis_idx] * percent.value;
+            }
         },
         else => {},
     }
@@ -1170,10 +1246,25 @@ fn solveViolationsWorkFn(self: *UiContext, node: *Node, axis: Axis) void {
 
 fn solveFinalPosWorkFn(self: *UiContext, node: *Node, axis: Axis) void {
     _ = self;
-    if (node.child_count == 0) return;
 
     const axis_idx: usize = @enumToInt(axis);
     const is_layout_axis = (axis == node.child_layout_axis);
+
+    if (node.parent == null) {
+        const is_floating = switch (axis) {
+            .x => node.flags.floating_x,
+            .y => node.flags.floating_y,
+        };
+        if (is_floating) {
+            const placement = Placement.init(node.rel_pos_placement, node.rel_pos);
+            const bottom_left = placement.convertTo(.btm_left, node.calc_size).value();
+            node.calc_rel_pos[axis_idx] = bottom_left[axis_idx];
+        }
+        node.rect.min[axis_idx] = node.calc_rel_pos[axis_idx];
+        node.rect.max[axis_idx] = node.calc_rel_pos[axis_idx] + node.calc_size[axis_idx];
+    }
+
+    if (node.child_count == 0) return;
 
     // start layout at the top left
     const start_rel_pos: f32 = switch (axis) {
@@ -1354,8 +1445,8 @@ pub const NodeTable = struct {
     const V = Node;
     const Hash = u64;
 
-    // note: this makes lookups O(n). if that start to become a problem
-    // we can just switch this to a HashMap and NodeTable because
+    // note: this makes lookups O(n). if that starts to become a problem
+    // we can just switch this ArrayList to a HashMap and NodeTable becomes
     // essentially a wrapper around std.HashMap
     const KeyMap = std.ArrayList(struct { key_hash: Hash, value_ptr: *V });
 
@@ -1421,7 +1512,10 @@ pub const NodeTable = struct {
     }
 
     pub fn hasKey(self: *NodeTable, key: K) bool {
-        const hash = self.ctx.hash(key);
+        return self.hasKeyHash(self.ctx.hash(key));
+    }
+
+    pub fn hasKeyHash(self: *NodeTable, hash: Hash) bool {
         for (self.key_mappings.items) |key_map| {
             if (key_map.key_hash == hash) return true;
         }
