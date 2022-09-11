@@ -258,7 +258,7 @@ pub fn init(allocator: Allocator, debug_line: []const u8, offset: usize, debug_l
     // this helps later with searching through multiple LineProg's
     self.address_range = .{ std.math.maxInt(u64), 0 };
     self.file_line_range = .{ std.math.maxInt(u32), 0 };
-    var state = State{ .is_stmt = self.default_is_stmt };
+    var state = self.initialState();
     var op_stream = std.io.fixedBufferStream(self.ops);
     var op_reader = op_stream.reader();
     while ((try op_stream.getPos()) < self.ops.len) {
@@ -281,8 +281,12 @@ pub fn deinit(self: LineProg) void {
     self.allocator.free(self.files);
 }
 
+pub fn initialState(self: LineProg) State {
+    return .{ .is_stmt = self.default_is_stmt };
+}
+
 pub fn findAddrForSrc(self: LineProg, file: u32, line: u32) !?State {
-    var state = State{ .is_stmt = self.default_is_stmt };
+    var state = self.initialState();
     var stream = std.io.fixedBufferStream(self.ops);
     var reader = stream.reader();
     while ((try stream.getPos()) < self.ops.len) {
@@ -296,12 +300,13 @@ pub fn findAddrForSrc(self: LineProg, file: u32, line: u32) !?State {
 }
 
 pub fn findAddr(self: LineProg, addr: usize) !?State {
-    var state = State{ .is_stmt = self.default_is_stmt };
+    var state = self.initialState();
     var stream = std.io.fixedBufferStream(self.ops);
     var reader = stream.reader();
     while ((try stream.getPos()) < self.ops.len) {
         const new_row = try self.updateState(&state, reader);
         if (new_row) |row| {
+            if (!row.is_stmt) continue;
             if (row.address == addr) return row;
             if (row.end_sequence) break;
         }
@@ -429,18 +434,17 @@ pub fn dump(self: LineProg) !void {
     while ((try stream.getPos()) < self.ops.len) : (op_idx += 1) {
         const new_row = try self.updateState(&state, reader);
         const row = new_row orelse continue;
-        const bool_str = [2][]const u8{ "", "true" };
         std.debug.print("[{d:0>6}]" ++
             " | addr=0x{x:0>12}" ++
             " | op_index={d: >2}" ++
             " | file={d: >3}" ++
             " | line={d: >4}" ++
             " | col={d: >3}" ++
-            " | stmt={s: >4}" ++
-            " | block={s: >4}" ++
-            " | end_seq={s: >4}" ++
-            " | prologue={s: >4}" ++
-            " | epilogue={s: >4}" ++
+            " | {s}" ++ // is_stmt
+            " | {s}" ++ // basic_block
+            " | {s}" ++ // end_sequence
+            " | {s}" ++ // prologue_end
+            " | {s}" ++ // epilogue_end
             " | isa={: >2}" ++
             " | discrim={}\n", .{
             op_idx,
@@ -449,11 +453,11 @@ pub fn dump(self: LineProg) !void {
             row.file,
             row.line,
             row.column,
-            bool_str[if (row.is_stmt) 1 else 0],
-            bool_str[if (row.basic_block) 1 else 0],
-            bool_str[if (row.end_sequence) 1 else 0],
-            bool_str[if (row.prologue_end) 1 else 0],
-            bool_str[if (row.epilogue_begin) 1 else 0],
+            ([2][]const u8{ "       ", "is_stmt" })[if (row.is_stmt) 1 else 0],
+            ([2][]const u8{ "           ", "basic_block" })[if (row.basic_block) 1 else 0],
+            ([2][]const u8{ "            ", "end_sequence" })[if (row.end_sequence) 1 else 0],
+            ([2][]const u8{ "            ", "prologue_end" })[if (row.prologue_end) 1 else 0],
+            ([2][]const u8{ "              ", "epilogue_begin" })[if (row.epilogue_begin) 1 else 0],
             row.isa,
             row.discriminator,
         });

@@ -191,18 +191,21 @@ pub fn stepInstructions(self: *Session, num_instrs: usize) !void {
 pub fn stepLine(self: *Session) !void {
     if (self.status != .Stopped) return;
 
+    var src = self.src_loc orelse return;
+
     // because of loops and jumps backwards we can't just put a breakpoint
     // on the next line and be done with it. the only solution I can
     // think of right now is this (singlestepping until we hit a different
     // line) but it could, in some cases, freeze the UI for a while, if
     // it takes like 1k+ instructions to reach the next line.
-    var old_src = self.src_loc orelse return;
     while (true) {
         try self.stepInstructions(1);
-        var new_src = (try self.currentSrcLoc()) orelse continue;
-        if (old_src.line != new_src.line or !std.mem.eql(u8, old_src.file, new_src.file) or !std.mem.eql(u8, old_src.dir, new_src.dir)) {
-            return;
-        }
+        const rip = self.getRegisters().rip;
+        const new_src = (try self.elf.translateAddrToSrc(rip)) orelse continue;
+        if (new_src.line != src.line or
+            new_src.column != src.column or
+            !std.mem.eql(u8, new_src.file, src.file) or
+            !std.mem.eql(u8, new_src.dir, src.dir)) return;
     }
 }
 

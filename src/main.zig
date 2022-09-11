@@ -36,18 +36,38 @@ fn parseCmdlineArgs(arg_slices: [][:0]const u8) CmdlineArgs {
 
 // icon font (and this mapping) was generated using fontello.com
 const Icons = struct {
-    pub const cancel = "\u{e800}";
-    pub const th_list = "\u{e801}";
-    pub const search = "\u{e802}";
-    pub const plus_circle = "\u{e803}";
-    pub const cog = "\u{e804}";
-    pub const ok = "\u{e805}";
-    pub const circle = "\u{f111}";
-    pub const up_open = "\u{e806}";
-    pub const right_open = "\u{e807}";
-    pub const left_open = "\u{e808}";
-    pub const down_opwn = "\u{e809}";
+    // zig fmt: off
+    pub const cancel        = utf8LitFromCodepoint(59392);
+    pub const th_list       = utf8LitFromCodepoint(59393);
+    pub const search        = utf8LitFromCodepoint(59394);
+    pub const plus_circled  = utf8LitFromCodepoint(59395);
+    pub const cog           = utf8LitFromCodepoint(59396);
+    pub const ok            = utf8LitFromCodepoint(59397);
+    pub const circle        = utf8LitFromCodepoint(61713);
+    pub const up_open       = utf8LitFromCodepoint(59398);
+    pub const right_open    = utf8LitFromCodepoint(59399);
+    pub const left_open     = utf8LitFromCodepoint(59400);
+    pub const down_open     = utf8LitFromCodepoint(59401);
+    pub const plus_squared  = utf8LitFromCodepoint(61694);
+    pub const minus_squared = utf8LitFromCodepoint(61766);
+    pub const plus          = utf8LitFromCodepoint(59402);
+    // zig fmt: on
+
+    fn utf8Len(comptime codepoint: u21) u3 {
+        return std.unicode.utf8CodepointSequenceLength(codepoint) catch unreachable;
+    }
+    fn utf8LitFromCodepoint(comptime codepoint: u21) *const [utf8Len(codepoint):0]u8 {
+        comptime {
+            var buf: [utf8Len(codepoint):0]u8 = undefined;
+            _ = std.unicode.utf8Encode(codepoint, &buf) catch unreachable;
+            buf[buf.len] = 0;
+            return &buf;
+        }
+    }
 };
+
+var show_ctx_menu = false;
+var ctx_menu_top_left = @as(vec2, undefined);
 
 pub fn main() !void {
     var general_purpose_allocator = std.heap.GeneralPurposeAllocator(.{
@@ -95,10 +115,7 @@ pub fn main() !void {
     var src_file_buf = try std.BoundedArray(u8, 0x1000).init(0);
     var num_buf = try std.BoundedArray(u8, 0x1000).init(0);
     var file_buf = try std.BoundedArray(u8, 0x1000).init(0);
-    var exec_buf = try std.BoundedArray(u8, 0x1000).init(0);
     var var_buf = try std.BoundedArray(u8, 0x1000).init(0);
-    var show_ctx_menu = false;
-    var ctx_menu_top_left: vec2 = undefined;
 
     var file_tab = FileTab.init(allocator);
     defer file_tab.deinit();
@@ -116,8 +133,6 @@ pub fn main() !void {
         //var mouse_diff = mouse_pos - last_mouse_pos;
         last_mouse_pos = mouse_pos;
 
-        try ui.startFrame(width, height, mouse_pos, &window.event_queue);
-
         {
             const ev = window.event_queue.find(.MouseUp, c.GLFW_MOUSE_BUTTON_RIGHT);
             const mods = window.get_modifiers();
@@ -129,8 +144,8 @@ pub fn main() !void {
                     if (node.rect.contains(mouse_pos)) {
                         std.debug.print("{*} [{s}###{s}] parent=0x{x}, first=0x{x}, next=0x{x}, rect={d:.2}\n", .{
                             node,
-                            node.display_string,
-                            node.hash_string,
+                            node.display_string[0..std.math.min(10, node.display_string.len)],
+                            node.hash_string[0..std.math.min(10, node.hash_string.len)],
                             if (node.parent) |ptr| @ptrToInt(ptr) else 0,
                             if (node.first) |ptr| @ptrToInt(ptr) else 0,
                             if (node.next) |ptr| @ptrToInt(ptr) else 0,
@@ -141,30 +156,17 @@ pub fn main() !void {
             }
         }
 
-        ui.topParent().child_layout_axis = .x;
+        var update_src_focus = false;
 
-        if (window.event_queue.searchAndRemove(.MouseUp, c.GLFW_MOUSE_BUTTON_RIGHT)) {
-            show_ctx_menu = true;
-            ctx_menu_top_left = mouse_pos;
-        }
-        if (show_ctx_menu) {
-            ui.startCtxMenu(.{ .top_left = ctx_menu_top_left });
-            const ctx_menu_node = ui.topParent();
+        try ui.startBuild(width, height, mouse_pos, &window.event_queue);
 
-            const test_size = [2]Size{ Size.percent(1, 1), Size.text_dim(1) };
-            ui.pushStyle(.{ .pref_size = test_size });
-            if (ui.button("context menu").clicked) std.debug.print("ctx menu click\n", .{});
-            if (ui.button("the missile knows where it is").clicked) std.debug.print("missile\n", .{});
-            if (ui.button("close").clicked) show_ctx_menu = false;
-            _ = ui.textInput("context_test_textinput", &src_file_buf.buffer, &src_file_buf.len);
-            _ = ui.popStyle();
+        const whole_x_size = [2]Size{ Size.percent(1, 1), Size.text_dim(1) };
+        ui.pushTmpStyle(.{ .pref_size = whole_x_size });
+        _ = ui.textBoxF("#nodes={}, frame_time={d:2.4}ms###info_text_box", .{ ui.node_table.key_mappings.items.len, dt * 1000 });
 
-            if (window.event_queue.match(.MouseDown, {})) |_| {
-                if (!ctx_menu_node.rect.contains(mouse_pos)) show_ctx_menu = false;
-            }
-
-            ui.endCtxMenu();
-        }
+        const tabs_parent = ui.addNode(.{}, "###tabs_parent", .{ .child_layout_axis = .x });
+        tabs_parent.pref_size = [2]Size{ Size.percent(1, 0), Size.percent(1, 0) };
+        ui.pushParent(tabs_parent);
 
         const left_side_parent = ui.addNode(.{
             .draw_border = true,
@@ -173,26 +175,6 @@ pub fn main() !void {
         left_side_parent.pref_size = [2]Size{ Size.percent(0.5, 1), Size.percent(1, 0) };
         ui.pushParent(left_side_parent);
         {
-            _ = exec_buf;
-            //const open_exec_parent = ui.addNode(.{}, "###open_exec_parent", .{ .child_layout_axis = .x });
-            //open_exec_parent.pref_size = [2]Size{ Size.percent(1, 1), Size.by_children(1) };
-            //ui.pushParent(open_exec_parent);
-            //{
-            //    const open_button_sig = ui.button("Open Executable");
-            //    _ = open_button_sig;
-            //    const text_input_size = [2]Size{ Size.percent(1, 0), Size.text_dim(1) };
-            //    ui.pushStyle(.{ .pref_size = text_input_size });
-            //    ui.pushStyle(.{ .bg_color = vec4{ 0.75, 0.75, 0.75, 1 } });
-            //    const text_input_sig = ui.textInput("openexecinput", &exec_buf.buffer, &exec_buf.len);
-            //    _ = ui.popStyle();
-            //    _ = ui.popStyle();
-            //    if (exec_buf.len > 0 and (open_button_sig.clicked or text_input_sig.enter_pressed)) {
-            //        if (session_opt) |*session| session.deinit();
-            //        session_opt = try Session.init(allocator, &exec_buf.buffer);
-            //    }
-            //}
-            //_ = ui.popParent(); // open_exec_parent
-
             const open_file_parent = ui.addNode(.{}, "###open_file_parent", .{ .child_layout_axis = .x });
             open_file_parent.pref_size = [2]Size{ Size.percent(1, 1), Size.by_children(1) };
             ui.pushParent(open_file_parent);
@@ -211,11 +193,15 @@ pub fn main() !void {
                     } else |err| return err;
                 }
             }
-            _ = ui.popParent(); // open_file_parent
+            std.debug.assert(ui.popParent() == open_file_parent);
 
             try file_tab.display(&ui);
+
+            const tmp_size = [2]Size{ Size.percent(1, 1), Size.percent(0.35, 1) };
+            ui.pushTmpStyle(.{ .pref_size = tmp_size });
+            _ = ui.textBox("TODO: assembly window");
         }
-        _ = ui.popParent(); // left_side_parent
+        std.debug.assert(ui.popParent() == left_side_parent);
 
         const right_side_parent = ui.addNode(.{ .draw_background = true }, "###right_side_parent", .{ .child_layout_axis = .y });
         right_side_parent.pref_size = [2]Size{ Size.percent(0.5, 1), Size.percent(1, 0) };
@@ -263,7 +249,7 @@ pub fn main() !void {
                         _ = ui.textBox("Value");
                         _ = ui.popStyle();
                     }
-                    _ = ui.popParent();
+                    std.debug.assert(ui.popParent() == table_header_row_parent);
 
                     var var_node = session.watched_vars.first;
                     while (var_node) |node| : (var_node = node.next) {
@@ -280,10 +266,10 @@ pub fn main() !void {
                             }
                             _ = ui.popStyle();
                         }
-                        _ = ui.popParent();
+                        std.debug.assert(ui.popParent() == row_parent);
                     }
                 }
-                _ = ui.popParent();
+                std.debug.assert(ui.popParent() == vars_parent);
 
                 const add_var_parent = ui.addNode(.{}, "###add_var_parent", .{ .child_layout_axis = .x });
                 add_var_parent.pref_size = [2]Size{ Size.percent(1, 1), Size.by_children(1) };
@@ -298,15 +284,21 @@ pub fn main() !void {
                     _ = ui.popStyle();
                     if (button_sig.clicked or text_sig.enter_pressed) try session.addWatchedVariable(&var_buf.buffer);
                 }
-                _ = ui.popParent();
+                std.debug.assert(ui.popParent() == add_var_parent);
 
                 ui.spacer(.y, Size.percent(1, 0));
 
                 const button_size = [2]Size{ Size.percent(0.5, 1), Size.text_dim(1) };
                 ui.pushStyle(.{ .pref_size = button_size });
-                if (ui.button("Continue Running").clicked) session.unpause();
+                if (ui.button("Continue Running").clicked) {
+                    session.unpause();
+                    update_src_focus = true;
+                }
                 if (ui.button("Pause Child").clicked) session.pause();
-                if (ui.button("Next Line").clicked) try session.stepLine();
+                if (ui.button("Next Line").clicked) {
+                    try session.stepLine();
+                    update_src_focus = true;
+                }
                 if (ui.button("Next Instruction").clicked) try session.stepInstructions(1);
                 _ = ui.popStyle();
 
@@ -314,16 +306,13 @@ pub fn main() !void {
                 set_break_parent.pref_size = [2]Size{ Size.percent(1, 1), Size.by_children(1) };
                 ui.pushParent(set_break_parent);
                 {
-                    if (ui.button("Set Breakpoint").clicked) {
-                        const line = try std.fmt.parseUnsigned(u32, num_buf.slice(), 0);
-                        try session.setBreakpointAtSrc(.{ .dir = "src", .file = file_buf.slice(), .line = line, .column = 0 });
-                    }
+                    const button_sig = ui.button("Set Breakpoint");
 
                     const line_input_size = [2]Size{ Size.percent(1, 0), Size.text_dim(1) };
                     _ = ui.textBox("Line Number");
                     ui.pushStyle(.{ .bg_color = vec4{ 0.75, 0.75, 0.75, 1 } });
                     ui.pushStyle(.{ .pref_size = line_input_size });
-                    _ = ui.textInput("src_linenum_textinput", &num_buf.buffer, &num_buf.len);
+                    const line_sig = ui.textInput("src_linenum_textinput", &num_buf.buffer, &num_buf.len);
                     _ = ui.popStyle();
                     _ = ui.popStyle();
 
@@ -331,26 +320,38 @@ pub fn main() !void {
                     _ = ui.textBox("File Name");
                     ui.pushStyle(.{ .bg_color = vec4{ 0.75, 0.75, 0.75, 1 } });
                     ui.pushStyle(.{ .pref_size = file_input_size });
-                    _ = ui.textInput("src_filename_textinput", &file_buf.buffer, &file_buf.len);
+                    const file_sig = ui.textInput("src_filename_textinput", &file_buf.buffer, &file_buf.len);
                     _ = ui.popStyle();
                     _ = ui.popStyle();
+
+                    if (button_sig.clicked or line_sig.enter_pressed or file_sig.enter_pressed) {
+                        const line = try std.fmt.parseUnsigned(u32, num_buf.slice(), 0);
+                        try session.setBreakpointAtSrc(.{ .dir = "src", .file = file_buf.slice(), .line = line, .column = 0 });
+                    }
                 }
-                _ = ui.popParent();
+                std.debug.assert(ui.popParent() == set_break_parent);
+
+                try session.update();
             }
         }
-        _ = ui.popParent(); // right_side_parent
+        std.debug.assert(ui.popParent() == right_side_parent);
+
+        std.debug.assert(ui.popParent() == tabs_parent);
+
+        ui.endBuild(dt);
 
         // update src viewing window with the next session information
-        if (session_opt) |session| {
-            if (session.src_loc) |loc| try file_tab.focusOnSrc(loc);
+        if (update_src_focus) {
+            if (session_opt) |session| {
+                if (session.src_loc) |loc| try file_tab.focusOnSrc(loc);
+            }
         }
 
         gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
         try ui.render();
 
-        file_tab.updateAnimation(dt);
+        file_tab.updateAnimations(dt);
 
-        ui.endFrame(dt);
         window.update();
         tracy.FrameMark();
     }
@@ -360,11 +361,8 @@ const FileTab = struct {
     allocator: Allocator,
     files: std.ArrayList(FileInfo),
     active_file: ?usize,
-    highlight_box: SrcBox,
-    highlight_box_target: SrcBox,
 
     pub const SrcBox = struct {
-        file_idx: usize,
         /// these are floats so we can smoothly transition between two boxes
         min: struct { line: f32, column: f32 },
         max: struct { line: f32, column: f32 },
@@ -384,16 +382,6 @@ const FileTab = struct {
             .allocator = allocator,
             .files = std.ArrayList(FileInfo).init(allocator),
             .active_file = null,
-            .highlight_box = .{
-                .file_idx = undefined,
-                .min = .{ .line = 0, .column = 0 },
-                .max = .{ .line = 0, .column = 0 },
-            },
-            .highlight_box_target = .{
-                .file_idx = undefined,
-                .min = .{ .line = 0, .column = 0 },
-                .max = .{ .line = 0, .column = 0 },
-            },
         };
     }
 
@@ -442,14 +430,12 @@ const FileTab = struct {
         try self.addFile(path);
         const file_idx = self.findFile(path) orelse unreachable;
 
-        self.files.items[file_idx].lock_line = @intToFloat(f32, src.line);
-        //self.active_file = file_idx;
-
-        self.highlight_box_target = .{
-            .file_idx = file_idx,
+        self.files.items[file_idx].target_lock_line = @intToFloat(f32, src.line);
+        self.files.items[file_idx].target_focus_box = .{
             .min = .{ .line = @intToFloat(f32, src.line), .column = @intToFloat(f32, src.column) },
             .max = .{ .line = @intToFloat(f32, src.line), .column = @intToFloat(f32, src.column) },
         };
+        self.active_file = file_idx;
     }
 
     pub fn findFile(self: FileTab, path: []const u8) ?usize {
@@ -467,47 +453,52 @@ const FileTab = struct {
 
     pub fn display(self: *FileTab, ui: *UiContext) !void {
         const file_tab_size = [2]Size{ Size.percent(1, 1), Size.percent(1, 0) };
-        const file_tab_node = ui.addNode(.{}, "FileTab:top_node", .{ .pref_size = file_tab_size });
+        const file_tab_node = ui.addNode(.{
+            .draw_border = true,
+        }, "FileTab:top_node", .{ .pref_size = file_tab_size });
         ui.pushParent(file_tab_node);
 
         const buttons_parent_size = [2]Size{ Size.percent(1, 0), Size.by_children(1) };
-        const buttons_parent = ui.addNode(.{
-            .draw_background = true,
-        }, "FileTab:buttons_parent", .{ .pref_size = buttons_parent_size, .child_layout_axis = .x });
+        const buttons_parent = ui.addNode(.{}, "FileTab:buttons_parent", .{
+            .pref_size = buttons_parent_size,
+            .child_layout_axis = .x,
+        });
         ui.pushParent(buttons_parent);
         for (self.files.items) |file_info, i| {
             const filename = std.fs.path.basename(file_info.path);
-            const highlight_color = app_style.highlight_color;
+            const highlight_color = if (file_info.focus_box) |_| app_style.highlight_color else vec4{ 1, 0, 0, 1 };
             const is_active = self.active_file != null and self.active_file.? == i;
-            if (is_active) ui.pushStyle(.{ .bg_color = highlight_color });
+            if (is_active) ui.pushTmpStyle(.{ .bg_color = highlight_color });
             const sig = ui.button(filename);
             buttons_parent.last.?.pref_size[0] = Size.text_dim(0);
             if (sig.clicked) self.active_file = i;
-            if (is_active) _ = ui.popStyle();
         }
+        if (ui.subtleIconButton(Icons.plus).clicked) std.debug.print("TODO: open file menu\n", .{});
         _ = ui.popParent(); // buttons parent
 
         const active_name = if (self.active_file) |idx| self.files.items[idx].path else "";
         const active_content = if (self.active_file) |idx| self.files.items[idx].content else "";
 
-        const highlight_box = if (self.active_file == self.highlight_box.file_idx)
-            self.highlight_box
-        else
-            null;
+        if (self.active_file) |file_idx| {
+            const file = self.files.items[file_idx];
 
-        if (self.active_file) |_| {
             // line + text parent
             const file_box_parent_size = [2]Size{ Size.percent(1, 1), Size.percent(1, 0) };
             const file_box_parent = ui.addNode(.{
                 .clip_children = true,
-                .draw_border = true,
             }, "FileTab:text_box_parent", .{});
             file_box_parent.pref_size = file_box_parent_size;
             file_box_parent.child_layout_axis = .x;
             ui.pushParent(file_box_parent);
 
-            _ = ui.scrollableRegion("###file_tab_line_scroll", .y);
-            {
+            const line_scroll_size = [2]Size{ Size.by_children(1), Size.percent(1, 0) };
+            const line_scroll_parent = ui.addNodeF(.{
+                .scrollable = true,
+                .clip_children = true,
+            }, "###{s}::line_scroll_parent", .{active_name}, .{ .pref_size = line_scroll_size });
+            _ = ui.getNodeSignal(line_scroll_parent);
+            ui.pushParent(line_scroll_parent);
+            const line_text_node = blk: {
                 // TODO: what about files with more than 1k lines?
                 var tmpbuf: [50_000]u8 = undefined;
                 var i: usize = 1;
@@ -517,24 +508,43 @@ const FileTab = struct {
                 }
                 const lines_text = tmpbuf[0..offset];
 
-                ui.label(lines_text);
+                const line_text_node = ui.addNode(.{
+                    .no_id = true,
+                    .draw_text = true,
+                    .floating_y = true,
+                }, lines_text, .{});
+                line_text_node.rel_pos_placement = .top_left;
+                line_text_node.rel_pos_placement_parent = .top_left;
+
+                break :blk line_text_node;
+            };
+            _ = ui.popParent(); // line_scroll_parent
+
+            try textDisplay(ui, active_name, active_content, file.lock_line, file.focus_box);
+            const text_scroll_node = file_box_parent.last.?;
+
+            const text_node_rect = text_scroll_node.first.?.rect;
+            const right_click = ui.events.searchAndRemove(.MouseUp, c.GLFW_MOUSE_BUTTON_RIGHT);
+            if (right_click and text_node_rect.contains(ui.mouse_pos)) {
+                show_ctx_menu = true;
+                ctx_menu_top_left = ui.mouse_pos;
             }
-            const line_scrollable = ui.popParent();
-            line_scrollable.pref_size[0] = Size.by_children(1);
+            if (show_ctx_menu) {
+                ui.startCtxMenu(.{ .top_left = ctx_menu_top_left });
+                const ctx_menu_node = ui.topParent();
 
-            const text_box_size = [2]Size{ Size.percent(1, 0), Size.percent(1, 0) };
-            ui.pushStyle(.{ .pref_size = text_box_size });
-            const lock_line = if (highlight_box) |box| box.min.line else null;
-            try textDisplay(ui, active_name, active_content, lock_line, highlight_box);
-            _ = ui.popStyle();
+                if (ui.button("the missile").clicked) std.debug.print("missile\n", .{});
 
-            // very hack and fragile
-            const scrolling_node =
-                file_box_parent.last.? // text parent
-                .first.? // scrollable in x
-                .first.? // scrollable in x (spacer)
-                .next.?; // scrollable in y
-            line_scrollable.scroll_offset[1] = scrolling_node.scroll_offset[1];
+                if (ui.events.match(.MouseDown, {})) |_| {
+                    if (!ctx_menu_node.rect.contains(ui.mouse_pos)) show_ctx_menu = false;
+                }
+
+                ui.endCtxMenu();
+            }
+
+            // scroll the line numbers with the src text
+            line_scroll_parent.scroll_offset[1] = text_scroll_node.scroll_offset[1];
+            line_text_node.rel_pos[1] = -line_scroll_parent.scroll_offset[1];
 
             _ = ui.popParent(); // file_box_parent (line + text parent)
 
@@ -543,58 +553,93 @@ const FileTab = struct {
         _ = ui.popParent(); // file tab parent
     }
 
-    pub fn updateAnimation(self: *FileTab, dt: f32) void {
+    pub fn updateAnimations(self: *FileTab, dt: f32) void {
         const fast_rate = 1 - std.math.pow(f32, 2, -20.0 * dt);
-        const target = self.highlight_box_target;
-        const cur = &self.highlight_box;
-        cur.file_idx = target.file_idx;
-        cur.min.line += (target.min.line - cur.min.line) * fast_rate;
-        cur.min.column += (target.min.column - cur.min.column) * fast_rate;
-        cur.max.line += (target.max.line - cur.max.line) * fast_rate;
-        cur.max.column += (target.max.column - cur.max.column) * fast_rate;
+        for (self.files.items) |*file| {
+            if (file.target_lock_line) |target_line| {
+                if (file.lock_line) |*cur_line| {
+                    cur_line.* += (target_line - cur_line.*) * fast_rate;
+                } else file.lock_line = target_line;
+            }
+            if (file.target_focus_box) |target_box| {
+                if (file.focus_box) |*cur_box| {
+                    cur_box.min.line += (target_box.min.line - cur_box.min.line) * fast_rate;
+                    cur_box.min.column += (target_box.min.column - cur_box.min.column) * fast_rate;
+                    cur_box.max.line += (target_box.max.line - cur_box.max.line) * fast_rate;
+                    cur_box.max.column += (target_box.max.column - cur_box.max.column) * fast_rate;
+                } else file.focus_box = target_box;
+            }
+        }
     }
 };
 
 fn textDisplay(ui: *UiContext, label: []const u8, text: []const u8, lock_line: ?f32, highlight_box: ?FileTab.SrcBox) !void {
+    const text_box_size = [2]Size{ Size.percent(1, 0), Size.percent(1, 0) };
     const parent = ui.addNodeF(.{
+        .scrollable = true,
         .clip_children = true,
-        //.draw_border = true,
-    }, "###{s}::parent", .{label}, .{ .child_layout_axis = .y });
+    }, "###{s}::parent", .{label}, .{ .child_layout_axis = .y, .pref_size = text_box_size });
+    _ = ui.getNodeSignal(parent);
+
     ui.pushParent(parent);
+    defer std.debug.assert(ui.popParent() == parent);
 
-    _ = ui.scrollableRegionF("###{s}::text_scroll_region_x", .{label}, .x);
-    const x_scroll = ui.topParent();
-    _ = ui.scrollableRegionF("###{s}::text_scroll_region_y", .{label}, .y);
-    const y_scroll = ui.topParent();
-
-    const x_off = &x_scroll.scroll_offset[0];
-    const y_off = &y_scroll.scroll_offset[1];
+    const parent_size = parent.rect.size();
     const line_size = ui.font.getScaledMetrics().line_advance;
 
-    ui.label(text);
-    const label_node = y_scroll.last.?;
-
+    const x_off = &parent.scroll_offset[0];
+    const y_off = &parent.scroll_offset[1];
     if (lock_line) |line| {
-        y_off.* = -line_size * line + parent.rect.size()[1] / 2;
+        y_off.* = -line_size * line + parent_size[1] / 2;
     }
 
+    const lines_that_fit = @trunc(parent.rect.size()[1] / line_size);
+    const cur_middle_line = @trunc(std.math.max(0, -y_off.* + parent_size[1] / 2) / line_size);
+    const partial_start_line = @floatToInt(usize, @trunc(std.math.max(0, cur_middle_line - lines_that_fit)));
+    const partial_end_line = @floatToInt(usize, @trunc(cur_middle_line + lines_that_fit));
+
+    var total_lines: usize = 1;
+    var partial_start_idx: usize = 0;
+    var partial_end_idx: usize = text.len;
+    var last_newline: usize = 0;
+    for (text) |char, i| {
+        if (char != '\n') continue;
+        if (total_lines <= partial_start_line) partial_start_idx = i + 1;
+        if (total_lines <= partial_end_line) partial_end_idx = i + 1;
+        total_lines += 1;
+        last_newline = i;
+    }
+    if (text.len == 0) total_lines = 0;
+
+    const partial_text = text[partial_start_idx..partial_end_idx];
+
+    const label_node = ui.addNodeStrings(.{
+        .no_id = true,
+        .ignore_hash_sep = true,
+        .draw_text = true,
+        .floating_x = true,
+        .floating_y = true,
+    }, partial_text, label, .{});
+
     // hack to cut off scrolling at the ends of text
-    const text_rect = label_node.text_rect;
-    const text_size = text_rect.max - text_rect.min;
-    const text_padd = vec2{ UiContext.text_hpadding, UiContext.text_vpadding };
-    var max_offset = text_size - parent.rect.size() + vec2{ 2, 2 } * text_padd;
+    const text_size = vec2{ label_node.text_rect.size()[0], line_size * @intToFloat(f32, total_lines) };
+    var max_offset = text_size - parent_size + vec2{ 2, 2 } * UiContext.text_padd;
     max_offset = vec2{ std.math.max(max_offset[0], 0), std.math.max(max_offset[1], 0) };
     x_off.* = std.math.min(x_off.*, 0);
     x_off.* = std.math.max(x_off.*, -max_offset[0]);
     y_off.* = std.math.min(y_off.*, 0);
     y_off.* = std.math.max(y_off.*, -max_offset[1]);
 
+    label_node.rel_pos_placement = .top_left;
+    label_node.rel_pos_placement_parent = .top_left;
+    label_node.rel_pos = vec2{ x_off.*, -y_off.* - @intToFloat(f32, partial_start_line) * line_size };
+
     if (highlight_box) |box| blk: {
         if (box.min.line == 0 and box.max.line == 0) break :blk;
 
         const text_y_start = parent.rect.size()[1] - y_off.*;
         const line_y_start = std.math.max(0, box.min.line - 1) * line_size;
-        const box_y_top = text_y_start - line_y_start - text_padd[1];
+        const box_y_top = text_y_start - line_y_start - UiContext.text_padd[1];
         const box_y_size = std.math.max(1, box.max.line - box.min.line) * line_size;
 
         const box_node = ui.addNode(.{
@@ -605,11 +650,6 @@ fn textDisplay(ui: *UiContext, label: []const u8, text: []const u8, lock_line: ?
         box_node.pref_size = [2]Size{ Size.percent(1, 1), Size.pixels(box_y_size, 1) };
         box_node.rel_pos[1] = box_y_top - box_y_size;
     }
-
-    _ = ui.popParent();
-    _ = ui.popParent();
-
-    _ = ui.popParent();
 }
 
 fn get_proc_address_fn(window: ?*c.GLFWwindow, proc_name: [:0]const u8) ?*const anyopaque {

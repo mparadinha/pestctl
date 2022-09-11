@@ -69,7 +69,7 @@ pub fn button(self: *UiContext, string: []const u8) Signal {
         .draw_hot_effects = true,
         .draw_active_effects = true,
     }, string, .{
-        .hover_cursor = .hand,
+        .cursor_type = .hand,
     });
     return self.getNodeSignal(node);
 }
@@ -80,6 +80,23 @@ pub fn buttonF(self: *UiContext, comptime fmt: []const u8, args: anytype) Signal
         break :blk "";
     };
     return self.button(str);
+}
+
+pub fn iconButton(self: *UiContext, string: []const u8) Signal {
+    self.pushTmpStyle(.{ .font_type = .icon });
+    return self.button(string);
+}
+
+pub fn subtleIconButton(self: *UiContext, string: []const u8) Signal {
+    const node = self.addNode(.{
+        .clickable = true,
+        .draw_text = true,
+        .draw_active_effects = true,
+    }, string, .{
+        .cursor_type = .hand,
+        .font_type = .icon,
+    });
+    return self.getNodeSignal(node);
 }
 
 // don't forget to call `endCtxMenu`
@@ -122,7 +139,6 @@ pub fn scrollableRegion(self: *UiContext, string: []const u8, axis: Axis) Signal
     const percent_sizes = [2]Size{ Size.percent(1, 0), Size.percent(1, 0) };
 
     const node = self.addNode(.{
-        .clickable = true,
         .scrollable = true,
     }, string, .{ .pref_size = percent_sizes, .child_layout_axis = axis });
     self.pushParent(node);
@@ -224,7 +240,7 @@ pub fn textInputRaw(self: *UiContext, hash_string: []const u8, buffer: []u8, buf
         .draw_border = true,
     }, "###{s}", .{hash_string}, .{
         .child_layout_axis = .x,
-        .hover_cursor = .ibeam,
+        .cursor_type = .ibeam,
     });
     if (first_time) {
         widget_node.cursor = buf_len.*;

@@ -136,7 +136,7 @@ pub const Node = struct {
     border_thickness: f32,
     pref_size: [2]Size,
     child_layout_axis: Axis,
-    hover_cursor: window.CursorType,
+    cursor_type: window.CursorType,
     font_type: FontType,
 
     // per-frame sizing information
@@ -157,8 +157,9 @@ pub const Node = struct {
     last_frame_touched: usize,
 
     // cross-frame state for specific features
-    rel_pos: vec2, // for floating nodes; relative to bottom left (0, 0) corner of the parent
-    rel_pos_placement: Placement.Tag,
+    rel_pos: vec2, // for floating nodes
+    rel_pos_placement: Placement.Tag, // which coords of this node is `rel_pos` relative to
+    rel_pos_placement_parent: Placement.Tag, // which coords of the parent is `rel_pos` relative to
     cursor: usize, // used for text input
     mark: usize, // used for text input
     last_click_time: f32, // used for double click checks
@@ -172,13 +173,13 @@ pub const FontType = enum { text, icon };
 
 pub const Style = struct {
     bg_color: vec4 = vec4{ 0.24, 0.27, 0.31, 1 },
-    border_color: vec4 = vec4{ 0.5, 0.5, 0.5, 0.5 },
+    border_color: vec4 = vec4{ 0.5, 0.5, 0.5, 0.75 },
     text_color: vec4 = vec4{ 1, 1, 1, 1 },
     corner_roundness: f32 = 0,
-    border_thickness: f32 = 1,
+    border_thickness: f32 = 2,
     pref_size: [2]Size = .{ Size.text_dim(1), Size.text_dim(1) },
     child_layout_axis: Axis = .y,
-    hover_cursor: window.CursorType = .arrow,
+    cursor_type: window.CursorType = .arrow,
     font_type: FontType = .text,
 };
 
@@ -412,7 +413,7 @@ pub fn addNodeRawStrings(self: *UiContext, flags: Flags, display_string: []const
     node.border_thickness = style.border_thickness;
     node.pref_size = style.pref_size;
     node.child_layout_axis = style.child_layout_axis;
-    node.hover_cursor = style.hover_cursor;
+    node.cursor_type = style.cursor_type;
     node.font_type = style.font_type;
 
     // @hack: calling textRect is too expensive to do multiple times per frame
@@ -431,6 +432,7 @@ pub fn addNodeRawStrings(self: *UiContext, flags: Flags, display_string: []const
     if (!lookup_result.found_existing) {
         node.first_frame_touched = self.frame_idx;
         node.rel_pos_placement = .btm_left;
+        node.rel_pos_placement_parent = .btm_left;
         node.last_click_time = 0;
         node.last_double_click_time = 0;
         node.scroll_offset = vec2{ 0, 0 };
@@ -524,8 +526,6 @@ pub fn getNodeSignal(self: *UiContext, node: *Node) Signal {
     const enter_ev = self.events.match(.KeyUp, .{ .key = c.GLFW_KEY_ENTER });
     var used_enter_ev = false;
 
-    var mouse_cursor = window.CursorType.arrow;
-
     if (node.flags.clickable) {
         // begin/end a click if there was a mouse down/up event on this node
         if (is_hot and !active_key_matches and mouse_down_ev != null) {
@@ -541,8 +541,6 @@ pub fn getNodeSignal(self: *UiContext, node: *Node) Signal {
 
         signal.hovering = is_hot;
         signal.held_down = is_active;
-
-        if (is_hot) mouse_cursor = node.hover_cursor;
     }
 
     if (node.flags.selectable) {
@@ -562,8 +560,6 @@ pub fn getNodeSignal(self: *UiContext, node: *Node) Signal {
             signal.enter_pressed = true;
             used_enter_ev = true;
         }
-
-        if (is_focused) mouse_cursor = node.hover_cursor;
     }
 
     if (node.flags.scrollable) {
@@ -603,12 +599,10 @@ pub fn getNodeSignal(self: *UiContext, node: *Node) Signal {
     if (signal.clicked) node.last_click_time = cur_time;
     if (signal.double_clicked) node.last_double_click_time = cur_time;
 
-    if (is_hot or is_active or is_focused) self.window_ptr.set_cursor(mouse_cursor);
-
     return signal;
 }
 
-pub fn startFrame(self: *UiContext, screen_w: u32, screen_h: u32, mouse_pos: vec2, events: *window.EventQueue) !void {
+pub fn startBuild(self: *UiContext, screen_w: u32, screen_h: u32, mouse_pos: vec2, events: *window.EventQueue) !void {
     // remove the `no_id` nodes from the hash table before starting this new frame
     var node_iter = self.node_table.valueIterator();
     while (node_iter.next()) |node| {
@@ -640,11 +634,14 @@ pub fn startFrame(self: *UiContext, screen_w: u32, screen_h: u32, mouse_pos: vec
 
     self.first_error_trace = null;
 
-    if (self.active_node_key == null and self.hot_node_key == null)
-        self.window_ptr.set_cursor(.arrow);
+    var mouse_cursor = window.CursorType.arrow;
+    if (self.focused_node_key) |key| mouse_cursor = self.node_table.getFromHash(key).?.cursor_type;
+    if (self.hot_node_key) |key| mouse_cursor = self.node_table.getFromHash(key).?.cursor_type;
+    if (self.active_node_key) |key| mouse_cursor = self.node_table.getFromHash(key).?.cursor_type;
+    self.window_ptr.set_cursor(mouse_cursor);
 }
 
-pub fn endFrame(self: *UiContext, dt: f32) void {
+pub fn endBuild(self: *UiContext, dt: f32) void {
     if (self.first_error_trace) |error_trace| {
         std.debug.print("{}\n", .{error_trace});
         std.debug.panic("An error occurred during the UI building phase: {s}", .{self.first_error_name});
@@ -1221,7 +1218,7 @@ fn solveViolationsWorkFn(self: *UiContext, node: *Node, axis: Axis) void {
             z_child.calc_size[axis_idx] -= zero_strict_remove_amount * z_child_percent;
         } else {
             const extra_size = z_child.calc_size[axis_idx] - node.calc_size[axis_idx];
-            z_child.calc_size[axis_idx] -= std.math.min(0, extra_size);
+            z_child.calc_size[axis_idx] -= std.math.max(0, extra_size);
         }
     }
     overflow -= zero_strict_remove_amount;
@@ -1281,7 +1278,11 @@ fn solveFinalPosWorkFn(self: *UiContext, node: *Node, axis: Axis) void {
             .y => child_node.flags.floating_y,
         };
         if (is_floating) {
-            child_node.calc_rel_pos[axis_idx] = child_node.rel_pos[axis_idx];
+            const calc_rel_pos = Placement.init(child_node.rel_pos_placement, child_node.rel_pos)
+                .convertTo(.btm_left, child_node.calc_size)
+                .convertTo(child_node.rel_pos_placement_parent, node.calc_size)
+                .value();
+            child_node.calc_rel_pos[axis_idx] = calc_rel_pos[axis_idx];
             continue;
         }
 
