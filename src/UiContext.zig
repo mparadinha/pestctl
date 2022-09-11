@@ -138,9 +138,10 @@ pub const Node = struct {
     child_layout_axis: Axis,
     cursor_type: window.CursorType,
     font_type: FontType,
+    text_align: TextAlign,
 
     // per-frame sizing information
-    text_rect: Rect, // @hack
+    text_rect: Rect,
 
     // post-size-determination data
     calc_size: vec2,
@@ -168,8 +169,8 @@ pub const Node = struct {
 };
 
 pub const Axis = enum { x, y };
-
 pub const FontType = enum { text, icon };
+pub const TextAlign = enum { left, center, right };
 
 pub const Style = struct {
     bg_color: vec4 = vec4{ 0.24, 0.27, 0.31, 1 },
@@ -181,6 +182,7 @@ pub const Style = struct {
     child_layout_axis: Axis = .y,
     cursor_type: window.CursorType = .arrow,
     font_type: FontType = .text,
+    text_align: TextAlign = .left,
 };
 
 pub const Size = union(enum) {
@@ -406,17 +408,12 @@ pub fn addNodeRawStrings(self: *UiContext, flags: Flags, display_string: []const
     node.display_string = display_string;
     node.hash_string = hash_string;
     const style = self.style_stack.top().?;
-    node.bg_color = style.bg_color;
-    node.border_color = style.border_color;
-    node.text_color = style.text_color;
-    node.corner_roundness = style.corner_roundness;
-    node.border_thickness = style.border_thickness;
-    node.pref_size = style.pref_size;
-    node.child_layout_axis = style.child_layout_axis;
-    node.cursor_type = style.cursor_type;
-    node.font_type = style.font_type;
+    inline for (@typeInfo(Style).Struct.fields) |field_type_info| {
+        const field_name = field_type_info.name;
+        @field(node, field_name) = @field(style, field_name);
+    }
 
-    // @hack: calling textRect is too expensive to do multiple times per frame
+    // calling textRect is too expensive to do multiple times per frame
     const font_rect = try ((switch (node.font_type) {
         .text => &self.font,
         .icon => &self.icon_font,
@@ -441,9 +438,6 @@ pub fn addNodeRawStrings(self: *UiContext, flags: Flags, display_string: []const
     // user overrides of node data
     inline for (@typeInfo(@TypeOf(init_args)).Struct.fields) |field_type_info| {
         const field_name = field_type_info.name;
-        if (!@hasField(Node, field_name)) {
-            @compileError("Node does not have a field named '" ++ field_name ++ "'");
-        }
         @field(node, field_name) = @field(init_args, field_name);
     }
 
@@ -822,10 +816,6 @@ fn addShaderInputsForNode(self: *UiContext, shader_inputs: *std.ArrayList(Shader
         if (node.flags.draw_active_effects) {
             text_pos[1] -= 0.1 * font.pixel_size * node.active_trans;
         }
-
-        // TODO: manually clip text rectangles that are completly off the clip rect
-        // as an optimization for large text rendering. (like rendering a whole 10k
-        // line file)
 
         const display_text = node.display_string;
 
@@ -1341,15 +1331,22 @@ pub const text_padd = vec2{ text_hpadding, text_vpadding };
 
 pub fn textPosFromNode(self: *UiContext, node: *Node) vec2 {
     _ = self;
-    //const text_rect = self.font.textRect(node.display_string) catch
-    //    unreachable; // input is already checked in render pass
+
+    const node_size = node.rect.size();
     const text_rect = node.text_rect;
-    const text_size_y = text_rect.max[1] - text_rect.min[1];
-    const box_middle_y = (node.rect.min[1] + node.rect.max[1]) / 2;
+    const text_size = text_rect.size();
+
+    const rel_text_x = switch (node.text_align) {
+        .left => text_hpadding,
+        .center => (node_size[0] / 2) - (text_size[0] / 2),
+        .right => node_size[0] - text_hpadding - text_size[0],
+    };
+
+    const box_middle = node.rect.min + (node_size / vec2{ 2, 2 });
 
     return vec2{
-        node.rect.min[0] + text_hpadding,
-        box_middle_y + (text_size_y / 2) - text_rect.max[1],
+        node.rect.min[0] + rel_text_x,
+        box_middle[1] + (text_size[1] / 2) - text_rect.max[1],
     };
 }
 
