@@ -16,7 +16,12 @@ pub fn build(b: *std.build.Builder) void {
     exe.setBuildMode(mode);
     exe.linkLibC();
     exe.linkSystemLibrary("glfw");
+    exe.linkSystemLibrary("xed");
+    exe.addLibPath("xed/obj");
     exe.addIncludeDir("src");
+    exe.addIncludeDir("xed/obj");
+    exe.addIncludeDir("xed/include/public");
+    exe.addIncludeDir("xed/include/public/xed");
     exe.addCSourceFile("src/stb_impls.c", &[_][]u8{""});
     exe.install();
     //_ = @import("build_tracy.zig").link(b, exe, "tracy-0.8.2");

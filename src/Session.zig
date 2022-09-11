@@ -354,7 +354,7 @@ fn insertByteAtAddr(self: *Session, addr: usize, byte: u8) u8 {
     return @truncate(u8, data);
 }
 
-fn getBytesAtAddr(self: *Session, addr: usize, comptime N: u4) [N]u8 {
+pub fn getBytesAtAddr(self: Session, addr: usize, comptime N: u4) [N]u8 {
     std.debug.assert(N <= 8);
     const data = c.ptrace(.PEEKTEXT, self.pid, @intToPtr(*anyopaque, addr), null);
     return switch (N) {
@@ -363,6 +363,16 @@ fn getBytesAtAddr(self: *Session, addr: usize, comptime N: u4) [N]u8 {
             @intCast(u8, (data & 0x0000_ff00) >> 8),
             @intCast(u8, (data & 0x00ff_0000) >> 16),
             @intCast(u8, (data & 0xff00_0000) >> 24),
+        },
+        8 => [8]u8{
+            @intCast(u8, (data & 0x0000_0000_0000_00ff)),
+            @intCast(u8, (data & 0x0000_0000_0000_ff00) >> 8),
+            @intCast(u8, (data & 0x0000_0000_00ff_0000) >> 16),
+            @intCast(u8, (data & 0x0000_0000_ff00_0000) >> 24),
+            @intCast(u8, (data & 0x0000_00ff_0000_0000) >> 32),
+            @intCast(u8, (data & 0x0000_ff00_0000_0000) >> 40),
+            @intCast(u8, (data & 0x00ff_0000_0000_0000) >> 48),
+            @intCast(u8, (data & 0xff00_0000_0000_0000) >> 56),
         },
         else => @panic("TODO"),
     };
@@ -416,7 +426,7 @@ pub const Registers = struct {
 
 };
 
-fn getRegisters(self: Session) Registers {
+pub fn getRegisters(self: Session) Registers {
     var regs: c.user_regs_struct = undefined;
     _ = c.ptrace(.GETREGS, self.pid, null, &regs);
     var fp_regs: c.user_fpregs_struct = undefined;

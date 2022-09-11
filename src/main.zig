@@ -82,6 +82,8 @@ pub fn main() !void {
     defer std.process.argsFree(allocator, arg_slices);
     const cmdline_args = parseCmdlineArgs(arg_slices);
 
+    c.xed_tables_init();
+
     var width: u32 = 1600;
     var height: u32 = 900;
     // setup GLFW
@@ -197,9 +199,32 @@ pub fn main() !void {
 
             try file_tab.display(&ui);
 
-            const tmp_size = [2]Size{ Size.percent(1, 1), Size.percent(0.35, 1) };
-            ui.pushTmpStyle(.{ .pref_size = tmp_size });
-            _ = ui.textBox("TODO: assembly window");
+            // testing xed disassembly
+            if (session_opt) |session| {
+                //const tmp_size = [2]Size{ Size.percent(1, 1), Size.percent(0.35, 1) };
+                const tmp_size = [2]Size{ Size.percent(1, 1), Size.text_dim(1) };
+                ui.pushTmpStyle(.{ .pref_size = tmp_size, .text_align = .center });
+                if (session.status != .Stopped) {
+                    _ = ui.textBox("TODO: assembly window");
+                } else {
+                    const rip = session.getRegisters().rip;
+                    const inst_bytes = session.getBytesAtAddr(rip, 8);
+
+                    var decoded_inst: c.xed_decoded_inst_t = undefined;
+                    c.xed_decoded_inst_zero(&decoded_inst);
+                    c.xed_decoded_inst_set_mode(&decoded_inst, c.XED_MACHINE_MODE_LONG_64, c.XED_ADDRESS_WIDTH_64b);
+                    switch (c.xed_decode(&decoded_inst, &inst_bytes[0], inst_bytes.len)) {
+                        c.XED_ERROR_NONE => {},
+                        else => |err| std.debug.panic("got error code from xed_decode: {s}\n", .{c.xed_error_enum_t2str(err)}),
+                    }
+                    var buf: [26]u8 = undefined;
+                    const format_res = c.xed_format_context(c.XED_SYNTAX_INTEL, &decoded_inst, &buf[0], buf.len, rip, null, null);
+                    std.debug.assert(format_res == 1);
+                    const str = buf[0..c.strlen(&buf[0])];
+
+                    _ = ui.textBox(str);
+                }
+            }
         }
         std.debug.assert(ui.popParent() == left_side_parent);
 
@@ -299,7 +324,10 @@ pub fn main() !void {
                     try session.stepLine();
                     update_src_focus = true;
                 }
-                if (ui.button("Next Instruction").clicked) try session.stepInstructions(1);
+                if (ui.button("Next Instruction").clicked) {
+                    try session.stepInstructions(1);
+                    update_src_focus = true;
+                }
                 _ = ui.popStyle();
 
                 const set_break_parent = ui.addNode(.{}, "###set_break_parent", .{ .child_layout_axis = .x });
@@ -331,7 +359,7 @@ pub fn main() !void {
                 }
                 std.debug.assert(ui.popParent() == set_break_parent);
 
-                try session.update();
+                //try session.update();
             }
         }
         std.debug.assert(ui.popParent() == right_side_parent);
