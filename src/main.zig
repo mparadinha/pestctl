@@ -110,6 +110,7 @@ pub fn main() !void {
 
     var session_opt = if (cmdline_args.exec_path) |path| try Session.init(allocator, path) else null;
     defer if (session_opt) |*session| session.deinit();
+    var last_session_status: Session.Status = if (session_opt) |s| s.status else .Stopped;
 
     var last_mouse_pos = vec2{ 0, 0 };
     var last_time = @floatCast(f32, c.glfwGetTime());
@@ -197,33 +198,44 @@ pub fn main() !void {
             }
             std.debug.assert(ui.popParent() == open_file_parent);
 
-            try file_tab.display(&ui);
+            try file_tab.display(&ui, if (session_opt) |*s| s else null);
 
             // testing xed disassembly
             if (session_opt) |session| {
                 //const tmp_size = [2]Size{ Size.percent(1, 1), Size.percent(0.35, 1) };
                 const tmp_size = [2]Size{ Size.percent(1, 1), Size.text_dim(1) };
-                ui.pushTmpStyle(.{ .pref_size = tmp_size, .text_align = .center });
-                if (session.status != .Stopped) {
-                    _ = ui.textBox("TODO: assembly window");
-                } else {
-                    const rip = session.getRegisters().rip;
-                    const inst_bytes = session.getBytesAtAddr(rip, 8);
+                ui.pushStyle(.{ .pref_size = tmp_size, .text_align = .center });
+                if (session.addr_range) |range| {
+                    var buf = try std.BoundedArray(u8, 0x1000).init(0);
+                    const rip = session.regs.rip;
+                    var asm_addr = range[0];
+                    while (asm_addr < range[1]) {
+                        var inst_bytes: [16]u8 = undefined;
+                        for (session.getBytesAtAddr(asm_addr, 8)) |byte, i| inst_bytes[i] = byte;
+                        for (session.getBytesAtAddr(asm_addr + 8, 8)) |byte, i| inst_bytes[8 + i] = byte;
 
-                    var decoded_inst: c.xed_decoded_inst_t = undefined;
-                    c.xed_decoded_inst_zero(&decoded_inst);
-                    c.xed_decoded_inst_set_mode(&decoded_inst, c.XED_MACHINE_MODE_LONG_64, c.XED_ADDRESS_WIDTH_64b);
-                    switch (c.xed_decode(&decoded_inst, &inst_bytes[0], inst_bytes.len)) {
-                        c.XED_ERROR_NONE => {},
-                        else => |err| std.debug.panic("got error code from xed_decode: {s}\n", .{c.xed_error_enum_t2str(err)}),
+                        var decoded_inst: c.xed_decoded_inst_t = undefined;
+                        c.xed_decoded_inst_zero(&decoded_inst);
+                        c.xed_decoded_inst_set_mode(&decoded_inst, c.XED_MACHINE_MODE_LONG_64, c.XED_ADDRESS_WIDTH_64b);
+                        switch (c.xed_decode(&decoded_inst, &inst_bytes[0], inst_bytes.len)) {
+                            c.XED_ERROR_NONE => {},
+                            else => |err| std.debug.panic("got error code from xed_decode: {s}\n", .{c.xed_error_enum_t2str(err)}),
+                        }
+                        var write_buf = buf.buffer[buf.len..];
+                        const format_res = c.xed_format_context(c.XED_SYNTAX_INTEL, &decoded_inst, write_buf.ptr, @intCast(c_int, write_buf.len), rip, null, null);
+                        std.debug.assert(format_res == 1);
+                        const strlen = c.strlen(write_buf.ptr);
+                        const str = write_buf[0..strlen];
+
+                        _ = ui.textBox(str);
+
+                        asm_addr += c.xed_decoded_inst_get_length(&decoded_inst);
+                        buf.len += strlen + 1;
                     }
-                    var buf: [26]u8 = undefined;
-                    const format_res = c.xed_format_context(c.XED_SYNTAX_INTEL, &decoded_inst, &buf[0], buf.len, rip, null, null);
-                    std.debug.assert(format_res == 1);
-                    const str = buf[0..c.strlen(&buf[0])];
-
-                    _ = ui.textBox(str);
+                } else {
+                    _ = ui.textBox("TODO: assembly window");
                 }
+                _ = ui.popStyle();
             }
         }
         std.debug.assert(ui.popParent() == left_side_parent);
@@ -233,8 +245,6 @@ pub fn main() !void {
         ui.pushParent(right_side_parent);
         {
             if (session_opt) |*session| {
-                try session.update();
-
                 _ = ui.textBoxF("Child pid: {}", .{session.pid});
                 ui.topParent().last.?.pref_size[0] = Size.percent(1, 1);
                 switch (session.status) {
@@ -256,6 +266,10 @@ pub fn main() !void {
                 const regs = session.regs;
                 inline for (table_regs) |reg_name| {
                     _ = ui.textBoxF(reg_name ++ ": 0x{x:0>16}", .{@field(regs, reg_name)});
+                }
+
+                if (session.addr_range) |range| {
+                    _ = ui.textBoxF("0x{x:0>12} -> 0x{x:0>12}", .{ range[0], range[1] });
                 }
 
                 const vars_parent = ui.addNode(.{}, "###vars_parent", .{ .child_layout_axis = .y });
@@ -352,14 +366,25 @@ pub fn main() !void {
                     _ = ui.popStyle();
                     _ = ui.popStyle();
 
-                    if (button_sig.clicked or line_sig.enter_pressed or file_sig.enter_pressed) {
-                        const line = try std.fmt.parseUnsigned(u32, num_buf.slice(), 0);
-                        try session.setBreakpointAtSrc(.{ .dir = "src", .file = file_buf.slice(), .line = line, .column = 0 });
+                    if (button_sig.clicked or line_sig.enter_pressed or file_sig.enter_pressed) blk: {
+                        const line = std.fmt.parseUnsigned(u32, num_buf.slice(), 0) catch |err| {
+                            std.debug.print("{s}: couldn't parse break line number: '{s}'\n", .{ @errorName(err), num_buf.slice() });
+                            break :blk;
+                        };
+                        session.setBreakpointAtSrc(.{ .dir = "src", .file = file_buf.slice(), .line = line, .column = 0 }) catch |err| {
+                            std.debug.print("{s}: couldn't set breakpoint at src/{s}:{}\n", .{ @errorName(err), file_buf.slice(), line });
+                            break :blk;
+                        };
                     }
                 }
                 std.debug.assert(ui.popParent() == set_break_parent);
 
-                //try session.update();
+                if (last_session_status != session.status) {
+                    update_src_focus = true;
+                }
+                last_session_status = session.status;
+
+                try session.fullUpdate();
             }
         }
         std.debug.assert(ui.popParent() == right_side_parent);
@@ -370,7 +395,7 @@ pub fn main() !void {
 
         // update src viewing window with the next session information
         if (update_src_focus) {
-            if (session_opt) |session| {
+            if (session_opt) |*session| {
                 if (session.src_loc) |loc| try file_tab.focusOnSrc(loc);
             }
         }
@@ -479,7 +504,9 @@ const FileTab = struct {
         return self.findFile(path);
     }
 
-    pub fn display(self: *FileTab, ui: *UiContext) !void {
+    pub fn display(self: *FileTab, ui: *UiContext, session_opt: ?*Session) !void {
+        _ = session_opt;
+
         const file_tab_size = [2]Size{ Size.percent(1, 1), Size.percent(1, 0) };
         const file_tab_node = ui.addNode(.{
             .draw_border = true,
@@ -508,7 +535,7 @@ const FileTab = struct {
         const active_content = if (self.active_file) |idx| self.files.items[idx].content else "";
 
         if (self.active_file) |file_idx| {
-            const file = self.files.items[file_idx];
+            const file = &self.files.items[file_idx];
 
             // line + text parent
             const file_box_parent_size = [2]Size{ Size.percent(1, 1), Size.percent(1, 0) };
@@ -548,7 +575,7 @@ const FileTab = struct {
             };
             _ = ui.popParent(); // line_scroll_parent
 
-            try textDisplay(ui, active_name, active_content, file.lock_line, file.focus_box);
+            try textDisplay(ui, active_name, active_content, &file.lock_line, &file.target_lock_line, file.focus_box);
             const text_scroll_node = file_box_parent.last.?;
 
             const text_node_rect = text_scroll_node.first.?.rect;
@@ -601,13 +628,13 @@ const FileTab = struct {
     }
 };
 
-fn textDisplay(ui: *UiContext, label: []const u8, text: []const u8, lock_line: ?f32, highlight_box: ?FileTab.SrcBox) !void {
+fn textDisplay(ui: *UiContext, label: []const u8, text: []const u8, lock_line: *?f32, target_lock_line: *?f32, highlight_box: ?FileTab.SrcBox) !void {
     const text_box_size = [2]Size{ Size.percent(1, 0), Size.percent(1, 0) };
     const parent = ui.addNodeF(.{
         .scrollable = true,
         .clip_children = true,
     }, "###{s}::parent", .{label}, .{ .child_layout_axis = .y, .pref_size = text_box_size });
-    _ = ui.getNodeSignal(parent);
+    const parent_sig = ui.getNodeSignal(parent);
 
     ui.pushParent(parent);
     defer std.debug.assert(ui.popParent() == parent);
@@ -615,9 +642,15 @@ fn textDisplay(ui: *UiContext, label: []const u8, text: []const u8, lock_line: ?
     const parent_size = parent.rect.size();
     const line_size = ui.font.getScaledMetrics().line_advance;
 
+    // if we manually scroll the text stop the line locking
+    if (parent_sig.scroll_offset[0] != 0 or parent_sig.scroll_offset[1] != 0) {
+        lock_line.* = null;
+        target_lock_line.* = null;
+    }
+
     const x_off = &parent.scroll_offset[0];
     const y_off = &parent.scroll_offset[1];
-    if (lock_line) |line| {
+    if (lock_line.*) |line| {
         y_off.* = -line_size * line + parent_size[1] / 2;
     }
 

@@ -517,8 +517,10 @@ pub fn getNodeSignal(self: *UiContext, node: *Node) Signal {
     var used_mouse_down_ev = false;
     const mouse_up_ev = self.events.find(.MouseUp, c.GLFW_MOUSE_BUTTON_LEFT);
     var used_mouse_up_ev = false;
-    const enter_ev = self.events.match(.KeyUp, .{ .key = c.GLFW_KEY_ENTER });
-    var used_enter_ev = false;
+    const enter_down_ev = self.events.match(.KeyDown, .{ .key = c.GLFW_KEY_ENTER });
+    var used_enter_down_ev = false;
+    const enter_up_ev = self.events.match(.KeyUp, .{ .key = c.GLFW_KEY_ENTER });
+    var used_enter_up_ev = false;
 
     if (node.flags.clickable) {
         // begin/end a click if there was a mouse down/up event on this node
@@ -550,9 +552,9 @@ pub fn getNodeSignal(self: *UiContext, node: *Node) Signal {
 
         // TODO: maybe we should remove the whole enter_pressed thing
         // and just have it use the clicked one instead?
-        if (is_focused and enter_ev != null) {
+        if (is_focused and enter_up_ev != null) {
             signal.enter_pressed = true;
-            used_enter_ev = true;
+            used_enter_up_ev = true;
         }
     }
 
@@ -564,9 +566,9 @@ pub fn getNodeSignal(self: *UiContext, node: *Node) Signal {
                 var scroll_off = vec2{ ev.x, ev.y };
                 if (ev.shift_held) scroll_off = vec2{ ev.y, ev.x };
                 node.scroll_offset += math.times(scroll_off, 50);
+                signal.scroll_offset = scroll_off;
             }
         }
-        signal.scroll_offset = node.scroll_offset;
     }
 
     signal.focused = is_focused;
@@ -581,7 +583,8 @@ pub fn getNodeSignal(self: *UiContext, node: *Node) Signal {
 
     if (used_mouse_down_ev) _ = self.events.removeAt(mouse_down_ev.?);
     if (used_mouse_up_ev) _ = self.events.removeAt(mouse_up_ev.?);
-    if (used_enter_ev) _ = self.events.removeAt(enter_ev.?);
+    if (used_enter_down_ev) _ = self.events.removeAt(enter_down_ev.?);
+    if (used_enter_up_ev) _ = self.events.removeAt(enter_up_ev.?);
 
     // double/triple click logic
     const delay_time = 0.4; // 400 milliseconds
@@ -1353,6 +1356,10 @@ pub fn textPosFromNode(self: *UiContext, node: *Node) vec2 {
 pub fn setErrorInfo(self: *UiContext, trace: ?*std.builtin.StackTrace, name: []const u8) void {
     self.first_error_trace = trace;
     self.first_error_name = name;
+}
+
+pub fn nodeFromKey(self: UiContext, key: NodeKey) ?*Node {
+    return self.node_table.getFromHash(key);
 }
 
 pub fn keyFromNode(self: UiContext, node: *Node) NodeKey {

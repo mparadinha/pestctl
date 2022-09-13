@@ -8,15 +8,18 @@ const Session = @This();
 allocator: Allocator,
 exec_path: [:0]const u8,
 pid: std.os.pid_t,
-status: enum { Running, Stopped },
+status: Status,
 wait_status: u32,
 elf: Elf,
 
 // TODO: switch breakpoints to a linked list (removing items in the middle is needed, while iterating)
 breakpoints: std.ArrayList(BreakPoint),
 src_loc: ?SrcLoc,
+addr_range: ?[2]u64,
 regs: Registers,
 watched_vars: FreeList(WatchedVar),
+
+pub const Status = enum { Running, Stopped };
 
 const BreakPoint = struct {
     addr: usize,
@@ -44,6 +47,7 @@ pub fn init(allocator: Allocator, exec_path: []const u8) !Session {
         .elf = try Elf.init(allocator, exec_path),
         .breakpoints = std.ArrayList(BreakPoint).init(allocator),
         .src_loc = null,
+        .addr_range = null,
         .regs = undefined,
         .watched_vars = FreeList(WatchedVar).init(allocator),
     };
@@ -106,12 +110,28 @@ pub fn kill(self: *Session) void {
 
 /// checks if the child is stopped at a breakpoint (which we need to restore)
 /// some breakpoints need to be re-setup (in case we want to hit them again)
-pub fn update(self: *Session) !void {
+pub fn fullUpdate(self: *Session) !void {
     self.updateStatus();
     if (self.status == .Running) return;
 
     self.regs = self.getRegisters();
     self.src_loc = try self.elf.translateAddrToSrc(self.regs.rip);
+
+    // calculate address range for the current src location
+    if (self.src_loc) |src| {
+        for (self.elf.dwarf.line_progs) |prog| {
+            for (prog.files) |file, i| {
+                if (std.mem.eql(u8, file.name, src.file) and
+                    std.mem.eql(u8, prog.include_dirs[file.dir], src.dir))
+                {
+                    if (try prog.findAddrRangeForSrc(@intCast(u32, i), src.line)) |range| {
+                        self.addr_range = range;
+                    }
+                    break;
+                }
+            }
+        }
+    }
 
     // if we're stopped at breakpoint, restore the clobbered byte and fix rip
     for (self.breakpoints.items) |*breakpt| {
@@ -171,9 +191,10 @@ pub fn setBreakpointAtAddr(self: *Session, addr: usize) !void {
     });
 }
 
+const Error = error{NoAddrForSrc};
+
 pub fn setBreakpointAtSrc(self: *Session, src: SrcLoc) !void {
-    const addr = (try self.findAddrForThisLineOrNextOne(src)) orelse
-        std.debug.panic("could not translate src={} to an address\n", .{src});
+    const addr = (try self.findAddrForThisLineOrNextOne(src)) orelse return Error.NoAddrForSrc;
     try self.setBreakpointAtAddr(addr);
 }
 

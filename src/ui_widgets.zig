@@ -161,57 +161,11 @@ pub fn scrollableRegionF(self: *UiContext, comptime fmt: []const u8, args: anyty
 }
 
 pub fn scrollableText(self: *UiContext, hash_string: []const u8, string: []const u8) Signal {
-    // * parent widget (layout in x)
-    // | * scrollable in y (x size percent(1, 0))
-    // | | * scrollable in x (y size percent(1, 0))
-    // | | | * text
-    // | | | * x scrollbar parent (layout in x) (x size percent(1, 0), y size by_children(1))
-    // | | | | * spacer(x, pixels(scroll_value, 1))
-    // | | | | * scroolbar grabber thingy
-    // | | | | * spacer(x, percent(1, 0))
-    // | | * y scrollbar parent (layout in y) (x size bychildren(1), y size percent(1, 0))
-    // | | | * spacer(y, pixels(scroll_value, 1))
-    // | | | * scroolbar grabber thingy
-    // | | | * spacer(y, percent(1, 0))
-
+    // TODO: replace this with the new mechanism used for the file tab text
     const top_node = self.addNodeF(.{ .clip_children = true, .draw_border = true, .draw_background = true }, "{s}::top_node", .{hash_string}, .{ .child_layout_axis = .x });
     self.pushParent(top_node);
     defer _ = self.popParent();
-
-    const scrollable_y_sig = self.scrollableRegionF("{s}::scrollable_y", .{hash_string}, .y);
-
-    const scrollable_x_sig = self.scrollableRegionF("{s}::scrollable_x", .{hash_string}, .x);
-
-    const text_node = self.addNode(.{ .draw_text = true }, string, .{});
-    _ = text_node;
-
-    _ = scrollable_x_sig;
-    //const x_scrollbar = self.addNode(.{ .no_id = true }, "", .{ .child_layout_axis = .x });
-    //x_scrollbar.pref_size = [2]Size{ Size.percent(1, 0), Size.by_children(1) };
-    //self.pushParent(x_scrollbar);
-    //{
-    //     self.spacer(.x, Size.pixels(scrollable_x_sig.scroll_offset[0], 1));
-    //    const x_scrollbar_grabber = self.addNodeF(.{ .clickable = true, .draw_background = true }, "{s}::x_grabber", .{hash_string}, .{});
-    //    x_scrollbar_grabber.pref_size = [2]Size{ Size.pixels(10, 1), Size.pixels(10, 1) };
-    //     self.spacer(.x, Size.percent(1, 0));
-    //}
-    //_ = self.popParent(); // pop x_scrollbar
-
-    _ = self.popParent(); // pop scrollable region x
-
-    const y_scrollbar = self.addNode(.{ .no_id = true }, "", .{ .child_layout_axis = .y });
-    y_scrollbar.pref_size = [2]Size{ Size.by_children(1), Size.percent(1, 0) };
-    self.pushParent(y_scrollbar);
-    {
-        self.spacer(.y, Size.pixels(scrollable_y_sig.scroll_offset[1], 1));
-        const y_scrollbar_grabber = self.addNodeF(.{ .clickable = true, .draw_background = true }, "{s}::y_grabber", .{hash_string}, .{});
-        y_scrollbar_grabber.pref_size = [2]Size{ Size.pixels(10, 1), Size.pixels(10, 1) };
-        self.spacer(.y, Size.percent(1, 0));
-    }
-    _ = self.popParent(); // pop y_scrollbar
-
-    _ = self.popParent(); // pop scrollable region y
-
+    self.label(string);
     return self.getNodeSignal(top_node);
 }
 

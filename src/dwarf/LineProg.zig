@@ -299,6 +299,23 @@ pub fn findAddrForSrc(self: LineProg, file: u32, line: u32) !?State {
     return null;
 }
 
+pub fn findAddrRangeForSrc(self: LineProg, file: u32, line: u32) !?[2]u64 {
+    var start_addr = @as(?u64, null);
+    var state = self.initialState();
+    var stream = std.io.fixedBufferStream(self.ops);
+    var reader = stream.reader();
+    while ((try stream.getPos()) < self.ops.len) {
+        const new_row = try self.updateState(&state, reader);
+        if (new_row) |row| {
+            const is_src = row.file == file and row.line == line;
+            if (start_addr == null and is_src and row.is_stmt) start_addr = row.address;
+            if (start_addr != null and !is_src) return [2]u64{ start_addr.?, row.address };
+            if (row.end_sequence) break;
+        }
+    }
+    return null;
+}
+
 pub fn findAddr(self: LineProg, addr: usize) !?State {
     var state = self.initialState();
     var stream = std.io.fixedBufferStream(self.ops);
