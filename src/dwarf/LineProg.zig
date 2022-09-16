@@ -1,7 +1,8 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const c = @import("../c.zig");
 const DW = @import("constants.zig");
+const readLengthField = @import("../Dwarf.zig").readLengthField;
+const stringFromTable = @import("../Elf.zig").stringFromTable;
 
 const LineProg = @This();
 
@@ -55,10 +56,8 @@ pub const State = struct {
 pub fn getSectionSize(debug_line: []const u8, offset: usize) !usize {
     var stream = std.io.fixedBufferStream(debug_line[offset..]);
     var reader = stream.reader();
-    const initial_len = try reader.readIntLittle(u32);
-    if (initial_len < 0xffff_fff0) return 4 + initial_len else {
-        return 4 + 8 + (try reader.readIntLittle(u64));
-    }
+    const length = try readLengthField(reader);
+    return if (length.is_64) 4 + 8 + length.length else 4 + length.length;
 }
 
 /// `debug_line` and `debug_line_str` must remain valid memory while this LineProg is used
@@ -70,12 +69,9 @@ pub fn init(allocator: Allocator, debug_line: []const u8, offset: usize, debug_l
     var stream = std.io.fixedBufferStream(debug_line[offset..]);
     var reader = stream.reader();
 
-    const initial_len = try reader.readIntLittle(u32);
-    const unit_len = if (initial_len < 0xffff_fff0) initial_len else blk: {
-        std.debug.assert(initial_len == 0xffff_ffff);
-        break :blk try reader.readIntLittle(u64);
-    };
-    const is_64 = (initial_len == 0xffff_ffff);
+    const length = try readLengthField(reader);
+    const unit_len = length.length;
+    const is_64 = length.is_64;
     const section_size = (try stream.getPos()) + unit_len;
     self.raw_data = debug_line[offset .. offset + section_size];
 
@@ -159,8 +155,7 @@ pub fn init(allocator: Allocator, debug_line: []const u8, offset: usize, debug_l
                 // TODO: use the readXXX for these forms
                 if (format.content_type == DW.LNCT.path and format.form == DW.FORM.line_strp) {
                     const strp = if (is_64) try reader.readIntLittle(u64) else @intCast(u64, try reader.readIntLittle(u32));
-                    const strlen = c.strlen(&debug_line_str[strp]);
-                    dir.* = debug_line_str[strp .. strp + strlen];
+                    dir.* = stringFromTable(debug_line_str, strp);
                     break;
                 }
             } else std.debug.panic("couldn't parse include dir {} (debug_line offfset = 0x{x})", .{
@@ -189,14 +184,13 @@ pub fn init(allocator: Allocator, debug_line: []const u8, offset: usize, debug_l
                         // TODO: use the readXXX for these forms
                         DW.FORM.string => blk: {
                             const str_start = try stream.getPos();
-                            const strlen = c.strlen(&self.raw_data[str_start]);
+                            const strlen = stringFromTable(self.raw_data, str_start).len;
                             try reader.skipBytes(strlen + 1, .{});
                             break :blk self.raw_data[str_start .. str_start + strlen];
                         },
                         DW.FORM.line_strp => blk: {
                             const strp = if (is_64) try reader.readIntLittle(u64) else @intCast(u64, try reader.readIntLittle(u32));
-                            const strlen = c.strlen(&debug_line_str[strp]);
-                            break :blk debug_line_str[strp .. strp + strlen];
+                            break :blk stringFromTable(debug_line_str, strp);
                         },
                         DW.FORM.strp => std.debug.panic("need to pass .debug_str in\n", .{}),
                         DW.FORM.strp_sup => unreachable, // ah hell no

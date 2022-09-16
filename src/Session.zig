@@ -17,7 +17,7 @@ breakpoints: std.ArrayList(BreakPoint),
 src_loc: ?SrcLoc,
 addr_range: ?[2]u64,
 regs: Registers,
-watched_vars: FreeList(WatchedVar),
+watched_vars: std.ArrayList(WatchedVar),
 
 pub const Status = enum { Running, Stopped };
 
@@ -49,7 +49,7 @@ pub fn init(allocator: Allocator, exec_path: []const u8) !Session {
         .src_loc = null,
         .addr_range = null,
         .regs = undefined,
-        .watched_vars = FreeList(WatchedVar).init(allocator),
+        .watched_vars = std.ArrayList(WatchedVar).init(allocator),
     };
     try self.startTracing();
 
@@ -96,8 +96,24 @@ pub fn pause(self: *Session) void {
     self.status = .Stopped;
 }
 
-pub fn unpause(self: *Session) void {
+pub fn unpause(self: *Session) !void {
     if (self.status != .Stopped) return;
+
+    // invalidate all the data the needs status to be .Stopped
+    self.src_loc = null;
+    self.addr_range = null;
+
+    // if we're resuming from a breakpoint we have to reset it
+    for (self.breakpoints.items) |*breakpt| {
+        if (breakpt.addr == self.regs.rip) {
+            // first run the instruction we're on, so we can modify it with `int3` for the breakpoint
+            try self.stepInstructions(1);
+
+            const saved = self.insertByteAtAddr(breakpt.addr, 0xcc);
+            if (saved != 0xcc) breakpt.saved_byte = saved;
+        }
+    }
+
     _ = c.ptrace(.CONT, self.pid, null, null);
     // apparently waitpid does not notify us when we use ptrace(.CONT) so we
     // manually update the status
@@ -154,18 +170,16 @@ pub fn fullUpdate(self: *Session) !void {
     }
 
     // update watched vars
-    var var_node = self.watched_vars.first;
-    while (var_node) |node| : (var_node = node.next) {
-        var var_info = &node.value;
+    for (self.watched_vars.items) |*var_info| {
         switch (var_info.value) {
             .Float => |*float| {
-                std.debug.print("rbp=0x{x:0>16}, offset={}\n", .{ self.regs.rbp, var_info.rbp_offset });
+                //std.debug.print("rbp=0x{x:0>16}, offset={}\n", .{ self.regs.rbp, var_info.rbp_offset });
                 const tmp = @intCast(isize, self.regs.rbp) + var_info.rbp_offset;
                 if (tmp < 0) continue; // TODO
                 const addr = @intCast(usize, tmp);
                 const bytes = self.getBytesAtAddr(addr, 4);
                 float.* = @bitCast(f32, std.mem.readIntLittle(u32, &bytes));
-                std.debug.print("rbp_offset={}, addr=0x{x:0>16}, bytes={d}, float={d}\n", .{ var_info.rbp_offset, addr, bytes, float });
+                //std.debug.print("rbp_offset={}, addr=0x{x:0>16}, bytes={d}, float={d}\n", .{ var_info.rbp_offset, addr, bytes, float });
             },
         }
     }
@@ -191,7 +205,7 @@ pub fn setBreakpointAtAddr(self: *Session, addr: usize) !void {
     });
 }
 
-const Error = error{NoAddrForSrc};
+const Error = error{ NoAddrForSrc, VarNotFound };
 
 pub fn setBreakpointAtSrc(self: *Session, src: SrcLoc) !void {
     const addr = (try self.findAddrForThisLineOrNextOne(src)) orelse return Error.NoAddrForSrc;
@@ -212,21 +226,27 @@ pub fn stepInstructions(self: *Session, num_instrs: usize) !void {
 pub fn stepLine(self: *Session) !void {
     if (self.status != .Stopped) return;
 
-    var src = self.src_loc orelse return;
+    //var src = self.src_loc orelse return;
+    var addr_range = self.addr_range orelse return;
 
     // because of loops and jumps backwards we can't just put a breakpoint
     // on the next line and be done with it. the only solution I can
     // think of right now is this (singlestepping until we hit a different
     // line) but it could, in some cases, freeze the UI for a while, if
     // it takes like 1k+ instructions to reach the next line.
-    while (true) {
+
+    // TODO: a single src line can have multiple discontiguous address ranges
+
+    var rip = self.getRegisters().rip;
+    while (addr_range[0] <= rip and rip < addr_range[1]) {
         try self.stepInstructions(1);
-        const rip = self.getRegisters().rip;
-        const new_src = (try self.elf.translateAddrToSrc(rip)) orelse continue;
-        if (new_src.line != src.line or
-            new_src.column != src.column or
-            !std.mem.eql(u8, new_src.file, src.file) or
-            !std.mem.eql(u8, new_src.dir, src.dir)) return;
+        rip = self.getRegisters().rip;
+    }
+
+    while (true) {
+        rip = self.getRegisters().rip;
+        if (try self.elf.translateAddrToSrc(rip)) |_| return;
+        try self.stepInstructions(1);
     }
 }
 
@@ -268,7 +288,7 @@ pub fn addWatchedVariable(self: *Session, name: []const u8) !void {
                                     try forms.skip(skip_info, reader, pair.form);
                                     continue;
                                 }
-                                varloc_opt = try forms.readExprLoc(read_info, reader, pair.form);
+                                varloc_opt = try forms.readExprLoc(reader, pair.form);
                             },
                             DW.AT.name => {
                                 name_opt = try forms.readString(read_info, reader, pair.form);
@@ -289,8 +309,8 @@ pub fn addWatchedVariable(self: *Session, name: []const u8) !void {
                             .rbp_offset = rbp_offset,
                             .value = undefined,
                         });
-                        //std.debug.print("found var '{s}' w/ exprloc={} (rsp_offset={})\n", .{
-                        //    name, std.fmt.fmtSliceHexLower(varloc_opt.?), rsp_offset,
+                        //std.debug.print("found var '{s}' w/ exprloc={} (rbp_offset={})\n", .{
+                        //    name, std.fmt.fmtSliceHexLower(varloc_opt.?), rbp_offset,
                         //});
                         return;
                     }
@@ -301,7 +321,8 @@ pub fn addWatchedVariable(self: *Session, name: []const u8) !void {
             }
         }
     }
-    std.debug.panic("couldn't find debug info for variable named '{s}'\n", .{name});
+    std.debug.print("couldn't find debug info for variable named '{s}'\n", .{name});
+    return Error.VarNotFound;
 }
 
 // translate addr to src location

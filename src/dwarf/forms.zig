@@ -1,7 +1,9 @@
 const std = @import("std");
-const c = @import("../c.zig");
-const Attrib = @import("../Dwarf.zig").Attrib;
+const Dwarf = @import("../Dwarf.zig");
+const Attrib = Dwarf.Attrib;
 const DW = @import("constants.zig");
+const stringFromTable = @import("../Elf.zig").stringFromTable;
+const readIs64 = Dwarf.readIs64;
 
 pub const ReadInfo = struct {
     address_size: u8,
@@ -25,7 +27,7 @@ pub fn readAddress(read_info: ReadInfo, reader: ReaderType, form: u16) !usize {
     switch (form) {
         DW.FORM.addr => switch (read_info.address_size) {
             4 => return @intCast(usize, try reader.readIntLittle(u32)),
-            8 => return @intCast(usize, try reader.readIntLittle(u32)),
+            8 => return @intCast(usize, try reader.readIntLittle(u64)),
             else => std.debug.panic("DW_FORM_addr with address_size={}\n", .{read_info.address_size}),
         },
         DW.FORM.addrx, DW.FORM.addrx1, DW.FORM.addrx2, DW.FORM.addrx3, DW.FORM.addrx4 => {
@@ -38,10 +40,9 @@ pub fn readAddress(read_info: ReadInfo, reader: ReaderType, form: u16) !usize {
 
 // TODO: pub fn readAddressPtr(read_info: ReadInfo, reader: ReaderType, form: u16) !usize {}
 
-pub fn readBlock(read_info: ReadInfo, reader: ReaderType, form: u16) []const u8 {
-    _ = read_info;
+pub fn readBlock(reader: ReaderType, form: u16) ![]const u8 {
     const block_len = switch (form) {
-        DW.FORM.block => try std.len.readULEB128(usize, reader),
+        DW.FORM.block => try std.leb.readULEB128(usize, reader),
         DW.FORM.block1 => @intCast(usize, try reader.readByte()),
         DW.FORM.block2 => @intCast(usize, try reader.readIntLittle(u16)),
         DW.FORM.block4 => @intCast(usize, try reader.readIntLittle(u32)),
@@ -74,8 +75,7 @@ pub fn readConstant(read_info: ReadInfo, reader: ReaderType, attrib: Attrib) !Co
     };
 }
 
-pub fn readExprLoc(read_info: ReadInfo, reader: ReaderType, form: u16) ![]const u8 {
-    _ = read_info;
+pub fn readExprLoc(reader: ReaderType, form: u16) ![]const u8 {
     if (form != DW.FORM.exprloc) std.debug.panic("{s} is not a valid exprloc form\n", .{DW.FORM.asStr(form)});
     const len = try std.leb.readULEB128(usize, reader);
     const loc_start = try reader.context.getPos();
@@ -139,9 +139,8 @@ pub fn readString(read_info: ReadInfo, reader: ReaderType, form: u16) ![]const u
                 else => unreachable,
             }) orelse std.debug.panic("{s}\n", .{DW.FORM.asStr(form)});
             //std.debug.print("str_start = 0x{x}\n", .{str_start});
-            //std.debug.print("str_section = {s}\n", .{str_section[0..100]});
-            const str_len = c.strlen(&str_section[str_start]);
-            return str_section[str_start .. str_start + str_len];
+            //std.debug.print("str_section[0..100] = {s}\n", .{str_section[0..100]});
+            return stringFromTable(str_section, str_start);
         },
         // see Dwarf v5 spec, chapter 7.26, pg.240
         DW.FORM.strx, DW.FORM.strx1, DW.FORM.strx2, DW.FORM.strx3, DW.FORM.strx4 => {
@@ -172,22 +171,13 @@ pub fn readString(read_info: ReadInfo, reader: ReaderType, form: u16) ![]const u
                 std.debug.panic("{s}\n", .{DW.FORM.asStr(form)});
 
             const str_start = offset;
-            const str_len = c.strlen(&str_section[str_start]);
-            return str_section[str_start .. str_start + str_len];
+            return stringFromTable(str_section, str_start);
         },
         else => std.debug.panic("{s} is not a valid string form\n", .{DW.FORM.asStr(form)}),
     }
 }
 
 // TODO: pub fn readStrOffsetsPtr(read_info: ReadInfo, reader: ReaderType, form: u16) !usize {}
-
-/// "In the 32-bit DWARF format [...] 4-byte [...] 64-bit DWARF format [...] 8-byte [...]"
-pub fn readIs64(reader: anytype, is_64: bool) !usize {
-    return if (is_64)
-        @intCast(usize, try reader.readIntLittle(u64))
-    else
-        @intCast(usize, try reader.readIntLittle(u32));
-}
 
 const StrOffsetTable = struct {};
 
@@ -283,4 +273,96 @@ pub fn skip(skip_info: SkipInfo, reader: anytype, form: u16) !void {
 
         else => std.debug.panic("unknown FORM=0x{x}. can't skip.\n", .{form}),
     }
+}
+
+pub const FormClass = enum {
+    address,
+    addrptr,
+    block,
+    constant,
+    exprloc,
+    flag,
+    lineptr,
+    loclist,
+    loclistptr,
+    macptr,
+    rnglist,
+    rnglistptr,
+    reference,
+    string,
+    stroffsetptr,
+};
+
+pub fn getClass(form: u16) FormClass {
+    return switch (form) {
+        DW.FORM.addr,
+        DW.FORM.addrx,
+        DW.FORM.addrx1,
+        DW.FORM.addrx2,
+        DW.FORM.addrx3,
+        DW.FORM.addrx4,
+        => .address,
+
+        DW.FORM.block,
+        DW.FORM.block1,
+        DW.FORM.block2,
+        DW.FORM.block4,
+        => .block,
+
+        DW.FORM.data1,
+        DW.FORM.data2,
+        DW.FORM.data4,
+        DW.FORM.data8,
+        DW.FORM.data16,
+        DW.FORM.sdata,
+        DW.FORM.udata,
+        DW.FORM.implicit_const,
+        => .constant,
+
+        DW.FORM.exprloc => .exprloc,
+
+        DW.FORM.flag,
+        DW.FORM.flag_present,
+        => .flag,
+
+        DW.FORM.loclistx => .loclist,
+
+        DW.FORM.rnglistx => .rnglist,
+
+        DW.FORM.ref_addr,
+        DW.FORM.ref1,
+        DW.FORM.ref2,
+        DW.FORM.ref4,
+        DW.FORM.ref8,
+        DW.FORM.ref_udata,
+        DW.FORM.ref_sup4,
+        DW.FORM.ref_sup8,
+        DW.FORM.ref_sig8,
+        => .reference,
+
+        DW.FORM.string,
+        DW.FORM.strp,
+        DW.FORM.strx,
+        DW.FORM.strp_sup,
+        DW.FORM.line_strp,
+        DW.FORM.strx1,
+        DW.FORM.strx2,
+        DW.FORM.strx3,
+        DW.FORM.strx4,
+        => .string,
+
+        DW.FORM.indirect,
+        DW.FORM.sec_offset,
+        => std.debug.panic("{s} doesn't have a specific class\n", .{DW.FORM.asStr(form)}),
+
+        // these are all represented by DW.FORM.sec_offset
+        //=> .addrptr,
+        //=> .lineptr,
+        //=> .loclistptr,
+        //=> .macptr,
+        //=> .rnglistptr,
+        //=> .stroffsetptr,
+
+        else => std.debug.panic("unknown FORM=0x{x}\n", .{form}),
+    };
 }

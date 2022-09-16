@@ -522,6 +522,8 @@ pub fn getNodeSignal(self: *UiContext, node: *Node) Signal {
     const enter_up_ev = self.events.match(.KeyUp, .{ .key = c.GLFW_KEY_ENTER });
     var used_enter_up_ev = false;
 
+    signal.hovering = is_hot;
+
     if (node.flags.clickable) {
         // begin/end a click if there was a mouse down/up event on this node
         if (is_hot and !active_key_matches and mouse_down_ev != null) {
@@ -535,7 +537,6 @@ pub fn getNodeSignal(self: *UiContext, node: *Node) Signal {
             used_mouse_up_ev = true;
         }
 
-        signal.hovering = is_hot;
         signal.held_down = is_active;
     }
 

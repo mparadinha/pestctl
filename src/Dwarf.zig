@@ -1,9 +1,10 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const c = @import("c.zig");
 pub const forms = @import("dwarf/forms.zig");
 pub const LineProg = @import("dwarf/LineProg.zig");
+pub const Frame = @import("dwarf/Frame.zig");
 pub const DW = @import("dwarf/constants.zig");
+const stringFromTable = @import("Elf.zig").stringFromTable;
 
 const Dwarf = @This();
 
@@ -16,10 +17,13 @@ debug_str: []const u8,
 debug_line: []const u8,
 debug_line_str: []const u8,
 debug_ranges: []const u8,
+debug_frame: []const u8,
+eh_frame: []const u8, // TODO: use .eh_frame when .debug_frame is not available
 
 /// these are filled by `initTables`
 line_progs: []LineProg,
 units: []DebugUnit,
+frames: []Frame,
 
 pub fn deinit(self: *Dwarf) void {
     self.allocator.free(self.debug_info);
@@ -28,12 +32,17 @@ pub fn deinit(self: *Dwarf) void {
     self.allocator.free(self.debug_line);
     self.allocator.free(self.debug_line_str);
     self.allocator.free(self.debug_ranges);
+    self.allocator.free(self.debug_frame);
+    self.allocator.free(self.eh_frame);
+
+    for (self.line_progs) |*prog| prog.deinit();
+    self.allocator.free(self.line_progs);
 
     for (self.units) |*unit| unit.deinit();
     self.allocator.free(self.units);
 
-    for (self.line_progs) |*prog| prog.deinit();
-    self.allocator.free(self.line_progs);
+    //for (self.frames) |*frame| frame.deinit();
+    self.allocator.free(self.frames);
 }
 
 pub fn initTables(self: *Dwarf) !void {
@@ -69,6 +78,12 @@ pub fn initTables(self: *Dwarf) !void {
         debug_line_offset += try LineProg.getSectionSize(self.debug_line, debug_line_offset);
     }
     self.line_progs = line_progs.toOwnedSlice();
+
+    self.frames = try loadAllFrames(self.allocator, self.debug_frame, self.eh_frame);
+    //std.debug.print("all frames:\n", .{});
+    //for (self.frames) |frame| {
+    //    std.debug.print("pc_begin=0x{x:0>12}, pc_end=0x{x:0>12}\n", .{ frame.pc_begin, frame.pc_end });
+    //}
 }
 
 pub const SrcLoc = struct { dir: []const u8, file: []const u8, line: u32, column: u32 };
@@ -120,13 +135,10 @@ pub const DebugUnit = struct {
     pub fn getSectionSize(debug_info: []const u8, offset: usize) !usize {
         var stream = std.io.fixedBufferStream(debug_info[offset..]);
         var reader = stream.reader();
-        const initial_len = try reader.readIntLittle(u32);
-        if (initial_len < 0xffff_fff0) return 4 + initial_len else {
-            return 4 + 8 + (try reader.readIntLittle(u64));
-        }
+        return (try readLengthField(reader)).fullLength();
     }
 
-    /// this struct holds no references to the `debug_abbrev` data.
+    /// this struct holds no references to the `debug_abbrev` data
     /// `debug_info` and `debug_str` however must remain valid while using this DebugUnit
     /// call `deinit` to free memory
     pub fn init(
@@ -144,12 +156,9 @@ pub const DebugUnit = struct {
         var stream = std.io.fixedBufferStream(debug_info[offset..]);
         var reader = stream.reader();
 
-        const initial_len = try reader.readIntLittle(u32);
-        const unit_len = if (initial_len < 0xffff_fff0) initial_len else blk: {
-            std.debug.assert(initial_len == 0xffff_ffff);
-            break :blk try reader.readIntLittle(u64);
-        };
-        self.is_64 = (initial_len == 0xffff_ffff);
+        const length = try readLengthField(reader);
+        const unit_len = length.length;
+        self.is_64 = length.is_64;
         const section_size = (try stream.getPos()) + unit_len;
 
         self.version = try reader.readIntLittle(u16);
@@ -177,6 +186,9 @@ pub const DebugUnit = struct {
         // so we have to parse at least that much of the .debug_info section (just the first
         // entry) to make sure we can use LineProg correctly
         self.comp_dir = try self.getCompilationDir(debug_str);
+
+        // @debug
+        try self.checkFunctions(debug_str);
 
         return self;
     }
@@ -272,6 +284,71 @@ pub const DebugUnit = struct {
             }
         }
         @panic("didn't find a comp_dir attribute");
+    }
+
+    fn checkFunctions(self: *DebugUnit, debug_str: []const u8) !void {
+        var stream = std.io.fixedBufferStream(self.entries_buf);
+        var reader = stream.reader();
+
+        const skip_info = forms.SkipInfo{
+            .address_size = self.address_size,
+            .is_64 = self.is_64,
+        };
+        const read_info = forms.ReadInfo{
+            .address_size = self.address_size,
+            .is_64 = self.is_64,
+            .version = self.version,
+            .debug_info_opt = self.debug_info,
+            .debug_str_opt = debug_str,
+        };
+
+        var child_level: usize = 0;
+        while ((try stream.getPos()) < self.entries_buf.len) {
+            const abbrev_code = try std.leb.readULEB128(usize, reader);
+            const abbrev = self.abbrevs[abbrev_code];
+
+            if (abbrev.has_children) child_level += 1;
+            if (abbrev.tag == 0) {
+                child_level -= 1;
+                if (child_level == 0) break;
+            }
+
+            switch (abbrev.tag) {
+                DW.TAG.subprogram => {
+                    var name_opt: ?[]const u8 = null;
+                    var is_entry_point = false;
+                    var is_extern = false;
+                    var low_pc: ?usize = null;
+                    var high_pc: ?usize = null;
+
+                    for (abbrev.attribs) |pair| {
+                        switch (pair.attrib) {
+                            DW.AT.name => name_opt = try forms.readString(read_info, reader, pair.form),
+                            DW.AT.main_subprogram => is_entry_point = try forms.readFlag(read_info, reader, pair.form),
+                            DW.AT.external => is_extern = try forms.readFlag(read_info, reader, pair.form),
+                            DW.AT.low_pc => low_pc = try forms.readAddress(read_info, reader, pair.form),
+                            DW.AT.high_pc => high_pc = switch (forms.getClass(pair.form)) {
+                                .address => try forms.readAddress(read_info, reader, pair.form),
+                                .constant => low_pc.? + @intCast(usize, (try forms.readConstant(read_info, reader, pair)).Unsigned),
+                                else => unreachable,
+                            },
+                            else => try forms.skip(skip_info, reader, pair.form),
+                        }
+                    }
+
+                    //std.debug.print("function name: {s}, entry_point={}, extern={}, low_pc=0x{x}, high_pc=0x{x}\n", .{
+                    //    name_opt,
+                    //    is_entry_point,
+                    //    is_extern,
+                    //    low_pc,
+                    //    high_pc,
+                    //});
+                },
+                else => {
+                    for (abbrev.attribs) |pair| try forms.skip(skip_info, reader, pair.form);
+                },
+            }
+        }
     }
 
     //fn parseAllDebugInfo(self: *DebugUnit, debug_str: []const u8) !void {
@@ -391,3 +468,144 @@ pub const DebugUnit = struct {
     //    }
     //}
 };
+
+pub fn pathIntoSrc(self: Dwarf, path: []const u8) !?SrcLoc {
+    var tmpbuf: [0x4000]u8 = undefined;
+    for (self.line_progs) |prog| {
+        for (prog.files) |file| {
+            const dir = prog.include_dirs[file.dir];
+            const test_path = try std.fmt.bufPrint(&tmpbuf, "{s}/{s}", .{ dir, file.name });
+            if (std.mem.eql(u8, path, test_path)) {
+                return SrcLoc{ .dir = dir, .file = file.name, .line = 0, .column = 0 };
+            }
+        }
+    }
+    return null;
+}
+
+pub fn findFrameForAddr(self: Dwarf, addr: usize) ?Frame {
+    if (self.frames.len == 0) return null;
+
+    // because there are a *lot* of frames, even for small programs, we do a binary search
+    // (we assume `frames` is sorted for this to work)
+    if (addr >= self.frames[self.frames.len - 1].pc_end) return null;
+    var search_size = self.frames.len / 2;
+    var search_idx = search_size;
+    while (true) {
+        const frame = self.frames[search_idx];
+        if (addr <= frame.pc_begin and addr < frame.pc_end) return frame;
+
+        search_size /= 2;
+        if (addr < frame.pc_begin) {
+            search_idx -= search_size;
+        } else {
+            search_idx += search_size;
+        }
+    }
+}
+
+/// the returned data holds references into `debug_frame` and `eh_frame`
+fn loadAllFrames(allocator: Allocator, debug_frame: []const u8, eh_frame: []const u8) ![]Frame {
+    // https://refspecs.linuxfoundation.org/LSB_5.0.0/LSB-Core-generic/LSB-Core-generic/ehframechpt.html
+    _ = eh_frame;
+    if (debug_frame.len == 0) @panic("TODO: use `.eh_frame` when `.debug_frame` is not available\n");
+
+    var frames = std.ArrayList(Frame).init(allocator);
+
+    var stream = std.io.fixedBufferStream(debug_frame);
+    var reader = stream.reader();
+
+    while ((try stream.getPos()) < debug_frame.len) {
+        const cie_offset = try stream.getPos();
+
+        // CIE header
+        const cie_length_field = try readLengthField(reader);
+        const cie_id = try readIs64(reader, cie_length_field.is_64);
+        const version = try reader.readByte();
+        std.debug.assert(version == 4); // note: .debug_frame is the same in DWARFv4 and DWARFv5
+        const augmentation = stringFromTable(debug_frame, try stream.getPos());
+        try reader.skipBytes(augmentation.len + 1, .{});
+        const address_size = try reader.readByte();
+        const segment_selector_size = try reader.readByte();
+        const code_alignment_factor = try std.leb.readULEB128(usize, reader);
+        const data_alignment_factor = try std.leb.readILEB128(isize, reader);
+        const return_address_register = try std.leb.readULEB128(usize, reader);
+
+        const end_of_cie = cie_offset + cie_length_field.fullLength();
+        const initial_instructions = debug_frame[try stream.getPos()..end_of_cie];
+        try reader.skipBytes(initial_instructions.len, .{});
+
+        fde_loop: while ((try stream.getPos()) < debug_frame.len) {
+            const fde_offset = try stream.getPos();
+
+            const address_is_64 = switch (address_size) {
+                4 => false,
+                8 => true,
+                else => |size| std.debug.panic("address_size={}\n", .{size}),
+            };
+
+            // FDE header
+            const length_field = try readLengthField(reader);
+            const cie_pointer = try readIs64(reader, length_field.is_64);
+            if (cie_pointer == cie_id) {
+                try stream.seekTo(fde_offset);
+                break :fde_loop;
+            }
+            std.debug.assert(cie_pointer == cie_offset);
+            if (segment_selector_size > 0) try reader.skipBytes(segment_selector_size, .{});
+            const initial_location = try readIs64(reader, address_is_64);
+            const address_range = try readIs64(reader, address_is_64);
+
+            const end_of_fde = fde_offset + length_field.fullLength();
+            const instructions = debug_frame[try stream.getPos()..end_of_fde];
+            try reader.skipBytes(instructions.len, .{});
+
+            try frames.append(.{
+                .is_64 = length_field.is_64,
+                .address_size = address_size,
+                .segment_selector_size = segment_selector_size,
+                .code_alignment_factor = code_alignment_factor,
+                .data_alignment_factor = data_alignment_factor,
+                .return_address_register = return_address_register,
+                .pc_begin = initial_location,
+                .pc_end = initial_location + address_range,
+                .initial_ops = initial_instructions,
+                .ops = instructions,
+            });
+        }
+    }
+
+    // make sure the frames are sorted by address
+    for (frames.items[1..]) |frame, i| {
+        const last_frame = frames.items[i];
+        std.debug.assert(frame.pc_begin >= last_frame.pc_end);
+    }
+
+    return frames.toOwnedSlice();
+}
+
+const LengthField = struct {
+    length: u64,
+    is_64: bool,
+    pub fn fullLength(self: LengthField) usize {
+        return if (self.is_64) 4 + 8 + self.length else 4 + self.length;
+    }
+};
+
+pub fn readLengthField(reader: anytype) !LengthField {
+    const initial_len = try reader.readIntLittle(u32);
+    if (initial_len < 0xffff_fff0) {
+        return LengthField{ .length = initial_len, .is_64 = false };
+    } else {
+        std.debug.assert(initial_len == 0xffff_ffff);
+        return LengthField{ .length = try reader.readIntLittle(u64), .is_64 = true };
+    }
+}
+
+/// some fields are 4 or 8 bytes depending on which DWARF format is used (32-bit/64-bit respectively)
+pub fn readIs64(reader: anytype, is_64: bool) !usize {
+    return if (is_64)
+        @intCast(usize, try reader.readIntLittle(u64))
+    else
+        @intCast(usize, try reader.readIntLittle(u32));
+}

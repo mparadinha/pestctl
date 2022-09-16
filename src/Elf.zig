@@ -1,6 +1,5 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const c = @import("c.zig");
 const elf = std.elf;
 const Dwarf = @import("Dwarf.zig");
 
@@ -24,8 +23,11 @@ pub fn init(allocator: Allocator, exec_path: []const u8) !Elf {
         .debug_line = &[0]u8{},
         .debug_line_str = &[0]u8{},
         .debug_ranges = &[0]u8{},
+        .debug_frame = &[0]u8{},
+        .eh_frame = &[0]u8{},
         .line_progs = undefined,
         .units = undefined,
+        .frames = undefined,
     };
 
     var file = try std.fs.cwd().openFile(exec_path, .{});
@@ -46,8 +48,7 @@ pub fn init(allocator: Allocator, exec_path: []const u8) !Elf {
     var sh_iter = header.section_header_iterator(file);
     for (self.sections) |*section| {
         var shdr = (try sh_iter.next()) orelse break;
-        const name_len = c.strlen(self.string_section.ptr + shdr.sh_name);
-        section.name = self.string_section[shdr.sh_name .. shdr.sh_name + name_len];
+        section.name = stringFromTable(self.string_section, shdr.sh_name);
         section.size = shdr.sh_size;
         section.offset = shdr.sh_offset;
         section.no_bits = shdr.sh_type == elf.SHT_NOBITS;
@@ -64,6 +65,10 @@ pub fn init(allocator: Allocator, exec_path: []const u8) !Elf {
             self.dwarf.debug_line_str = try section.read(self.allocator, file);
         } else if (std.mem.eql(u8, section.name, ".debug_ranges")) {
             self.dwarf.debug_ranges = try section.read(self.allocator, file);
+        } else if (std.mem.eql(u8, section.name, ".debug_frame")) {
+            self.dwarf.debug_frame = try section.read(self.allocator, file);
+        } else if (std.mem.eql(u8, section.name, ".eh_frame")) {
+            self.dwarf.eh_frame = try section.read(self.allocator, file);
         }
     }
 
@@ -128,6 +133,11 @@ fn readSectionHeader(file: anytype, header: elf.Header, sh_idx: usize) !elf.Elf6
     try file.seekTo(saved_filepos);
 
     return shdr;
+}
+
+pub fn stringFromTable(table: []const u8, offset: usize) []const u8 {
+    const str_ptr = @ptrCast([*c]const u8, table.ptr + offset);
+    return std.mem.sliceTo(str_ptr, 0);
 }
 
 pub const Section = struct {
