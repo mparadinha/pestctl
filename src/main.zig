@@ -75,8 +75,8 @@ pub fn main() !void {
         .enable_memory_limit = true,
     }){};
     defer _ = general_purpose_allocator.detectLeaks();
-    //const allocator = general_purpose_allocator.allocator();
-    const allocator = std.heap.c_allocator;
+    const allocator = general_purpose_allocator.allocator();
+    //const allocator = std.heap.c_allocator;
 
     var cwd_buf: [0x4000]u8 = undefined;
     const cwd = try std.os.getcwd(&cwd_buf);
@@ -283,33 +283,13 @@ pub fn main() !void {
                     _ = ui.textBoxF("addr_range[1] = 0x{x:0>12}", .{range[1]});
                 }
 
-                if (ui.button("print frame").clicked) {
-                    const frame_opt = session.elf.dwarf.findFrameForAddr(regs.rip);
-                    if (frame_opt) |frame| {
-                        std.debug.print("return address reg: {}\n", .{frame.return_address_register});
-                        std.debug.print("rules:\n", .{});
-                        const rules = try frame.rulesForAddr(regs.rip);
-                        std.debug.print("loc=0x{x}\n", .{rules.loc});
-                        std.debug.print("cfa rule: {any}\n", .{rules.cfa});
-                        switch (rules.cfa) {
-                            .@"undefined" => {},
-                            .register => |rule| {
-                                std.debug.assert(rule.reg == 6); // TODO: regs other than rbp
-                                std.debug.print("cfa=0x{x}\n", .{@intCast(isize, regs.rbp) + rule.offset});
-                            },
-                            .expression => std.debug.print("cfa is expr\n", .{}),
-                        }
-                        // zig fmt: off
-                        const reg_map = [_][]const u8{
-                            "rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp", "rsp",
-                            "r8",  "r9",  "r10", "r11", "r12", "r13", "r14", "r15",
-                            "ret", "xmm0", "xmm1", "xmm2", "xmm3", "xmm4", "xmm5", "xmm6",
-                            "xmm7", "xmm8", "xmm9", "xmm10", "xmm11", "xmm12", "xmm13", "xmm14",
-                            "xmm15",
-                        };
-                        // zig fmt: on
-                        for (rules.regs) |reg, i| std.debug.print("reg[{}, '{s}']={any}\n", .{ i, reg_map[i], reg });
-                    } else std.debug.print("frame={}\n", .{frame_opt});
+                _ = ui.textBox("call stack:");
+                for (session.call_stack) |call_frame| {
+                    if (call_frame.src) |src| {
+                        _ = ui.textBoxF("0x{x:0>12}: {s}/{s}:{}", .{ call_frame.addr, src.dir, src.file, src.line });
+                    } else {
+                        _ = ui.textBoxF("0x{x:0>12}: ???", .{call_frame.addr});
+                    }
                 }
 
                 const vars_parent = ui.addNode(.{}, "###vars_parent", .{ .child_layout_axis = .y });

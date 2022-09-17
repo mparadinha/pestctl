@@ -53,24 +53,19 @@ pub fn readBlock(reader: ReaderType, form: u16) ![]const u8 {
     return reader.context.buffer[block_start .. block_start + block_len];
 }
 
-const Constant = union(enum) {
-    Signed: i128,
-    Unsigned: u128,
-};
-
 // this one needs the pair instead of just the form because of DW_FORM_implicit_const
-pub fn readConstant(read_info: ReadInfo, reader: ReaderType, attrib: Attrib) !Constant {
+pub fn readConstant(comptime T: type, read_info: ReadInfo, reader: ReaderType, attrib: Attrib) !T {
     _ = read_info;
     const form = attrib.form;
     return switch (form) {
-        DW.FORM.data1 => Constant{ .Unsigned = try reader.readByte() },
-        DW.FORM.data2 => Constant{ .Unsigned = try reader.readIntLittle(u16) },
-        DW.FORM.data4 => Constant{ .Unsigned = try reader.readIntLittle(u32) },
-        DW.FORM.data8 => Constant{ .Unsigned = try reader.readIntLittle(u64) },
-        DW.FORM.data16 => Constant{ .Unsigned = try reader.readIntLittle(u128) },
-        DW.FORM.udata => Constant{ .Unsigned = try std.leb.readULEB128(u128, reader) },
-        DW.FORM.sdata => Constant{ .Signed = try std.leb.readILEB128(i128, reader) },
-        DW.FORM.implicit_const => Constant{ .Signed = attrib.implicit_value },
+        DW.FORM.data1 => @intCast(T, try reader.readByte()),
+        DW.FORM.data2 => @intCast(T, try reader.readIntLittle(u16)),
+        DW.FORM.data4 => @intCast(T, try reader.readIntLittle(u32)),
+        DW.FORM.data8 => @intCast(T, try reader.readIntLittle(u64)),
+        DW.FORM.data16 => @intCast(T, try reader.readIntLittle(u128)),
+        DW.FORM.udata => @intCast(T, try std.leb.readULEB128(u128, reader)),
+        DW.FORM.sdata => @intCast(T, try std.leb.readILEB128(i128, reader)),
+        DW.FORM.implicit_const => @intCast(T, attrib.implicit_value),
         else => std.debug.panic("{s} is not a valid constant form\n", .{DW.FORM.asStr(form)}),
     };
 }

@@ -310,14 +310,14 @@ pub fn findAddrRangeForSrc(self: LineProg, file: u32, line: u32) !?[2]u64 {
     return null;
 }
 
-pub fn findAddr(self: LineProg, addr: usize) !?State {
+pub fn findAddr(self: LineProg, addr: usize, check_stmt: bool) !?State {
     var state = self.initialState();
     var stream = std.io.fixedBufferStream(self.ops);
     var reader = stream.reader();
     while ((try stream.getPos()) < self.ops.len) {
         const new_row = try self.updateState(&state, reader);
         if (new_row) |row| {
-            if (!row.is_stmt) continue;
+            if (check_stmt and !row.is_stmt) continue;
             if (row.address == addr) return row;
             if (row.end_sequence) break;
         }

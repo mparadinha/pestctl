@@ -5,6 +5,7 @@ pub const LineProg = @import("dwarf/LineProg.zig");
 pub const Frame = @import("dwarf/Frame.zig");
 pub const DW = @import("dwarf/constants.zig");
 const stringFromTable = @import("Elf.zig").stringFromTable;
+const Registers = @import("Session.zig").Registers;
 
 const Dwarf = @This();
 
@@ -55,6 +56,7 @@ pub fn initTables(self: *Dwarf) !void {
             debug_unit_offset,
             self.debug_abbrev,
             self.debug_str,
+            self.debug_line_str,
         ));
         debug_unit_offset += try DebugUnit.getSectionSize(self.debug_info, debug_unit_offset);
     }
@@ -147,6 +149,7 @@ pub const DebugUnit = struct {
         offset: usize,
         debug_abbrev: []const u8,
         debug_str: []const u8,
+        debug_line_str: []const u8,
     ) !DebugUnit {
         _ = debug_str;
         var self = @as(DebugUnit, undefined);
@@ -185,7 +188,7 @@ pub const DebugUnit = struct {
         // before Dwarf v5 the line program implicitly refers to the compilation directory
         // so we have to parse at least that much of the .debug_info section (just the first
         // entry) to make sure we can use LineProg correctly
-        self.comp_dir = try self.getCompilationDir(debug_str);
+        self.comp_dir = try self.getCompilationDir(debug_str, debug_line_str);
 
         // @debug
         try self.checkFunctions(debug_str);
@@ -257,7 +260,7 @@ pub const DebugUnit = struct {
         }
     }
 
-    fn getCompilationDir(self: *DebugUnit, debug_str: []const u8) ![]const u8 {
+    fn getCompilationDir(self: *DebugUnit, debug_str: []const u8, debug_line_str: []const u8) ![]const u8 {
         var stream = std.io.fixedBufferStream(self.entries_buf);
         var reader = stream.reader();
 
@@ -271,6 +274,7 @@ pub const DebugUnit = struct {
             .version = self.version,
             .debug_info_opt = self.debug_info,
             .debug_str_opt = debug_str,
+            .debug_line_str_opt = debug_line_str,
         };
 
         const abbrev_code = try std.leb.readULEB128(usize, reader);
@@ -329,7 +333,7 @@ pub const DebugUnit = struct {
                             DW.AT.low_pc => low_pc = try forms.readAddress(read_info, reader, pair.form),
                             DW.AT.high_pc => high_pc = switch (forms.getClass(pair.form)) {
                                 .address => try forms.readAddress(read_info, reader, pair.form),
-                                .constant => low_pc.? + @intCast(usize, (try forms.readConstant(read_info, reader, pair)).Unsigned),
+                                .constant => low_pc.? + try forms.readConstant(usize, read_info, reader, pair),
                                 else => unreachable,
                             },
                             else => try forms.skip(skip_info, reader, pair.form),
@@ -483,6 +487,76 @@ pub fn pathIntoSrc(self: Dwarf, path: []const u8) !?SrcLoc {
     return null;
 }
 
+// note: this mapping between DWARF register and machine registers is described here:
+// https://refspecs.linuxbase.org/elf/x86_64-SysV-psABI.pdf, section 3.6.2, table 3.18
+// zig fmt: off
+pub const Register = enum {
+    rax, rbx, rcx, rdx, rsi, rdi, rbp, rsp,               // 0-7
+    r8, r9, r10, r11, r12, r13, r14, r15,                 // 8-15
+    ret,                                                  // 16
+    xmm0, xmm1, xmm2, xmm3, xmm4, xmm5, xmm6, xmm7,       // 17-24
+    xmm8, xmm9, xmm10, xmm11, xmm12, xmm13, xmm14, xmm15, // 25-32
+    st0, st1, st2, st3, st4, st5, st6, st7,               // 33-40
+    mm0, mm1, mm2, mm3, mm4, mm5, mm6, mm7,               // 41-48
+};
+// zig fmt: on
+
+// caller owns returned memory
+pub fn callStackAddrs(
+    self: Dwarf,
+    allocator: Allocator,
+    starting_addr: usize,
+    starting_regs: Registers,
+    proc_mem: std.fs.File,
+) ![]usize {
+    var call_stack = std.ArrayList(usize).init(allocator);
+
+    var addr = starting_addr;
+    var regs = starting_regs;
+    frame_loop: while (true) {
+        try call_stack.append(addr);
+
+        const frame = self.findFrameForAddr(addr) orelse break;
+        const rules = try frame.rulesForAddr(addr);
+
+        const cfa = switch (rules.cfa) {
+            .@"undefined" => unreachable,
+            .register => |rule| blk: {
+                const reg_value = regs.getPtr(@intToEnum(Register, rule.reg)).*;
+                break :blk @intCast(usize, @intCast(isize, reg_value) + rule.offset);
+            },
+            .expression => @panic("TODO: DWARF expression for CFA rule"),
+        };
+
+        const ret_addr = switch (rules.regs[frame.return_address_register]) {
+            .@"undefined" => break :frame_loop,
+            .offset => |offset| blk: {
+                const reg_saved_addr = @intCast(usize, @intCast(isize, cfa) + offset);
+                try proc_mem.seekTo(reg_saved_addr);
+                break :blk try proc_mem.reader().readIntLittle(usize);
+            },
+            else => std.debug.panic("TODO: {s}\n", .{std.meta.activeTag(rules.regs[frame.return_address_register])}),
+        };
+
+        addr = ret_addr;
+        for (rules.regs) |reg, i| {
+            if (i == frame.return_address_register) continue;
+            switch (reg) {
+                .@"undefined" => {},
+                .offset => |offset| {
+                    const reg_saved_addr = @intCast(usize, @intCast(isize, cfa) + offset);
+                    try proc_mem.seekTo(reg_saved_addr);
+                    const reg_value = try proc_mem.reader().readIntLittle(usize);
+                    regs.getPtr(@intToEnum(Register, i)).* = reg_value;
+                },
+                else => std.debug.panic("TODO: {s}\n", .{std.meta.activeTag(reg)}),
+            }
+        }
+    }
+
+    return call_stack.toOwnedSlice();
+}
+
 pub fn findFrameForAddr(self: Dwarf, addr: usize) ?Frame {
     if (self.frames.len == 0) return null;
 
@@ -491,9 +565,9 @@ pub fn findFrameForAddr(self: Dwarf, addr: usize) ?Frame {
     if (addr >= self.frames[self.frames.len - 1].pc_end) return null;
     var search_size = self.frames.len / 2;
     var search_idx = search_size;
-    while (true) {
+    while (search_size > 0) {
         const frame = self.frames[search_idx];
-        if (addr <= frame.pc_begin and addr < frame.pc_end) return frame;
+        if (frame.pc_begin <= addr and addr < frame.pc_end) return frame;
 
         search_size /= 2;
         if (addr < frame.pc_begin) {
@@ -502,6 +576,7 @@ pub fn findFrameForAddr(self: Dwarf, addr: usize) ?Frame {
             search_idx += search_size;
         }
     }
+    return null;
 }
 
 /// the returned data holds references into `debug_frame` and `eh_frame`

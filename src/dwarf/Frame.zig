@@ -3,10 +3,6 @@ const DW = @import("constants.zig");
 const Dwarf = @import("../Dwarf.zig");
 const readIs64 = Dwarf.readIs64;
 
-// note: the mapping between DWARF register and machine registers is described here:
-// https://refspecs.linuxbase.org/elf/x86_64-SysV-psABI.pdf
-// in section 3.6.2, table 3.18
-
 const Frame = @This();
 
 is_64: bool,
@@ -44,11 +40,11 @@ const State = struct {
     cfa: CfaRule,
     regs: [max_registers]RegRule,
 
-    // TODO: change this to cover the all the registers (49)
-    pub const max_registers = 32;
+    pub const max_registers = @typeInfo(Dwarf.Register).Enum.fields.len;
 };
 
 pub fn rulesForAddr(self: Frame, addr: usize) !State {
+    std.debug.assert(self.pc_begin <= addr and addr < self.pc_end);
     var state = State{
         .loc = self.pc_begin,
         .cfa = .{ .@"undefined" = {} },
@@ -61,7 +57,7 @@ pub fn rulesForAddr(self: Frame, addr: usize) !State {
     while ((try initial_stream.getPos()) < self.initial_ops.len) {
         const new_row = try self.updateState(&state, initial_reader, null);
         if (new_row) |row| {
-            if (row.loc < addr) return state;
+            if (row.loc > addr) return state;
         }
     }
 
@@ -72,7 +68,7 @@ pub fn rulesForAddr(self: Frame, addr: usize) !State {
     while ((try stream.getPos()) < self.ops.len) {
         const new_row = try self.updateState(&state, reader, initial_state);
         if (new_row) |row| {
-            if (row.loc < addr) return state;
+            if (row.loc > addr) return state;
         }
     }
 

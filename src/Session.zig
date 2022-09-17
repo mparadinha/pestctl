@@ -16,10 +16,13 @@ elf: Elf,
 breakpoints: std.ArrayList(BreakPoint),
 src_loc: ?SrcLoc,
 addr_range: ?[2]u64,
+call_stack: []CallFrame,
 regs: Registers,
 watched_vars: std.ArrayList(WatchedVar),
 
 pub const Status = enum { Running, Stopped };
+
+pub const CallFrame = struct { addr: usize, src: ?SrcLoc };
 
 const BreakPoint = struct {
     addr: usize,
@@ -48,6 +51,7 @@ pub fn init(allocator: Allocator, exec_path: []const u8) !Session {
         .breakpoints = std.ArrayList(BreakPoint).init(allocator),
         .src_loc = null,
         .addr_range = null,
+        .call_stack = &[0]CallFrame{},
         .regs = undefined,
         .watched_vars = std.ArrayList(WatchedVar).init(allocator),
     };
@@ -62,6 +66,7 @@ pub fn deinit(self: *Session) void {
     self.elf.deinit();
     self.breakpoints.deinit();
     self.watched_vars.deinit();
+    if (self.call_stack.len > 0) self.allocator.free(self.call_stack);
 }
 
 pub fn startTracing(self: *Session) !void {
@@ -181,6 +186,21 @@ pub fn fullUpdate(self: *Session) !void {
                 float.* = @bitCast(f32, std.mem.readIntLittle(u32, &bytes));
                 //std.debug.print("rbp_offset={}, addr=0x{x:0>16}, bytes={d}, float={d}\n", .{ var_info.rbp_offset, addr, bytes, float });
             },
+        }
+    }
+
+    const proc_file = try procMemFile(self.pid);
+    defer proc_file.close();
+    const call_stack = try self.elf.dwarf.callStackAddrs(self.allocator, self.regs.rip, self.regs, proc_file);
+    defer self.allocator.free(call_stack);
+    if (!(self.call_stack.len == call_stack.len and self.call_stack[0].addr == call_stack[0])) {
+        if (self.call_stack.len > 0) self.allocator.free(self.call_stack);
+        self.call_stack = try self.allocator.alloc(CallFrame, call_stack.len);
+        for (call_stack) |addr, i| {
+            self.call_stack[i] = .{
+                .addr = addr,
+                .src = try self.elf.translateAddrToSrcSpecial(addr),
+            };
         }
     }
 }
@@ -420,6 +440,13 @@ pub fn getBytesAtAddr(self: Session, addr: usize, comptime N: u4) [N]u8 {
     };
 }
 
+/// call `File.close` when done
+fn procMemFile(pid: std.os.pid_t) !std.fs.File {
+    var tmpbuf: [0x1000]u8 = undefined;
+    const proc_filename = try std.fmt.bufPrint(&tmpbuf, "/proc/{}/mem", .{pid});
+    return std.fs.cwd().openFile(proc_filename, .{});
+}
+
 pub const Registers = struct {
     rax: usize,
     rcx: usize,
@@ -466,6 +493,53 @@ pub const Registers = struct {
     // unsigned short int	ftw
     // unsigned short int	fop
 
+    pub fn getPtr(self: *Registers, reg: @import("Dwarf.zig").Register) *usize {
+        return switch (reg) {
+            .rax => &self.rax,
+            .rbx => &self.rbx,
+            .rcx => &self.rcx,
+            .rdx => &self.rdx,
+            .rsi => &self.rsi,
+            .rdi => &self.rdi,
+            .rbp => &self.rbp,
+            .rsp => &self.rsp,
+            .r8 => &self.r8,
+            .r9 => &self.r9,
+            .r10 => &self.r10,
+            .r11 => &self.r11,
+            .r12 => &self.r12,
+            .r13 => &self.r13,
+            .r14 => &self.r14,
+            .r15 => &self.r15,
+            .ret => unreachable,
+            //.xmm0 => &self.xmm[0],
+            //.xmm1 => &self.xmm[1],
+            //.xmm2 => &self.xmm[2],
+            //.xmm3 => &self.xmm[3],
+            //.xmm4 => &self.xmm[4],
+            //.xmm5 => &self.xmm[5],
+            //.xmm6 => &self.xmm[6],
+            //.xmm7 => &self.xmm[7],
+            //.xmm8 => &self.xmm[8],
+            //.xmm9 => &self.xmm[9],
+            //.xmm10 => &self.xmm[10],
+            //.xmm11 => &self.xmm[11],
+            //.xmm12 => &self.xmm[12],
+            //.xmm13 => &self.xmm[13],
+            //.xmm14 => &self.xmm[14],
+            //.xmm15 => &self.xmm[15],
+            .xmm0, .xmm1, .xmm2, .xmm3, .xmm4, .xmm5, .xmm6, .xmm7, .xmm8, .xmm9, .xmm10, .xmm11, .xmm12, .xmm13, .xmm14, .xmm15 => @panic("TODO: xmm registers"),
+            .st0 => &self.st[0],
+            .st1 => &self.st[1],
+            .st2 => &self.st[2],
+            .st3 => &self.st[3],
+            .st4 => &self.st[4],
+            .st5 => &self.st[5],
+            .st6 => &self.st[6],
+            .st7 => &self.st[7],
+            .mm0, .mm1, .mm2, .mm3, .mm4, .mm5, .mm6, .mm7 => @panic("TODO: mm registers"),
+        };
+    }
 };
 
 pub fn getRegisters(self: Session) Registers {

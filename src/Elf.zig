@@ -86,7 +86,39 @@ pub fn deinit(self: *Elf) void {
 pub fn translateAddrToSrc(self: Elf, addr: usize) !?SrcLoc {
     for (self.dwarf.line_progs) |prog| {
         if (prog.address_range[0] <= addr and addr <= prog.address_range[1]) {
-            if (try prog.findAddr(addr)) |state| {
+            if (try prog.findAddr(addr, true)) |state| {
+                return SrcLoc{
+                    .dir = prog.include_dirs[prog.files[state.file].dir],
+                    .file = prog.files[state.file].name,
+                    .line = state.line,
+                    .column = state.column,
+                };
+            }
+        }
+    }
+    return null;
+}
+
+pub fn translateAddrToSrcSpecial(self: Elf, addr: usize) !?SrcLoc {
+    for (self.dwarf.line_progs) |prog| {
+        if (prog.address_range[0] <= addr and addr <= prog.address_range[1]) {
+            const line_state = line_prog_blk: {
+                var state = prog.initialState();
+                var stream = std.io.fixedBufferStream(prog.ops);
+                var reader = stream.reader();
+                var last_row = state;
+                while ((try stream.getPos()) < prog.ops.len) {
+                    const new_row = try prog.updateState(&state, reader);
+                    if (new_row) |row| {
+                        if (row.address > addr) break :line_prog_blk last_row;
+                        if (row.end_sequence) break;
+                        last_row = row;
+                    }
+                }
+                break :line_prog_blk null;
+            };
+
+            if (line_state) |state| {
                 return SrcLoc{
                     .dir = prog.include_dirs[prog.files[state.file].dir],
                     .file = prog.files[state.file].name,
@@ -117,6 +149,13 @@ pub fn getLineProgForSrc(self: Elf, src: SrcLoc) !?Dwarf.LineProg {
         for (prog.files) |file_info| {
             if (std.mem.eql(u8, file_info.name, src.file)) return prog;
         }
+    }
+    return null;
+}
+
+pub fn getLineProgForAddr(self: Elf, addr: usize) !?Dwarf.LineProg {
+    for (self.dwarf.line_progs) |prog| {
+        if (prog.address_range[0] <= addr and addr < prog.address_range[1]) return prog;
     }
     return null;
 }
