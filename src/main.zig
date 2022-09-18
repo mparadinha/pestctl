@@ -115,6 +115,9 @@ pub fn main() !void {
     defer if (session_opt) |*session| session.deinit();
     var last_session_status: Session.Status = if (session_opt) |s| s.status else .Stopped;
 
+    // @debug
+    std.debug.panic("@debug: this crash is on purpose!", .{});
+
     var last_mouse_pos = vec2{ 0, 0 };
     var last_time = @floatCast(f32, c.glfwGetTime());
 

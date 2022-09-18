@@ -10,7 +10,7 @@ const Registers = @import("Session.zig").Registers;
 const Dwarf = @This();
 
 /// user must init these slices (using this allocator) before using this type
-/// (note that after calling `deinit` will free these)
+/// (note that calling `deinit` will free these)
 allocator: Allocator,
 debug_info: []const u8,
 debug_abbrev: []const u8,
@@ -117,6 +117,42 @@ pub const Abbrev = struct {
 
 pub const Attrib = struct { attrib: u16, form: u16, implicit_value: i64 };
 
+pub const Function = struct {
+    name: []const u8,
+    decl_coords: ?DeclCoords,
+
+    @"extern": ?bool,
+    low_pc: ?usize,
+    high_pc: ?usize,
+    frame_base: ?LocationDesc,
+
+    ret_type: ?*Type,
+    comp_unit: *DebugUnit,
+    params: []const Variable,
+};
+
+pub const Variable = struct {
+    name: []const u8,
+    decl_coords: ?DeclCoords,
+
+    @"type": *Type,
+    function: ?*Function,
+};
+
+pub const Type = struct {
+    name: []const u8,
+    data: union(enum) {
+        Base: struct {},
+        Struct: struct {},
+        Enum: struct {},
+    },
+};
+
+pub const LocationDesc = union(enum) {
+    expr: []const u8, // DWARF expression
+    loclist: []const u8, // TODO: DWARF loclist
+};
+
 pub const DebugUnit = struct {
     allocator: Allocator,
     version: u16,
@@ -126,11 +162,16 @@ pub const DebugUnit = struct {
     abbrev_offset: usize,
     entries_buf: []const u8, // not owned by this struct
 
+    header_size: usize,
+
     abbrevs: []Abbrev,
 
-    comp_dir: []const u8,
-
     debug_info: []const u8,
+
+    comp_dir: []const u8,
+    functions: []Function,
+    variables: []Variable,
+    types: []Type,
 
     /// this returns the amount of bytes we need to skip (starting from `offset`) to reach the
     /// end of the debug unit that starts at `offset`
@@ -151,7 +192,6 @@ pub const DebugUnit = struct {
         debug_str: []const u8,
         debug_line_str: []const u8,
     ) !DebugUnit {
-        _ = debug_str;
         var self = @as(DebugUnit, undefined);
         self.debug_info = debug_info;
         self.allocator = allocator;
@@ -181,8 +221,11 @@ pub const DebugUnit = struct {
 
         try self.readAbbrevTable(debug_abbrev);
 
-        const entries_buf_start = offset + (try stream.getPos());
-        const entries_buf_size = section_size - (try stream.getPos());
+        self.header_size = try stream.getPos();
+        std.debug.print("header_size=0x{x}\n", .{self.header_size});
+
+        const entries_buf_start = offset + self.header_size;
+        const entries_buf_size = section_size - self.header_size;
         self.entries_buf = debug_info[entries_buf_start .. entries_buf_start + entries_buf_size];
 
         // before Dwarf v5 the line program implicitly refers to the compilation directory
@@ -190,8 +233,30 @@ pub const DebugUnit = struct {
         // entry) to make sure we can use LineProg correctly
         self.comp_dir = try self.getCompilationDir(debug_str, debug_line_str);
 
-        // @debug
-        try self.checkFunctions(debug_str);
+        const function_fixups = try self.loadFunctions(debug_str);
+        defer self.allocator.free(function_fixups);
+
+        const type_fixup_info = try self.loadTypes(debug_str);
+        const type_offsets = type_fixup_info.type_offsets;
+        defer self.allocator.free(type_offsets);
+        const type_fixups = type_fixup_info.type_fixups;
+        defer self.allocator.free(type_fixups);
+
+        for (function_fixups) |fixup| {
+            const fn_ptr = &self.functions[fixup.fn_idx];
+            const type_idx = std.mem.indexOfScalar(usize, type_offsets, fixup.type_offset) orelse
+                std.debug.panic("fn {s}: no type with offset 0x{x}\n", .{ fn_ptr.name, fixup.type_offset });
+            const type_ptr = &self.types[type_idx];
+            fn_ptr.ret_type = type_ptr;
+        }
+
+        for (self.functions) |function| {
+            std.debug.print("function: {s}, decl_coords={}, ret_type.name={s}\n", .{
+                function.name,
+                function.decl_coords,
+                if (function.ret_type) |ty| ty.name else "null",
+            });
+        }
 
         return self;
     }
@@ -199,6 +264,7 @@ pub const DebugUnit = struct {
     pub fn deinit(self: *DebugUnit) void {
         for (self.abbrevs) |*abbrev| abbrev.deinit(self.allocator);
         self.allocator.free(self.abbrevs);
+        self.allocator.free(self.functions);
     }
 
     fn readAbbrevTable(self: *DebugUnit, debug_abbrev: []const u8) !void {
@@ -290,7 +356,12 @@ pub const DebugUnit = struct {
         @panic("didn't find a comp_dir attribute");
     }
 
-    fn checkFunctions(self: *DebugUnit, debug_str: []const u8) !void {
+    const FunctionFixUp = struct { fn_idx: usize, type_offset: usize };
+
+    fn loadFunctions(self: *DebugUnit, debug_str: []const u8) ![]FunctionFixUp {
+        var functions = std.ArrayList(Function).init(self.allocator);
+        var function_fixups = std.ArrayList(FunctionFixUp).init(self.allocator);
+
         var stream = std.io.fixedBufferStream(self.entries_buf);
         var reader = stream.reader();
 
@@ -306,6 +377,8 @@ pub const DebugUnit = struct {
             .debug_str_opt = debug_str,
         };
 
+        var parent_function_level: ?usize = null;
+        var parent_function: ?usize = null;
         var child_level: usize = 0;
         while ((try stream.getPos()) < self.entries_buf.len) {
             const abbrev_code = try std.leb.readULEB128(usize, reader);
@@ -313,164 +386,172 @@ pub const DebugUnit = struct {
 
             if (abbrev.has_children) child_level += 1;
             if (abbrev.tag == 0) {
+                if (parent_function_level) |level| {
+                    if (level == child_level) {
+                        parent_function = null;
+                        parent_function_level = null;
+                    }
+                }
                 child_level -= 1;
                 if (child_level == 0) break;
             }
 
             switch (abbrev.tag) {
                 DW.TAG.subprogram => {
-                    var name_opt: ?[]const u8 = null;
-                    var is_entry_point = false;
-                    var is_extern = false;
-                    var low_pc: ?usize = null;
-                    var high_pc: ?usize = null;
+                    var function = Function{
+                        .name = &[0]u8{},
+                        .decl_coords = null,
+                        .@"extern" = null,
+                        .low_pc = null,
+                        .high_pc = null,
+                        .frame_base = null,
+                        .ret_type = null,
+                        .comp_unit = self,
+                        .params = &[0]Variable{},
+                    };
 
                     for (abbrev.attribs) |pair| {
                         switch (pair.attrib) {
-                            DW.AT.name => name_opt = try forms.readString(read_info, reader, pair.form),
-                            DW.AT.main_subprogram => is_entry_point = try forms.readFlag(read_info, reader, pair.form),
-                            DW.AT.external => is_extern = try forms.readFlag(read_info, reader, pair.form),
-                            DW.AT.low_pc => low_pc = try forms.readAddress(read_info, reader, pair.form),
-                            DW.AT.high_pc => high_pc = switch (forms.getClass(pair.form)) {
+                            DW.AT.name => function.name = try forms.readString(read_info, reader, pair.form),
+                            //DW.AT.main_subprogram => function.is_entry_point = try forms.readFlag(read_info, reader, pair.form),
+                            DW.AT.external => function.@"extern" = try forms.readFlag(read_info, reader, pair.form),
+                            DW.AT.low_pc => function.low_pc = try forms.readAddress(read_info, reader, pair.form),
+                            DW.AT.high_pc => function.high_pc = switch (DW.Class.fromForm(pair.form)) {
                                 .address => try forms.readAddress(read_info, reader, pair.form),
-                                .constant => low_pc.? + try forms.readConstant(usize, read_info, reader, pair),
+                                .constant => function.low_pc.? + try forms.readConstant(usize, read_info, reader, pair),
                                 else => unreachable,
+                            },
+                            DW.AT.decl_file => {
+                                if (function.decl_coords == null) function.decl_coords = .{ .file = 0, .line = 0, .column = 0 };
+                                function.decl_coords.?.file = try forms.readConstant(u32, read_info, reader, pair);
+                            },
+                            DW.AT.decl_line => {
+                                if (function.decl_coords == null) function.decl_coords = .{ .file = 0, .line = 0, .column = 0 };
+                                function.decl_coords.?.line = try forms.readConstant(u32, read_info, reader, pair);
+                            },
+                            DW.AT.decl_column => {
+                                if (function.decl_coords == null) function.decl_coords = .{ .file = 0, .line = 0, .column = 0 };
+                                function.decl_coords.?.column = try forms.readConstant(u32, read_info, reader, pair);
+                            },
+                            DW.AT.@"type" => {
+                                const type_offset = try forms.readReference(read_info, reader, pair.form);
+                                try function_fixups.append(.{ .fn_idx = functions.items.len, .type_offset = type_offset });
                             },
                             else => try forms.skip(skip_info, reader, pair.form),
                         }
                     }
 
-                    //std.debug.print("function name: {s}, entry_point={}, extern={}, low_pc=0x{x}, high_pc=0x{x}\n", .{
-                    //    name_opt,
-                    //    is_entry_point,
-                    //    is_extern,
-                    //    low_pc,
-                    //    high_pc,
+                    //std.debug.print("function: {s}, extern={}, low_pc=0x{x}, high_pc=0x{x}, decl_coords={}\n", .{
+                    //    function.name,
+                    //    function.@"extern",
+                    //    function.low_pc,
+                    //    function.high_pc,
+                    //    function.decl_coords,
                     //});
+
+                    parent_function = functions.items.len;
+                    parent_function_level = child_level;
+                    try functions.append(function);
+                },
+                DW.TAG.formal_parameter => {
+                    if (parent_function != null and parent_function_level.? == child_level) {
+                        var name_opt: ?[]const u8 = null;
+
+                        for (abbrev.attribs) |pair| {
+                            switch (pair.attrib) {
+                                DW.AT.name => name_opt = try forms.readString(read_info, reader, pair.form),
+                                else => try forms.skip(skip_info, reader, pair.form),
+                            }
+                        }
+
+                        //std.debug.print("  param: {s}\n", .{
+                        //    name_opt,
+                        //});
+                    } else {
+                        for (abbrev.attribs) |pair| try forms.skip(skip_info, reader, pair.form);
+                    }
                 },
                 else => {
                     for (abbrev.attribs) |pair| try forms.skip(skip_info, reader, pair.form);
                 },
             }
         }
+
+        self.functions = functions.toOwnedSlice();
+        return function_fixups.toOwnedSlice();
     }
 
-    //fn parseAllDebugInfo(self: *DebugUnit, debug_str: []const u8) !void {
-    //    var stream = std.io.fixedBufferStream(self.entries_buf);
-    //    var reader = stream.reader();
+    const TypeFixUpInfos = struct { type_offsets: []usize };
 
-    //    const skip_info = forms.SkipInfo{ .address_size = self.address_size, .is_64 = self.is_64 };
-    //    const read_info = forms.ReadInfo{
-    //        .address_size = self.address_size,
-    //        .is_64 = self.is_64,
-    //        .version = self.version,
-    //        .debug_info_opt = self.debug_info,
-    //        .debug_str_opt = debug_str,
-    //    };
+    fn loadTypes(self: *DebugUnit, debug_str: []const u8) !TypeFixUpInfos {
+        var types = std.ArrayList(Type).init(self.allocator);
+        var type_offsets = std.ArrayList(usize).init(self.allocator);
 
-    //    var child_level: usize = 0;
-    //    while ((try stream.getPos()) < self.entries_buf.len) {
-    //        const abbrev_code = try std.leb.readULEB128(usize, reader);
-    //        const abbrev = self.abbrevs[abbrev_code];
+        var stream = std.io.fixedBufferStream(self.entries_buf);
+        var reader = stream.reader();
 
-    //        if (abbrev.has_children) child_level += 1;
-    //        if (abbrev.tag == 0) {
-    //            child_level -= 1;
-    //            if (child_level == 0) break;
-    //        }
+        const skip_info = forms.SkipInfo{
+            .address_size = self.address_size,
+            .is_64 = self.is_64,
+        };
+        const read_info = forms.ReadInfo{
+            .address_size = self.address_size,
+            .is_64 = self.is_64,
+            .version = self.version,
+            .debug_info_opt = self.debug_info,
+            .debug_str_opt = debug_str,
+        };
 
-    //        switch (abbrev.tag) {
-    //            DW.TAG.compile_unit => try self.parseCompUnit(read_info, skip_info, reader, abbrev),
+        var parent_function_level: ?usize = null;
+        var parent_function: ?usize = null;
+        var child_level: usize = 0;
+        while ((try stream.getPos()) < self.entries_buf.len) {
+            const tag_offset = (try stream.getPos()) + self.header_size;
+            const abbrev_code = try std.leb.readULEB128(usize, reader);
+            const abbrev = self.abbrevs[abbrev_code];
 
-    //            //DW.TAG.base_type => {},
-    //            //DW.TAG.unspecified_type => {},
-    //            // type modifiers: these only really have a AT_name and AT_type
-    //            //DW.TAG.atomic_type => {},
-    //            //DW.TAG.const_type => {},
-    //            //DW.TAG.immutable_type => {},
-    //            //DW.TAG.packet_type => {},
-    //            //DW.TAG.pointer_type => {},
-    //            //DW.TAG.reference_type => {},
-    //            //DW.TAG.restrict_type => {},
-    //            //DW.TAG.rvalue_reference_type => {},
-    //            //DW.TAG.shared_type => {},
-    //            //DW.TAG.volatile_type => {},
-    //            // typedefs always have a AT_name but might not have a AT_type
-    //            //DW.TAG.typedef => {}
-    //            // arrays can have a AT_name and might have a AT_ordering
-    //            // might also have AT_byte/bit_stride
-    //            // might also have AT_byte/bit_size
-    //            // (they always have a AT_type, the element type)
-    //            // if it is a multi-dim array it will have children with tags
-    //            // TAG_subrange_type or TAG_enumeration_type
-    //            // other things that array_type can have are AT_allocated, AT_associated
-    //            // and AT_data_location
-    //            //DW.TAG.array_type => {}
-    //            //DW.TAG.coarray_type => {} // this is a fortran thing, ignore for now
-    //            // struct, union, class
-    //            // * might not have a AT_name (members are represented by children,
-    //            // and come in the same order as in declared in the source file)
-    //            // * not sure what AT_export_symbols does?
-    //            // * might have AT_byte/bit_size (in which case its the size of the whole struct,
-    //            // including padding)
-    //            // * incomplete struct does not have byte size but has AT_declaration
-    //            // * if complete struct decl is in a dif. unit theres going to be a an incomplete
-    //            // one with a AT_signature
-    //            // * if they have AT_specification they don't need to have AT_name
-    //            // * these can have a AT_calling_convention for how they are passed in to functions
-    //            //DW.TAG.structure_type => {},
-    //            //DW.TAG.union_type => {},
-    //            //DW.TAG.class_type => {},
-    //            // interface types
-    //            // * interfaces are basically classes with only abstract methods and const members
-    //            // * they have a AT_name
-    //            // * members are children
-    //            //DW.TAG.interface_type => {},
-    //            // extended types / inheritance
-    //            //DW.TAG.inheritance => {},
+            if (abbrev.has_children) child_level += 1;
+            if (abbrev.tag == 0) {
+                if (parent_function_level) |level| {
+                    if (level == child_level) {
+                        parent_function = null;
+                        parent_function_level = null;
+                    }
+                }
+                child_level -= 1;
+                if (child_level == 0) break;
+            }
 
-    //            // theres some other types but I'm don't care right now
-    //            //DW.TAG.access_declaration, DW.TAG.friend,
+            switch (abbrev.tag) {
+                DW.TAG.base_type,
+                DW.TAG.const_type,
+                DW.TAG.pointer_type,
+                DW.TAG.reference_type,
+                DW.TAG.typedef,
+                DW.TAG.array_type,
+                DW.TAG.structure_type,
+                DW.TAG.enumeration_type,
+                => {
+                    var name_opt: ?[]const u8 = null;
+                    for (abbrev.attribs) |pair| {
+                        switch (pair.attrib) {
+                            DW.AT.name => name_opt = try forms.readString(read_info, reader, pair.form),
+                            else => try forms.skip(skip_info, reader, pair.form),
+                        }
+                    }
 
-    //            // data members
-    //            // * can have AT_mutable which is a flag
-    //            // * can have AT_accessibility (if it doesn't C++ rules apply, private for classes
-    //            //      public for structs, union, interface)
-    //            // * can have AT_data_member_location or AT_data_bit_offset (if the beginning of the
-    //            //      data member is the same as beginning of containing entity neither is required)
-    //            //DW.TAG.data_member
+                    try type_offsets.append(tag_offset);
+                    try types.append(.{ .name = name_opt orelse "" });
+                },
+                else => {
+                    for (abbrev.attribs) |pair| try forms.skip(skip_info, reader, pair.form);
+                },
+            }
+        }
 
-    //            // function members use the TAG_subprogram tag
-
-    //            // variables
-    //            //DW.TAG.variable => try parse_ctx.parseVariable(reader, abbrev),
-
-    //            //DW.TAG.formal_parameter => {
-    //            //    for (abbrev.attribs) |pair| {
-    //            //        if (pair.attrib == DW.AT.name) {
-    //            //            std.debug.print("formal param with name: {s}\n", .{readString(read_info, reader, pair.form)});
-    //            //        } else {
-    //            //            try skipFORM(pair.form, reader, skip_info);
-    //            //        }
-    //            //    }
-    //            //},
-    //            //DW.TAG.constant => {
-    //            //    for (abbrev.attribs) |pair| {
-    //            //        if (pair.attrib == DW.AT.name) {
-    //            //            std.debug.print("constant with name: {s}\n", .{readString(read_info, reader, pair.form)});
-    //            //        } else {
-    //            //            try forms.skip(skip_info, reader, pair.form);
-    //            //        }
-    //            //    }
-    //            //},
-
-    //            else => {
-    //                std.debug.assert(DW.TAG.isValid(abbrev.tag));
-    //                for (abbrev.attribs) |pair| try forms.skip(skip_info, reader, pair.form);
-    //            },
-    //        }
-    //    }
-    //}
+        self.types = types.toOwnedSlice();
+        return TypeFixUpInfos{ .type_offsets = type_offsets.toOwnedSlice() };
+    }
 };
 
 pub fn pathIntoSrc(self: Dwarf, path: []const u8) !?SrcLoc {

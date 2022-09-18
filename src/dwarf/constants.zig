@@ -2,6 +2,8 @@
 
 const std = @import("std");
 
+const DW = @This();
+
 pub const TAG = struct {
     pub fn asStr(value: u16) []const u8 {
         return dwarfString(@This(), value);
@@ -203,7 +205,7 @@ pub const AT = struct {
     pub const virtuality = 0x4c;
     pub const vtable_elem_location = 0x4d;
 
-    // DWARF 3 values.
+    // DWARF 3
     pub const allocated = 0x4e;
     pub const associated = 0x4f;
     pub const data_location = 0x50;
@@ -232,7 +234,7 @@ pub const AT = struct {
     pub const pure = 0x67;
     pub const recursive = 0x68;
 
-    // DWARF 4.
+    // DWARF 4
     pub const signature = 0x69;
     pub const main_subprogram = 0x6a;
     pub const data_bit_offset = 0x6b;
@@ -993,3 +995,228 @@ pub fn dwarfIsValid(comptime T: type, value: u16) bool {
     }
     return false;
 }
+
+pub const Class = enum {
+    address,
+    addrptr,
+    block,
+    constant,
+    exprloc,
+    flag,
+    lineptr,
+    loclist,
+    loclistsptr,
+    macptr,
+    rnglist,
+    rnglistsptr,
+    reference,
+    string,
+    stroffsetsptr,
+
+    pub fn fromAttribute(attrib: u16) []const Class {
+        if (!dwarfIsValid(AT, attrib)) std.debug.panic("0x{x} is not a valid DW_AT\n", .{attrib});
+        return switch (attrib) {
+            DW.AT.sibling => &[_]Class{.reference},
+            DW.AT.location => &[_]Class{ .exprloc, .loclist },
+            DW.AT.name => &[_]Class{.string},
+            DW.AT.ordering => &[_]Class{.constant},
+            DW.AT.subscr_data => &[_]Class{},
+            DW.AT.byte_size => &[_]Class{ .constant, .exprloc, .reference },
+            DW.AT.bit_offset => &[_]Class{ .constant, .exprloc, .reference },
+            DW.AT.bit_size => &[_]Class{ .constant, .exprloc, .reference },
+            DW.AT.element_list => &[_]Class{},
+            DW.AT.stmt_list => &[_]Class{.lineptr},
+            DW.AT.low_pc => &[_]Class{.address},
+            DW.AT.high_pc => &[_]Class{ .address, .constant },
+            DW.AT.language => &[_]Class{},
+            DW.AT.member => &[_]Class{},
+            DW.AT.discr => &[_]Class{.reference},
+            DW.AT.discr_value => &[_]Class{.constant},
+            DW.AT.visibility => &[_]Class{.constant},
+            DW.AT.import => &[_]Class{.reference},
+            DW.AT.string_length => &[_]Class{ .exprloc, .loclist, .reference },
+            DW.AT.common_reference => &[_]Class{.reference},
+            DW.AT.comp_dir => &[_]Class{.string},
+            DW.AT.const_value => &[_]Class{ .block, .constant, .string },
+            DW.AT.containing_type => &[_]Class{.reference},
+            DW.AT.default_value => &[_]Class{ .constant, .reference, .flag },
+            DW.AT.@"inline" => &[_]Class{.constant},
+            DW.AT.is_optional => &[_]Class{.flag},
+            DW.AT.lower_bound => &[_]Class{ .constant, .exprloc, .reference },
+            DW.AT.producer => &[_]Class{.string},
+            DW.AT.prototyped => &[_]Class{.flag},
+            DW.AT.return_addr => &[_]Class{ .exprloc, .loclist },
+            DW.AT.start_scope => &[_]Class{ .constant, .rnglist },
+            DW.AT.bit_stride => &[_]Class{ .constant, .exprloc, .reference },
+            DW.AT.upper_bound => &[_]Class{ .constant, .exprloc, .reference },
+            DW.AT.abstract_origin => &[_]Class{.reference},
+            DW.AT.accessibility => &[_]Class{.constant},
+            DW.AT.address_class => &[_]Class{.constant},
+            DW.AT.artificial => &[_]Class{.flag},
+            DW.AT.base_types => &[_]Class{.reference},
+            DW.AT.calling_convention => &[_]Class{.constant},
+            DW.AT.count => &[_]Class{ .constant, .exprloc, .reference },
+            DW.AT.data_member_location => &[_]Class{ .constant, .exprloc, .reference },
+            DW.AT.decl_column => &[_]Class{.constant},
+            DW.AT.decl_file => &[_]Class{.constant},
+            DW.AT.decl_line => &[_]Class{.constant},
+            DW.AT.declaration => &[_]Class{.flag},
+            DW.AT.discr_list => &[_]Class{.block},
+            DW.AT.encoding => &[_]Class{.constant},
+            DW.AT.external => &[_]Class{.flag},
+            DW.AT.frame_base => &[_]Class{ .exprloc, .loclist },
+            DW.AT.friend => &[_]Class{.reference},
+            DW.AT.identifier_case => &[_]Class{.constant},
+            DW.AT.macro_info => &[_]Class{.macptr},
+            DW.AT.namelist_items => &[_]Class{.reference},
+            DW.AT.priority => &[_]Class{.reference},
+            DW.AT.segment => &[_]Class{ .exprloc, .loclist },
+            DW.AT.specification => &[_]Class{.reference},
+            DW.AT.static_link => &[_]Class{ .exprloc, .loclist },
+            DW.AT.@"type" => &[_]Class{.reference},
+            DW.AT.use_location => &[_]Class{ .exprloc, .loclist },
+            DW.AT.variable_parameter => &[_]Class{.flag},
+            DW.AT.virtuality => &[_]Class{.constant},
+            DW.AT.vtable_elem_location => &[_]Class{ .exprloc, .loclist },
+            DW.AT.allocated => &[_]Class{ .constant, .exprloc, .reference },
+            DW.AT.associated => &[_]Class{ .constant, .exprloc, .reference },
+            DW.AT.data_location => &[_]Class{.exprloc},
+            DW.AT.byte_stride => &[_]Class{ .constant, .exprloc, .reference },
+            DW.AT.entry_pc => &[_]Class{ .address, .constant },
+            DW.AT.use_UTF8 => &[_]Class{.flag},
+            DW.AT.extension => &[_]Class{.reference},
+            DW.AT.ranges => &[_]Class{.rnglist},
+            DW.AT.trampoline => &[_]Class{ .address, .flag, .reference, .string },
+            DW.AT.call_column => &[_]Class{.constant},
+            DW.AT.call_file => &[_]Class{.constant},
+            DW.AT.call_line => &[_]Class{.constant},
+            DW.AT.description => &[_]Class{.string},
+            DW.AT.binary_scale => &[_]Class{.constant},
+            DW.AT.decimal_scale => &[_]Class{.constant},
+            DW.AT.small => &[_]Class{.reference},
+            DW.AT.decimal_sign => &[_]Class{.constant},
+            DW.AT.digit_count => &[_]Class{.constant},
+            DW.AT.picture_string => &[_]Class{.string},
+            DW.AT.mutable => &[_]Class{.flag},
+            DW.AT.threads_scaled => &[_]Class{.flag},
+            DW.AT.explicit => &[_]Class{.flag},
+            DW.AT.object_pointer => &[_]Class{.reference},
+            DW.AT.endianity => &[_]Class{.constant},
+            DW.AT.elemental => &[_]Class{.flag},
+            DW.AT.pure => &[_]Class{.flag},
+            DW.AT.recursive => &[_]Class{.flag},
+            DW.AT.signature => &[_]Class{.reference},
+            DW.AT.main_subprogram => &[_]Class{.flag},
+            DW.AT.data_bit_offset => &[_]Class{.constant},
+            DW.AT.const_expr => &[_]Class{.flag},
+            DW.AT.enum_class => &[_]Class{.flag},
+            DW.AT.linkage_name => &[_]Class{.string},
+            DW.AT.string_length_bit_size => &[_]Class{.constant},
+            DW.AT.string_length_byte_size => &[_]Class{.constant},
+            DW.AT.rank => &[_]Class{ .constant, .exprloc },
+            DW.AT.str_offsets_base => &[_]Class{.stroffsetsptr},
+            DW.AT.addr_base => &[_]Class{.addrptr},
+            DW.AT.rnglists_base => &[_]Class{.rnglistsptr},
+            DW.AT.dwo_name => &[_]Class{.string},
+            DW.AT.reference => &[_]Class{.flag},
+            DW.AT.rvalue_reference => &[_]Class{.flag},
+            DW.AT.macros => &[_]Class{.macptr},
+            DW.AT.call_all_calls => &[_]Class{.flag},
+            DW.AT.call_all_source_calls => &[_]Class{.flag},
+            DW.AT.call_all_tail_calls => &[_]Class{.flag},
+            DW.AT.call_return_pc => &[_]Class{.address},
+            DW.AT.call_value => &[_]Class{.exprloc},
+            DW.AT.call_origin => &[_]Class{.exprloc},
+            DW.AT.call_parameter => &[_]Class{.reference},
+            DW.AT.call_pc => &[_]Class{.address},
+            DW.AT.call_tail_call => &[_]Class{.flag},
+            DW.AT.call_target => &[_]Class{.exprloc},
+            DW.AT.call_target_clobbered => &[_]Class{.exprloc},
+            DW.AT.call_data_location => &[_]Class{.exprloc},
+            DW.AT.call_data_value => &[_]Class{.exprloc},
+            DW.AT.@"noreturn" => &[_]Class{.flag},
+            DW.AT.alignment => &[_]Class{.constant},
+            DW.AT.export_symbols => &[_]Class{.flag},
+            DW.AT.deleted => &[_]Class{.flag},
+            DW.AT.defaulted => &[_]Class{.constant},
+            DW.AT.loclists_base => &[_]Class{.loclistsptr},
+
+            else => std.debug.panic("unknown AT=0x{x}\n", .{attrib}),
+        };
+    }
+
+    pub fn fromForm(form: u16) Class {
+        if (!dwarfIsValid(FORM, form)) std.debug.panic("0x{x} is not a valid DW_FORM\n", .{form});
+        return switch (form) {
+            DW.FORM.addr,
+            DW.FORM.addrx,
+            DW.FORM.addrx1,
+            DW.FORM.addrx2,
+            DW.FORM.addrx3,
+            DW.FORM.addrx4,
+            => .address,
+
+            DW.FORM.block,
+            DW.FORM.block1,
+            DW.FORM.block2,
+            DW.FORM.block4,
+            => .block,
+
+            DW.FORM.data1,
+            DW.FORM.data2,
+            DW.FORM.data4,
+            DW.FORM.data8,
+            DW.FORM.data16,
+            DW.FORM.sdata,
+            DW.FORM.udata,
+            DW.FORM.implicit_const,
+            => .constant,
+
+            DW.FORM.exprloc => .exprloc,
+
+            DW.FORM.flag,
+            DW.FORM.flag_present,
+            => .flag,
+
+            DW.FORM.loclistx => .loclist,
+
+            DW.FORM.rnglistx => .rnglist,
+
+            DW.FORM.ref_addr,
+            DW.FORM.ref1,
+            DW.FORM.ref2,
+            DW.FORM.ref4,
+            DW.FORM.ref8,
+            DW.FORM.ref_udata,
+            DW.FORM.ref_sup4,
+            DW.FORM.ref_sup8,
+            DW.FORM.ref_sig8,
+            => .reference,
+
+            DW.FORM.string,
+            DW.FORM.strp,
+            DW.FORM.strx,
+            DW.FORM.strp_sup,
+            DW.FORM.line_strp,
+            DW.FORM.strx1,
+            DW.FORM.strx2,
+            DW.FORM.strx3,
+            DW.FORM.strx4,
+            => .string,
+
+            DW.FORM.indirect,
+            DW.FORM.sec_offset,
+            => std.debug.panic("{s} doesn't have a specific class\n", .{DW.FORM.asStr(form)}),
+
+            // these are all represented by DW.FORM.sec_offset
+            //=> .addrptr,
+            //=> .lineptr,
+            //=> .loclistptr,
+            //=> .macptr,
+            //=> .rnglistptr,
+            //=> .stroffsetptr,
+
+            else => std.debug.panic("unknown FORM=0x{x}\n", .{form}),
+        };
+    }
+};
