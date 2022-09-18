@@ -141,11 +141,11 @@ pub const Variable = struct {
 
 pub const Type = struct {
     name: []const u8,
-    data: union(enum) {
-        Base: struct {},
-        Struct: struct {},
-        Enum: struct {},
-    },
+    //data: union(enum) {
+    //    Base: struct {},
+    //    Struct: struct {},
+    //    Enum: struct {},
+    //},
 };
 
 pub const LocationDesc = union(enum) {
@@ -239,24 +239,24 @@ pub const DebugUnit = struct {
         const type_fixup_info = try self.loadTypes(debug_str);
         const type_offsets = type_fixup_info.type_offsets;
         defer self.allocator.free(type_offsets);
-        const type_fixups = type_fixup_info.type_fixups;
-        defer self.allocator.free(type_fixups);
+        //const type_fixups = type_fixup_info.type_fixups;
+        //defer self.allocator.free(type_fixups);
 
-        for (function_fixups) |fixup| {
-            const fn_ptr = &self.functions[fixup.fn_idx];
-            const type_idx = std.mem.indexOfScalar(usize, type_offsets, fixup.type_offset) orelse
-                std.debug.panic("fn {s}: no type with offset 0x{x}\n", .{ fn_ptr.name, fixup.type_offset });
-            const type_ptr = &self.types[type_idx];
-            fn_ptr.ret_type = type_ptr;
-        }
+        //for (function_fixups) |fixup| {
+        //    const fn_ptr = &self.functions[fixup.fn_idx];
+        //    const type_idx = std.mem.indexOfScalar(usize, type_offsets, fixup.type_offset) orelse
+        //        std.debug.panic("fn {s}: no type with offset 0x{x}\n", .{ fn_ptr.name, fixup.type_offset });
+        //    const type_ptr = &self.types[type_idx];
+        //    fn_ptr.ret_type = type_ptr;
+        //}
 
-        for (self.functions) |function| {
-            std.debug.print("function: {s}, decl_coords={}, ret_type.name={s}\n", .{
-                function.name,
-                function.decl_coords,
-                if (function.ret_type) |ty| ty.name else "null",
-            });
-        }
+        //for (self.functions) |function| {
+        //    std.debug.print("function: {s}, decl_coords={}, ret_type.name={s}\n", .{
+        //        function.name,
+        //        function.decl_coords,
+        //        if (function.ret_type) |ty| ty.name else "null",
+        //    });
+        //}
 
         return self;
     }
@@ -265,6 +265,8 @@ pub const DebugUnit = struct {
         for (self.abbrevs) |*abbrev| abbrev.deinit(self.allocator);
         self.allocator.free(self.abbrevs);
         self.allocator.free(self.functions);
+        self.allocator.free(self.variables);
+        self.allocator.free(self.types);
     }
 
     fn readAbbrevTable(self: *DebugUnit, debug_abbrev: []const u8) !void {

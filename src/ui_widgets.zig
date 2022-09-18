@@ -130,6 +130,35 @@ pub fn endCtxMenu(self: *UiContext) void {
     std.debug.assert(parent == self.ctx_menu_root_node);
 }
 
+pub fn startTooltip(self: *UiContext, placement: Placement) void {
+    // the `addNode` function is gonna use whatever parent is at the top of the stack by default
+    // so we have to trick it into thinking this is the root node
+    const saved_stack_len = self.parent_stack.len();
+    self.parent_stack.array_list.items.len = 0;
+
+    const tooltip_size = [2]Size{ Size.by_children(1), Size.by_children(1) };
+    const tooltip_root = self.addNode(.{
+        .clip_children = true,
+        .floating_x = true,
+        .floating_y = true,
+        .selectable = true,
+    }, "###INTERNAL_TOOLTIP_ROOT_NODE", .{
+        .pref_size = tooltip_size,
+        .rel_pos = placement.value(),
+        .rel_pos_placement = std.meta.activeTag(placement),
+    });
+
+    self.tooltip_root_node = tooltip_root;
+
+    self.parent_stack.array_list.items.len = saved_stack_len;
+    self.pushParent(tooltip_root);
+}
+
+pub fn endTooltip(self: *UiContext) void {
+    const parent = self.popParent();
+    std.debug.assert(parent == self.tooltip_root_node);
+}
+
 /// pushes itself as the parent. make sure to use popParent later
 pub fn scrollableRegion(self: *UiContext, string: []const u8, axis: Axis) Signal {
     //const percent_sizes = switch (axis) {

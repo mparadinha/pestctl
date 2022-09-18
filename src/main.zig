@@ -116,7 +116,7 @@ pub fn main() !void {
     var last_session_status: Session.Status = if (session_opt) |s| s.status else .Stopped;
 
     // @debug
-    std.debug.panic("@debug: this crash is on purpose!", .{});
+    //std.debug.panic("@debug: this crash is on purpose!", .{});
 
     var last_mouse_pos = vec2{ 0, 0 };
     var last_time = @floatCast(f32, c.glfwGetTime());
@@ -208,6 +208,43 @@ pub fn main() !void {
                     if (file_tab.addFile(src_file_path)) {
                         file_tab.active_file = file_tab.files.items.len - 1;
                     } else |err| std.debug.print("{}: couldn't open file '{s}'\n", .{ err, src_file_buf.slice() });
+                }
+                if (text_input_sig.focused and src_file_buf.len > 0) {
+                    const text_input_node = ui.topParent().last.?;
+                    ui.startCtxMenu(.{ .top_left = text_input_node.rect.min });
+                    {
+                        const children_size = [2]Size{ Size.by_children(1), Size.by_children(1) };
+                        const bg_color = vec4{ 0, 0, 0, 0.75 };
+                        const tooltip_bg = ui.addNode(.{ .no_id = true, .draw_background = true }, "", .{
+                            .bg_color = bg_color,
+                            .pref_size = children_size,
+                        });
+                        ui.pushParent(tooltip_bg);
+                        defer std.debug.assert(ui.popParent() == tooltip_bg);
+
+                        const input = src_file_buf.slice();
+                        const inner_dir = if (std.mem.lastIndexOfScalar(u8, input, '/')) |idx| blk: {
+                            break :blk input[0 .. idx + 1];
+                        } else "";
+
+                        var tmpbuf: [0x1000]u8 = undefined;
+                        const full_dir_path = try std.fmt.bufPrint(&tmpbuf, "{s}/{s}", .{ cwd, inner_dir });
+
+                        var dir = try std.fs.openDirAbsolute(full_dir_path, .{ .iterate = true });
+                        var dir_iter = dir.iterate();
+                        const fill_x_size = [2]Size{ Size.percent(1, 1), Size.text_dim(1) };
+                        ui.pushStyle(.{ .pref_size = fill_x_size });
+                        while (try dir_iter.next()) |entry| {
+                            const button_sig = ui.buttonF("{s}{s}", .{ inner_dir, entry.name });
+                            ui.topParent().last.?.flags.draw_background = false;
+                            ui.topParent().last.?.border_color = vec4{ 0, 0, 0, 0 };
+                            if (button_sig.clicked) {
+                                std.debug.print("TODO: switch input buffer to {s}\n", .{entry.name});
+                            }
+                        }
+                        _ = ui.popStyle();
+                    }
+                    ui.endCtxMenu();
                 }
             }
             std.debug.assert(ui.popParent() == open_file_parent);
