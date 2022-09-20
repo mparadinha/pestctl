@@ -19,6 +19,8 @@ debug_line: []const u8,
 debug_line_str: []const u8,
 debug_ranges: []const u8,
 debug_frame: []const u8,
+debug_loc: []const u8,
+debug_loclists: []const u8,
 eh_frame: []const u8, // TODO: use .eh_frame when .debug_frame is not available
 
 /// these are filled by `initTables`
@@ -34,6 +36,8 @@ pub fn deinit(self: *Dwarf) void {
     self.allocator.free(self.debug_line_str);
     self.allocator.free(self.debug_ranges);
     self.allocator.free(self.debug_frame);
+    self.allocator.free(self.debug_loc);
+    self.allocator.free(self.debug_loclists);
     self.allocator.free(self.eh_frame);
 
     for (self.line_progs) |*prog| prog.deinit();
@@ -46,7 +50,34 @@ pub fn deinit(self: *Dwarf) void {
     self.allocator.free(self.frames);
 }
 
+const Sections = struct {
+    info: ?[]const u8 = null,
+    abbrev: ?[]const u8 = null,
+    str: ?[]const u8 = null,
+    line: ?[]const u8 = null,
+    line_str: ?[]const u8 = null,
+    ranges: ?[]const u8 = null,
+    frame: ?[]const u8 = null,
+    loc: ?[]const u8 = null,
+    loclists: ?[]const u8 = null,
+    eh_frame: ?[]const u8 = null,
+};
+
 pub fn initTables(self: *Dwarf) !void {
+    const sections = Sections{
+        .info = if (self.debug_info.len > 0) self.debug_info else null,
+        .abbrev = if (self.debug_abbrev.len > 0) self.debug_abbrev else null,
+        .str = if (self.debug_str.len > 0) self.debug_str else null,
+        .line = if (self.debug_line.len > 0) self.debug_line else null,
+        .line_str = if (self.debug_line_str.len > 0) self.debug_line_str else null,
+        .ranges = if (self.debug_ranges.len > 0) self.debug_ranges else null,
+        .frame = if (self.debug_frame.len > 0) self.debug_frame else null,
+        .loc = if (self.debug_loc.len > 0) self.debug_loc else null,
+        .loclists = if (self.debug_loclists.len > 0) self.debug_loclists else null,
+        .eh_frame = if (self.eh_frame.len > 0) self.eh_frame else null,
+    };
+    _ = sections;
+
     var debug_units = std.ArrayList(DebugUnit).init(self.allocator);
     var debug_unit_offset: usize = 0;
     while (debug_unit_offset < self.debug_info.len) {
@@ -57,6 +88,8 @@ pub fn initTables(self: *Dwarf) !void {
             self.debug_abbrev,
             self.debug_str,
             self.debug_line_str,
+            self.debug_loc,
+            self.debug_loclists,
         ));
         debug_unit_offset += try DebugUnit.getSectionSize(self.debug_info, debug_unit_offset);
     }
@@ -135,22 +168,25 @@ pub const Variable = struct {
     name: []const u8,
     decl_coords: ?DeclCoords,
 
-    @"type": *Type,
+    loc: ?LocationDesc,
+
+    @"type": ?*Type,
     function: ?*Function,
 };
 
 pub const Type = struct {
     name: []const u8,
-    //data: union(enum) {
-    //    Base: struct {},
-    //    Struct: struct {},
-    //    Enum: struct {},
-    //},
+    data: union(enum) {
+        Base: struct {},
+        Struct: struct {},
+        Enum: struct {},
+    },
 };
 
 pub const LocationDesc = union(enum) {
     expr: []const u8, // DWARF expression
-    loclist: []const u8, // TODO: DWARF loclist
+    loclist_offset: usize,
+    // TODO: DWARF loclistx
 };
 
 pub const DebugUnit = struct {
@@ -191,6 +227,8 @@ pub const DebugUnit = struct {
         debug_abbrev: []const u8,
         debug_str: []const u8,
         debug_line_str: []const u8,
+        debug_loc: []const u8,
+        debug_loclists: []const u8,
     ) !DebugUnit {
         var self = @as(DebugUnit, undefined);
         self.debug_info = debug_info;
@@ -233,30 +271,97 @@ pub const DebugUnit = struct {
         // entry) to make sure we can use LineProg correctly
         self.comp_dir = try self.getCompilationDir(debug_str, debug_line_str);
 
-        const function_fixups = try self.loadFunctions(debug_str);
+        const fixup_info = try self.loadFunctions(debug_str);
+        const variable_fixups = fixup_info.variable_fixups;
+        defer self.allocator.free(variable_fixups);
+        const function_fixups = fixup_info.function_fixups;
         defer self.allocator.free(function_fixups);
 
         const type_fixup_info = try self.loadTypes(debug_str);
         const type_offsets = type_fixup_info.type_offsets;
         defer self.allocator.free(type_offsets);
-        //const type_fixups = type_fixup_info.type_fixups;
-        //defer self.allocator.free(type_fixups);
+        const type_fixups = type_fixup_info.type_fixups;
+        defer self.allocator.free(type_fixups);
 
-        //for (function_fixups) |fixup| {
-        //    const fn_ptr = &self.functions[fixup.fn_idx];
-        //    const type_idx = std.mem.indexOfScalar(usize, type_offsets, fixup.type_offset) orelse
-        //        std.debug.panic("fn {s}: no type with offset 0x{x}\n", .{ fn_ptr.name, fixup.type_offset });
-        //    const type_ptr = &self.types[type_idx];
-        //    fn_ptr.ret_type = type_ptr;
-        //}
+        for (variable_fixups) |fixup| {
+            const var_ptr = &self.variables[fixup.var_idx];
+            if (fixup.fn_idx) |idx| {
+                const fn_ptr = &self.functions[idx];
+                var_ptr.function = fn_ptr;
+            }
+            if (fixup.type_offset) |type_offset| {
+                const type_idx = std.mem.indexOfScalar(usize, type_offsets, type_offset) orelse
+                    std.debug.panic("var {s}: no type with offset 0x{x}\n", .{ var_ptr.name, type_offset });
+                const type_ptr = &self.types[type_idx];
+                var_ptr.@"type" = type_ptr;
+            }
+        }
 
-        //for (self.functions) |function| {
-        //    std.debug.print("function: {s}, decl_coords={}, ret_type.name={s}\n", .{
-        //        function.name,
-        //        function.decl_coords,
-        //        if (function.ret_type) |ty| ty.name else "null",
-        //    });
-        //}
+        for (function_fixups) |fixup| {
+            const fn_ptr = &self.functions[fixup.fn_idx];
+            const type_idx = std.mem.indexOfScalar(usize, type_offsets, fixup.type_offset) orelse
+                std.debug.panic("fn {s}: no type with offset 0x{x}\n", .{ fn_ptr.name, fixup.type_offset });
+            const type_ptr = &self.types[type_idx];
+            fn_ptr.ret_type = type_ptr;
+        }
+
+        for (self.functions) |function| {
+            std.debug.print("function: {s}, decl_coords={}, ret_type.name={s}\n", .{
+                function.name,
+                function.decl_coords,
+                if (function.ret_type) |ty| ty.name else "null",
+            });
+        }
+
+        for (self.variables) |variable| {
+            std.debug.print("variable: {s}, decl_coords={}, type={s}, function={s}, loc={}\n", .{
+                variable.name,
+                variable.decl_coords,
+                if (variable.@"type") |ty| ty.name else "null",
+                if (variable.function) |func| func.name else "null",
+                variable.loc,
+            });
+            if (variable.loc) |loc| {
+                switch (loc) {
+                    .expr => {},
+                    .loclist_offset => |loc_offset| {
+                        if (debug_loc.len > 0) {
+                            std.debug.print("  using .debug_loc ... @ offset=0x{x}\n", .{loc_offset});
+                            var loc_stream = std.io.fixedBufferStream(debug_loc[loc_offset..]);
+                            var loc_reader = loc_stream.reader();
+                            while (true) {
+                                const entry_offset = loc_offset + (try loc_stream.getPos());
+
+                                const addr_start = try loc_reader.readIntLittle(usize);
+                                const addr_end = try loc_reader.readIntLittle(usize);
+                                if (addr_start == 0 and addr_end == 0) break;
+
+                                const block_len = try loc_reader.readIntLittle(u16);
+                                const block_start = loc_offset + (try loc_stream.getPos());
+                                const expr_data = debug_loc[block_start .. block_start + block_len];
+                                try loc_reader.skipBytes(block_len, .{});
+
+                                const first_op: ?u8 = if (block_len > 0) expr_data[0] else null;
+                                std.debug.print("  - [0x{x:0>8}] addr offset range (0x{x} -> 0x{x}): block_len={}, first op: {s}\n", .{
+                                    entry_offset,
+                                    addr_start,
+                                    addr_end,
+                                    block_len,
+                                    if (first_op) |op| DW.OP.asStr(op) else "null",
+                                });
+
+                                //const Expression = @import("dwarf/Expression.zig");
+                                //const registers = [_]usize{0x8_0000_0000} ** @typeInfo(Register).Enum.fields.len;
+                                //const expr_result = Expression.result(expr_data, registers, 6);
+                                //std.debug.print("   \\ expression result: {}\n", .{expr_result});
+                            }
+                        } else if (debug_loclists.len > 0) {
+                            std.debug.print("  using .debug_loclist ...\n", .{});
+                        } else @panic("wat");
+                    },
+                }
+            }
+        }
 
         return self;
     }
@@ -358,9 +463,13 @@ pub const DebugUnit = struct {
         @panic("didn't find a comp_dir attribute");
     }
 
+    const VariableFixUp = struct { var_idx: usize, fn_idx: ?usize, type_offset: ?usize };
     const FunctionFixUp = struct { fn_idx: usize, type_offset: usize };
+    const FixUpInfo = struct { variable_fixups: []VariableFixUp, function_fixups: []FunctionFixUp };
 
-    fn loadFunctions(self: *DebugUnit, debug_str: []const u8) ![]FunctionFixUp {
+    fn loadFunctions(self: *DebugUnit, debug_str: []const u8) !FixUpInfo {
+        var variables = std.ArrayList(Variable).init(self.allocator);
+        var variable_fixups = std.ArrayList(VariableFixUp).init(self.allocator);
         var functions = std.ArrayList(Function).init(self.allocator);
         var function_fixups = std.ArrayList(FunctionFixUp).init(self.allocator);
 
@@ -473,17 +582,64 @@ pub const DebugUnit = struct {
                         for (abbrev.attribs) |pair| try forms.skip(skip_info, reader, pair.form);
                     }
                 },
+                DW.TAG.variable => {
+                    var variable = Variable{
+                        .name = &[0]u8{},
+                        .decl_coords = null,
+                        .loc = null,
+                        .@"type" = null,
+                        .function = null,
+                    };
+                    var type_offset = @as(?usize, null);
+                    for (abbrev.attribs) |pair| {
+                        switch (pair.attrib) {
+                            DW.AT.name => variable.name = try forms.readString(read_info, reader, pair.form),
+                            DW.AT.@"type" => type_offset = try forms.readReference(read_info, reader, pair.form),
+                            DW.AT.decl_file => {
+                                if (variable.decl_coords == null) variable.decl_coords = .{ .file = 0, .line = 0, .column = 0 };
+                                variable.decl_coords.?.file = try forms.readConstant(u32, read_info, reader, pair);
+                            },
+                            DW.AT.decl_line => {
+                                if (variable.decl_coords == null) variable.decl_coords = .{ .file = 0, .line = 0, .column = 0 };
+                                variable.decl_coords.?.line = try forms.readConstant(u32, read_info, reader, pair);
+                            },
+                            DW.AT.decl_column => {
+                                if (variable.decl_coords == null) variable.decl_coords = .{ .file = 0, .line = 0, .column = 0 };
+                                variable.decl_coords.?.column = try forms.readConstant(u32, read_info, reader, pair);
+                            },
+                            DW.AT.location => {
+                                variable.loc = switch (pair.form) {
+                                    DW.FORM.exprloc => .{ .expr = try forms.readExprLoc(reader, pair.form) },
+                                    DW.FORM.sec_offset => .{ .loclist_offset = try readIs64(reader, self.is_64) },
+                                    else => std.debug.panic("TODO: {s} for {s}\n", .{ DW.FORM.asStr(pair.form), DW.AT.asStr(pair.attrib) }),
+                                };
+                            },
+                            else => try forms.skip(skip_info, reader, pair.form),
+                        }
+                    }
+                    try variable_fixups.append(.{
+                        .var_idx = variables.items.len,
+                        .fn_idx = if (functions.items.len > 0) functions.items.len - 1 else null,
+                        .type_offset = type_offset,
+                    });
+                    try variables.append(variable);
+                },
                 else => {
                     for (abbrev.attribs) |pair| try forms.skip(skip_info, reader, pair.form);
                 },
             }
         }
 
+        self.variables = variables.toOwnedSlice();
         self.functions = functions.toOwnedSlice();
-        return function_fixups.toOwnedSlice();
+        return FixUpInfo{
+            .variable_fixups = variable_fixups.toOwnedSlice(),
+            .function_fixups = function_fixups.toOwnedSlice(),
+        };
     }
 
-    const TypeFixUpInfos = struct { type_offsets: []usize };
+    const TypeFixUp = struct { type_idx: usize, base_type_offset: usize };
+    const TypeFixUpInfos = struct { type_offsets: []usize, type_fixups: []TypeFixUp };
 
     fn loadTypes(self: *DebugUnit, debug_str: []const u8) !TypeFixUpInfos {
         var types = std.ArrayList(Type).init(self.allocator);
@@ -543,7 +699,10 @@ pub const DebugUnit = struct {
                     }
 
                     try type_offsets.append(tag_offset);
-                    try types.append(.{ .name = name_opt orelse "" });
+                    try types.append(.{
+                        .name = name_opt orelse "",
+                        .data = undefined,
+                    });
                 },
                 else => {
                     for (abbrev.attribs) |pair| try forms.skip(skip_info, reader, pair.form);
@@ -552,7 +711,7 @@ pub const DebugUnit = struct {
         }
 
         self.types = types.toOwnedSlice();
-        return TypeFixUpInfos{ .type_offsets = type_offsets.toOwnedSlice() };
+        return TypeFixUpInfos{ .type_offsets = type_offsets.toOwnedSlice(), .type_fixups = &[0]TypeFixUp{} };
     }
 };
 

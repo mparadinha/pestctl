@@ -24,6 +24,8 @@ pub fn init(allocator: Allocator, exec_path: []const u8) !Elf {
         .debug_line_str = &[0]u8{},
         .debug_ranges = &[0]u8{},
         .debug_frame = &[0]u8{},
+        .debug_loc = &[0]u8{},
+        .debug_loclists = &[0]u8{},
         .eh_frame = &[0]u8{},
         .line_progs = undefined,
         .units = undefined,
@@ -67,6 +69,10 @@ pub fn init(allocator: Allocator, exec_path: []const u8) !Elf {
             self.dwarf.debug_ranges = try section.read(self.allocator, file);
         } else if (std.mem.eql(u8, section.name, ".debug_frame")) {
             self.dwarf.debug_frame = try section.read(self.allocator, file);
+        } else if (std.mem.eql(u8, section.name, ".debug_loc")) {
+            self.dwarf.debug_loc = try section.read(self.allocator, file);
+        } else if (std.mem.eql(u8, section.name, ".debug_loclists")) {
+            self.dwarf.debug_loclists = try section.read(self.allocator, file);
         } else if (std.mem.eql(u8, section.name, ".eh_frame")) {
             self.dwarf.eh_frame = try section.read(self.allocator, file);
         }
