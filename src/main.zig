@@ -115,9 +115,6 @@ pub fn main() !void {
     defer if (session_opt) |*session| session.deinit();
     var last_session_status: Session.Status = if (session_opt) |s| s.status else .Stopped;
 
-    // @debug
-    std.debug.panic("@debug: this crash is on purpose!", .{});
-
     var last_mouse_pos = vec2{ 0, 0 };
     var last_time = @floatCast(f32, c.glfwGetTime());
 
@@ -251,6 +248,20 @@ pub fn main() !void {
 
             try file_tab.display(&ui, if (session_opt) |*s| s else null);
 
+            if (session_opt) |session| {
+                const rip = session.getRegisters().rip;
+                const mem_map = (try session.getMemMapAtAddr(allocator, rip)).?;
+                defer mem_map.deinit(allocator);
+                const proc_mem = try session.procMemFile();
+                defer proc_mem.close();
+                try proc_mem.seekTo(mem_map.addr_range[0]);
+                var mem_block = try allocator.alloc(u8, mem_map.addr_range[1] - mem_map.addr_range[0]);
+                defer allocator.free(mem_block);
+                std.debug.assert((try proc_mem.read(mem_block)) == mem_block.len);
+
+                try showDisassemblyWindow(&ui, "main_disasm_window", mem_block, mem_map.addr_range[0]);
+            }
+
             // testing xed disassembly
             if (session_opt) |session| {
                 //const tmp_size = [2]Size{ Size.percent(1, 1), Size.percent(0.35, 1) };
@@ -325,10 +336,11 @@ pub fn main() !void {
 
                 _ = ui.textBox("call stack:");
                 for (session.call_stack) |call_frame| {
+                    const function = call_frame.fn_name orelse "???";
                     if (call_frame.src) |src| {
-                        _ = ui.textBoxF("0x{x:0>12}: {s}/{s}:{}", .{ call_frame.addr, src.dir, src.file, src.line });
+                        _ = ui.textBoxF("0x{x:0>12}: {s} @ {s}/{s}:{}", .{ call_frame.addr, function, src.dir, src.file, src.line });
                     } else {
-                        _ = ui.textBoxF("0x{x:0>12}: ???", .{call_frame.addr});
+                        _ = ui.textBoxF("0x{x:0>12}: {s} @ ???", .{ call_frame.addr, function });
                     }
                 }
 
@@ -797,6 +809,21 @@ fn textDisplay(ui: *UiContext, label: []const u8, text: []const u8, lock_line: ?
     }
 
     return parent_sig;
+}
+
+fn showDisassemblyWindow(ui: *UiContext, label: []const u8, data: []const u8, data_start_addr: usize) !void {
+    // TODO: hightlight box ranges
+
+    const parent_size = [2]Size{ Size.percent(1, 0), Size.percent(0.3, 0) };
+    const parent = ui.addNodeF(.{
+        .scrollable = true,
+        .clip_children = true,
+    }, "###{s}:parent", .{label}, .{ .child_layout_axis = .y, .pref_size = parent_size });
+    ui.pushParent(parent);
+
+    ui.labelF("TODO: assembly window: data.len={}, data_start_addr=0x{x}", .{ data.len, data_start_addr });
+
+    std.debug.assert(ui.popParent() == parent);
 }
 
 fn get_proc_address_fn(window: ?*c.GLFWwindow, proc_name: [:0]const u8) ?*const anyopaque {

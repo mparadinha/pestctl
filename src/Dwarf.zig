@@ -305,63 +305,65 @@ pub const DebugUnit = struct {
             fn_ptr.ret_type = type_ptr;
         }
 
-        for (self.functions) |function| {
-            std.debug.print("function: {s}, decl_coords={}, ret_type.name={s}\n", .{
-                function.name,
-                function.decl_coords,
-                if (function.ret_type) |ty| ty.name else "null",
-            });
-        }
+        //for (self.functions) |function| {
+        //    std.debug.print("function: {s}, decl_coords={}, ret_type.name={s}\n", .{
+        //        function.name,
+        //        function.decl_coords,
+        //        if (function.ret_type) |ty| ty.name else "null",
+        //    });
+        //}
 
-        for (self.variables) |variable| {
-            std.debug.print("variable: {s}, decl_coords={}, type={s}, function={s}, loc={}\n", .{
-                variable.name,
-                variable.decl_coords,
-                if (variable.@"type") |ty| ty.name else "null",
-                if (variable.function) |func| func.name else "null",
-                variable.loc,
-            });
-            if (variable.loc) |loc| {
-                switch (loc) {
-                    .expr => {},
-                    .loclist_offset => |loc_offset| {
-                        if (debug_loc.len > 0) {
-                            std.debug.print("  using .debug_loc ... @ offset=0x{x}\n", .{loc_offset});
-                            var loc_stream = std.io.fixedBufferStream(debug_loc[loc_offset..]);
-                            var loc_reader = loc_stream.reader();
-                            while (true) {
-                                const entry_offset = loc_offset + (try loc_stream.getPos());
+        _ = debug_loc;
+        _ = debug_loclists;
+        //for (self.variables) |variable| {
+        //    std.debug.print("variable: {s}, decl_coords={}, type={s}, function={s}, loc={}\n", .{
+        //        variable.name,
+        //        variable.decl_coords,
+        //        if (variable.@"type") |ty| ty.name else "null",
+        //        if (variable.function) |func| func.name else "null",
+        //        variable.loc,
+        //    });
+        //    if (variable.loc) |loc| {
+        //        switch (loc) {
+        //            .expr => {},
+        //            .loclist_offset => |loc_offset| {
+        //                if (debug_loc.len > 0) {
+        //                    std.debug.print("  using .debug_loc ... @ offset=0x{x}\n", .{loc_offset});
+        //                    var loc_stream = std.io.fixedBufferStream(debug_loc[loc_offset..]);
+        //                    var loc_reader = loc_stream.reader();
+        //                    while (true) {
+        //                        const entry_offset = loc_offset + (try loc_stream.getPos());
 
-                                const addr_start = try loc_reader.readIntLittle(usize);
-                                const addr_end = try loc_reader.readIntLittle(usize);
-                                if (addr_start == 0 and addr_end == 0) break;
+        //                        const addr_start = try loc_reader.readIntLittle(usize);
+        //                        const addr_end = try loc_reader.readIntLittle(usize);
+        //                        if (addr_start == 0 and addr_end == 0) break;
 
-                                const block_len = try loc_reader.readIntLittle(u16);
-                                const block_start = loc_offset + (try loc_stream.getPos());
-                                const expr_data = debug_loc[block_start .. block_start + block_len];
-                                try loc_reader.skipBytes(block_len, .{});
+        //                        const block_len = try loc_reader.readIntLittle(u16);
+        //                        const block_start = loc_offset + (try loc_stream.getPos());
+        //                        const expr_data = debug_loc[block_start .. block_start + block_len];
+        //                        try loc_reader.skipBytes(block_len, .{});
 
-                                const first_op: ?u8 = if (block_len > 0) expr_data[0] else null;
-                                std.debug.print("  - [0x{x:0>8}] addr offset range (0x{x} -> 0x{x}): block_len={}, first op: {s}\n", .{
-                                    entry_offset,
-                                    addr_start,
-                                    addr_end,
-                                    block_len,
-                                    if (first_op) |op| DW.OP.asStr(op) else "null",
-                                });
+        //                        const first_op: ?u8 = if (block_len > 0) expr_data[0] else null;
+        //                        std.debug.print("  - [0x{x:0>8}] addr offset range (0x{x} -> 0x{x}): block_len={}, first op: {s}\n", .{
+        //                            entry_offset,
+        //                            addr_start,
+        //                            addr_end,
+        //                            block_len,
+        //                            if (first_op) |op| DW.OP.asStr(op) else "null",
+        //                        });
 
-                                //const Expression = @import("dwarf/Expression.zig");
-                                //const registers = [_]usize{0x8_0000_0000} ** @typeInfo(Register).Enum.fields.len;
-                                //const expr_result = Expression.result(expr_data, registers, 6);
-                                //std.debug.print("   \\ expression result: {}\n", .{expr_result});
-                            }
-                        } else if (debug_loclists.len > 0) {
-                            std.debug.print("  using .debug_loclist ...\n", .{});
-                        } else @panic("wat");
-                    },
-                }
-            }
-        }
+        //                        //const Expression = @import("dwarf/Expression.zig");
+        //                        //const registers = [_]usize{0x8_0000_0000} ** @typeInfo(Register).Enum.fields.len;
+        //                        //const expr_result = Expression.result(expr_data, registers, 6);
+        //                        //std.debug.print("   \\ expression result: {}\n", .{expr_result});
+        //                    }
+        //                } else if (debug_loclists.len > 0) {
+        //                    std.debug.print("  using .debug_loclist ...\n", .{});
+        //                } else @panic("wat");
+        //            },
+        //        }
+        //    }
+        //}
 
         return self;
     }

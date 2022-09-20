@@ -166,6 +166,16 @@ pub fn getLineProgForAddr(self: Elf, addr: usize) !?Dwarf.LineProg {
     return null;
 }
 
+pub fn findFunctionAtAddr(self: Elf, addr: usize) ?Dwarf.Function {
+    for (self.dwarf.units) |unit| {
+        for (unit.functions) |func| {
+            if (func.low_pc == null or func.high_pc == null) continue;
+            if (func.low_pc.? <= addr and addr < func.high_pc.?) return func;
+        }
+    }
+    return null;
+}
+
 fn readSectionHeader(file: anytype, header: elf.Header, sh_idx: usize) !elf.Elf64_Shdr {
     const saved_filepos = try file.getPos();
 

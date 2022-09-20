@@ -22,7 +22,7 @@ watched_vars: std.ArrayList(WatchedVar),
 
 pub const Status = enum { Running, Stopped };
 
-pub const CallFrame = struct { addr: usize, src: ?SrcLoc };
+pub const CallFrame = struct { addr: usize, src: ?SrcLoc, fn_name: ?[]const u8 };
 
 const BreakPoint = struct {
     addr: usize,
@@ -189,7 +189,7 @@ pub fn fullUpdate(self: *Session) !void {
         }
     }
 
-    const proc_file = try procMemFile(self.pid);
+    const proc_file = try self.procMemFile();
     defer proc_file.close();
     const call_stack = try self.elf.dwarf.callStackAddrs(self.allocator, self.regs.rip, self.regs, proc_file);
     defer self.allocator.free(call_stack);
@@ -197,10 +197,10 @@ pub fn fullUpdate(self: *Session) !void {
         if (self.call_stack.len > 0) self.allocator.free(self.call_stack);
         self.call_stack = try self.allocator.alloc(CallFrame, call_stack.len);
         for (call_stack) |addr, i| {
-            self.call_stack[i] = .{
-                .addr = addr,
-                .src = try self.elf.translateAddrToSrcSpecial(addr),
-            };
+            var frame = CallFrame{ .addr = addr, .src = null, .fn_name = null };
+            frame.src = try self.elf.translateAddrToSrcSpecial(addr);
+            frame.fn_name = if (self.elf.findFunctionAtAddr(addr)) |func| func.name else null;
+            self.call_stack[i] = frame;
         }
     }
 }
@@ -268,6 +268,94 @@ pub fn stepLine(self: *Session) !void {
         if (try self.elf.translateAddrToSrc(rip)) |_| return;
         try self.stepInstructions(1);
     }
+}
+
+pub const MemMapInfo = struct {
+    addr_range: [2]usize,
+    perms: struct {
+        read: bool,
+        write: bool,
+        execute: bool,
+        shared: bool,
+    },
+    offset: usize,
+    device: struct { major: u32, minor: u32 },
+    inode: usize,
+    path: []u8,
+
+    pub fn deinit(self: MemMapInfo, allocator: Allocator) void {
+        allocator.free(self.path);
+    }
+};
+
+/// call `MemMapInfo.deinit` to cleanup resources 
+pub fn getMemMapAtAddr(self: Session, allocator: Allocator, addr: usize) !?MemMapInfo {
+    const maps = try self.getMemMaps(allocator);
+    defer {
+        for (maps) |map| map.deinit(allocator);
+        allocator.free(maps);
+    }
+
+    for (maps) |map| {
+        if (map.addr_range[0] <= addr and addr < map.addr_range[1]) {
+            var copy_map = map;
+            copy_map.path = try allocator.dupe(u8, map.path);
+            return copy_map;
+        }
+    }
+
+    return null;
+}
+
+/// caller owns returned memory
+pub fn getMemMaps(self: Session, allocator: Allocator) ![]MemMapInfo {
+    const proc_maps_filepath = try std.fmt.allocPrint(allocator, "/proc/{}/maps", .{self.pid});
+    defer allocator.free(proc_maps_filepath);
+    const proc_maps = try std.fs.openFileAbsolute(proc_maps_filepath, .{});
+    defer proc_maps.close();
+
+    const maps_data = try proc_maps.readToEndAlloc(allocator, std.math.maxInt(usize));
+    defer allocator.free(maps_data);
+
+    var maps = std.ArrayList(MemMapInfo).init(allocator);
+
+    var line_iter = std.mem.tokenize(u8, maps_data, "\n");
+    while (line_iter.next()) |line| {
+        var col_iter = std.mem.tokenize(u8, line, " ");
+
+        const map_info = MemMapInfo{
+            .addr_range = if (col_iter.next()) |str| blk: {
+                const sep_idx = std.mem.indexOfScalar(u8, str, '-').?;
+                const start = try std.fmt.parseUnsigned(usize, str[0..sep_idx], 16);
+                const end = try std.fmt.parseUnsigned(usize, str[sep_idx + 1 ..], 16);
+                break :blk [2]usize{ start, end };
+            } else unreachable,
+            .perms = if (col_iter.next()) |str| .{
+                .read = str[0] == 'r',
+                .write = str[1] == 'w',
+                .execute = str[2] == 'x',
+                .shared = str[3] == 's',
+            } else unreachable,
+            .offset = if (col_iter.next()) |str| blk: {
+                break :blk try std.fmt.parseUnsigned(usize, str, 16);
+            } else unreachable,
+            .device = if (col_iter.next()) |str| blk: {
+                const sep_idx = std.mem.indexOfScalar(u8, str, ':').?;
+                const major = try std.fmt.parseUnsigned(u32, str[0..sep_idx], 16);
+                const minor = try std.fmt.parseUnsigned(u32, str[sep_idx + 1 ..], 16);
+                break :blk .{ .major = major, .minor = minor };
+            } else unreachable,
+            .inode = if (col_iter.next()) |str| blk: {
+                break :blk try std.fmt.parseUnsigned(usize, str, 10);
+            } else unreachable,
+            .path = if (col_iter.next()) |str| blk: {
+                break :blk try allocator.dupe(u8, str);
+            } else "",
+        };
+        try maps.append(map_info);
+    }
+
+    return maps.toOwnedSlice();
 }
 
 pub fn addWatchedVariable(self: *Session, name: []const u8) !void {
@@ -441,9 +529,9 @@ pub fn getBytesAtAddr(self: Session, addr: usize, comptime N: u4) [N]u8 {
 }
 
 /// call `File.close` when done
-fn procMemFile(pid: std.os.pid_t) !std.fs.File {
+pub fn procMemFile(self: Session) !std.fs.File {
     var tmpbuf: [0x1000]u8 = undefined;
-    const proc_filename = try std.fmt.bufPrint(&tmpbuf, "/proc/{}/mem", .{pid});
+    const proc_filename = try std.fmt.bufPrint(&tmpbuf, "/proc/{}/mem", .{self.pid});
     return std.fs.cwd().openFile(proc_filename, .{});
 }
 
