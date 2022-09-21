@@ -12,6 +12,7 @@ const UiContext = @import("UiContext.zig");
 const Size = UiContext.Size;
 const Session = @import("Session.zig");
 const SrcLoc = Session.SrcLoc;
+const Elf = @import("Elf.zig");
 
 const tracy = @import("tracy.zig");
 
@@ -123,6 +124,12 @@ pub fn main() !void {
     var file_buf = try std.BoundedArray(u8, 0x1000).init(0);
     var var_buf = try std.BoundedArray(u8, 0x1000).init(0);
 
+    var disasm_texts = std.ArrayList(AsmTextInfo).init(allocator);
+    defer {
+        for (disasm_texts.items) |text| text.deinit(allocator);
+        disasm_texts.deinit();
+    }
+
     // @debug
     try num_buf.appendSlice("73");
     try file_buf.appendSlice("main.zig");
@@ -172,7 +179,7 @@ pub fn main() !void {
 
         const whole_x_size = [2]Size{ Size.percent(1, 1), Size.text_dim(1) };
         ui.pushTmpStyle(.{ .pref_size = whole_x_size });
-        _ = ui.textBoxF("#nodes={}, frame_time={d:2.4}ms###info_text_box", .{ ui.node_table.key_mappings.items.len, dt * 1000 });
+        _ = ui.textBoxF("#nodes={}, frame_time={d:2.4}ms ###info_text_box", .{ ui.node_table.key_mappings.items.len, dt * 1000 });
 
         const tabs_parent = ui.addNode(.{}, "###tabs_parent", .{ .child_layout_axis = .x });
         tabs_parent.pref_size = [2]Size{ Size.percent(1, 0), Size.percent(1, 0) };
@@ -250,53 +257,65 @@ pub fn main() !void {
 
             if (session_opt) |session| {
                 const rip = session.getRegisters().rip;
-                const mem_map = (try session.getMemMapAtAddr(allocator, rip)).?;
-                defer mem_map.deinit(allocator);
-                const proc_mem = try session.procMemFile();
-                defer proc_mem.close();
-                try proc_mem.seekTo(mem_map.addr_range[0]);
-                var mem_block = try allocator.alloc(u8, mem_map.addr_range[1] - mem_map.addr_range[0]);
-                defer allocator.free(mem_block);
-                std.debug.assert((try proc_mem.read(mem_block)) == mem_block.len);
 
-                try showDisassemblyWindow(&ui, "main_disasm_window", mem_block, mem_map.addr_range[0]);
-            }
+                const disasm_text_idx = blk: for (disasm_texts.items) |text, i| {
+                    if (text.addr_range[0] <= rip and rip < text.addr_range[1])
+                        break :blk i;
+                } else null;
 
-            // testing xed disassembly
-            if (session_opt) |session| {
-                //const tmp_size = [2]Size{ Size.percent(1, 1), Size.percent(0.35, 1) };
-                const tmp_size = [2]Size{ Size.percent(1, 1), Size.text_dim(1) };
-                ui.pushStyle(.{ .pref_size = tmp_size, .text_align = .center });
-                if (session.addr_range) |range| {
-                    var buf = try std.BoundedArray(u8, 0x1000).init(0);
-                    var asm_addr = range[0];
-                    while (asm_addr < range[1]) {
-                        var inst_bytes: [16]u8 = undefined;
-                        for (session.getBytesAtAddr(asm_addr, 8)) |byte, i| inst_bytes[i] = byte;
-                        for (session.getBytesAtAddr(asm_addr + 8, 8)) |byte, i| inst_bytes[8 + i] = byte;
+                const disasm_text = if (disasm_text_idx) |idx| disasm_texts.items[idx] else text_blk: {
+                    const function_addr_range = if (session.elf.findFunctionAtAddr(rip)) |func| blk: {
+                        if (func.low_pc == null or func.high_pc == null) break :blk null;
+                        break :blk [2]usize{ func.low_pc.?, func.high_pc.? };
+                    } else null;
 
-                        var decoded_inst: c.xed_decoded_inst_t = undefined;
-                        c.xed_decoded_inst_zero(&decoded_inst);
-                        c.xed_decoded_inst_set_mode(&decoded_inst, c.XED_MACHINE_MODE_LONG_64, c.XED_ADDRESS_WIDTH_64b);
-                        switch (c.xed_decode(&decoded_inst, &inst_bytes[0], inst_bytes.len)) {
-                            c.XED_ERROR_NONE => {},
-                            else => |err| std.debug.panic("got error code from xed_decode: {s}\n", .{c.xed_error_enum_t2str(err)}),
+                    const section_addr_range: ?[2]usize = blk: {
+                        var file = try std.fs.cwd().openFile(cmdline_args.exec_path.?, .{});
+                        defer file.close();
+                        const header = try std.elf.Header.read(file);
+                        std.debug.assert(header.is_64);
+                        var sh_iter = header.section_header_iterator(file);
+                        while (try sh_iter.next()) |shdr| {
+                            const addr_range = [2]usize{ shdr.sh_addr, shdr.sh_addr + shdr.sh_size };
+                            if (addr_range[0] <= rip and rip < addr_range[1]) break :blk addr_range;
                         }
-                        var write_buf = buf.buffer[buf.len..];
-                        const format_res = c.xed_format_context(c.XED_SYNTAX_INTEL, &decoded_inst, write_buf.ptr, @intCast(c_int, write_buf.len), asm_addr, null, null);
-                        std.debug.assert(format_res == 1);
-                        const strlen = c.strlen(write_buf.ptr);
-                        const str = write_buf[0..strlen];
+                        break :blk null;
+                    };
 
-                        _ = ui.textBoxF("0x{x:0>12}: {s}", .{ asm_addr, str });
+                    const block_addr_range = if (function_addr_range) |func_range|
+                        func_range
+                    else if (section_addr_range) |section_range|
+                        section_range
+                    else blk: {
+                        const mem_map = (try session.getMemMapAtAddr(allocator, rip)).?;
+                        defer mem_map.deinit(allocator);
+                        break :blk mem_map.addr_range;
+                    };
 
-                        asm_addr += c.xed_decoded_inst_get_length(&decoded_inst);
-                        buf.len += strlen + 1;
-                    }
-                } else {
-                    _ = ui.textBox("TODO: assembly window");
-                }
-                _ = ui.popStyle();
+                    const proc_mem = try session.procMemFile();
+                    defer proc_mem.close();
+
+                    try proc_mem.seekTo(block_addr_range[0]);
+                    var mem_block = try allocator.alloc(u8, block_addr_range[1] - block_addr_range[0]);
+                    defer allocator.free(mem_block);
+                    std.debug.assert((try proc_mem.read(mem_block)) == mem_block.len);
+
+                    std.debug.print("generating diasm (@ rip=0x{x}) for addr_range: 0x{x}-0x{x}\n", .{
+                        rip,
+                        block_addr_range[0],
+                        block_addr_range[1],
+                    });
+
+                    const text_info = try generateTextInfoForDisassembly(allocator, mem_block, block_addr_range[0]);
+                    try disasm_texts.append(text_info);
+                    break :text_blk text_info;
+                };
+
+                const line_idx = loop: for (disasm_text.line_addrs) |addr, i| {
+                    if (addr == rip) break :loop i;
+                } else unreachable;
+
+                _ = try showDisassemblyWindow(&ui, "main_disasm_window", disasm_text, @intToFloat(f32, line_idx + 1));
             }
         }
         std.debug.assert(ui.popParent() == left_side_parent);
@@ -811,19 +830,151 @@ fn textDisplay(ui: *UiContext, label: []const u8, text: []const u8, lock_line: ?
     return parent_sig;
 }
 
-fn showDisassemblyWindow(ui: *UiContext, label: []const u8, data: []const u8, data_start_addr: usize) !void {
+const AsmTextInfo = struct {
+    addr_range: [2]usize,
+    data: []const u8,
+    line_offsets: []const usize, // indices into `data`
+    line_addrs: []const usize,
+
+    pub fn deinit(self: AsmTextInfo, allocator: Allocator) void {
+        allocator.free(self.data);
+        allocator.free(self.line_offsets);
+        allocator.free(self.line_addrs);
+    }
+};
+
+/// don't forget to call `TextInfo.deinit` when done with it
+fn generateTextInfoForDisassembly(allocator: Allocator, data: []const u8, data_start_addr: usize) !AsmTextInfo {
+    var text_bytes = std.ArrayList(u8).init(allocator);
+    var line_offsets = std.ArrayList(usize).init(allocator);
+    var line_addrs = std.ArrayList(usize).init(allocator);
+
+    var instructions_done: usize = 0;
+    var data_idx: usize = 0;
+    asm_loop: while (data_idx < data.len) {
+        const asm_addr = data_idx + data_start_addr;
+        const inst_bytes = data[data_idx..std.math.min(data_idx + 15, data.len)];
+
+        var decoded_inst: c.xed_decoded_inst_t = undefined;
+        c.xed_decoded_inst_zero(&decoded_inst);
+        c.xed_decoded_inst_set_mode(&decoded_inst, c.XED_MACHINE_MODE_LONG_64, c.XED_ADDRESS_WIDTH_64b);
+        switch (c.xed_decode(&decoded_inst, &inst_bytes[0], @intCast(c_uint, inst_bytes.len))) {
+            c.XED_ERROR_NONE => {},
+            c.XED_ERROR_BUFFER_TOO_SHORT => break :asm_loop,
+            else => |err| std.debug.panic("got error code from xed_decode: {s}\n", .{c.xed_error_enum_t2str(err)}),
+        }
+
+        var buffer: [0x1000]u8 = undefined;
+        const format_res = c.xed_format_context(c.XED_SYNTAX_INTEL, &decoded_inst, &buffer[0], @intCast(c_int, buffer.len), asm_addr, null, null);
+        std.debug.assert(format_res == 1);
+        const str = std.mem.sliceTo(@ptrCast([*c]const u8, &buffer[0]), 0);
+
+        const inst_len = c.xed_decoded_inst_get_length(&decoded_inst);
+        data_idx += inst_len;
+
+        var fmt_buf: [0x1000]u8 = undefined;
+        var stream = std.io.fixedBufferStream(&fmt_buf);
+        var writer = stream.writer();
+        try writer.print("0x{x:0>12}: ", .{asm_addr});
+        for (inst_bytes) |byte, idx| {
+            if (idx < inst_len) {
+                try writer.print("{x:0>2} ", .{byte});
+            } else {
+                try writer.print("   ", .{});
+            }
+        }
+        try writer.print("{s}\n", .{str});
+        const asm_line = stream.getWritten();
+
+        try line_offsets.append(text_bytes.items.len);
+        try line_addrs.append(asm_addr);
+        try text_bytes.appendSlice(asm_line);
+
+        instructions_done += 1;
+    }
+
+    return AsmTextInfo{
+        .addr_range = [2]usize{ data_start_addr, data_start_addr + data_idx },
+        .data = text_bytes.toOwnedSlice(),
+        .line_offsets = line_offsets.toOwnedSlice(),
+        .line_addrs = line_addrs.toOwnedSlice(),
+    };
+}
+
+fn showDisassemblyWindow(ui: *UiContext, label: []const u8, text_info: AsmTextInfo, lock_line: ?f32) !UiContext.Signal {
     // TODO: hightlight box ranges
 
-    const parent_size = [2]Size{ Size.percent(1, 0), Size.percent(0.3, 0) };
+    const text_box_size = [2]Size{ Size.percent(1, 0), Size.percent(0.3, 0) };
     const parent = ui.addNodeF(.{
         .scrollable = true,
         .clip_children = true,
-    }, "###{s}:parent", .{label}, .{ .child_layout_axis = .y, .pref_size = parent_size });
+    }, "###{s}:parent", .{label}, .{ .child_layout_axis = .y, .pref_size = text_box_size });
+    const parent_sig = ui.getNodeSignal(parent);
     ui.pushParent(parent);
+    defer std.debug.assert(ui.popParent() == parent);
 
-    ui.labelF("TODO: assembly window: data.len={}, data_start_addr=0x{x}", .{ data.len, data_start_addr });
+    const parent_size = parent.rect.size();
+    const line_size = ui.font.getScaledMetrics().line_advance;
 
-    std.debug.assert(ui.popParent() == parent);
+    const x_off = &parent.scroll_offset[0];
+    const y_off = &parent.scroll_offset[1];
+    if (lock_line) |line| {
+        y_off.* = -line_size * line + parent_size[1] / 2;
+    }
+
+    const lines_that_fit = @trunc(parent_size[1] / line_size);
+    const cur_middle_line = @trunc(std.math.max(0, -y_off.* + parent_size[1] / 2) / line_size);
+    const partial_start_line = @floatToInt(usize, @trunc(std.math.max(0, cur_middle_line - lines_that_fit)));
+    const partial_end_line = @floatToInt(usize, @trunc(cur_middle_line + lines_that_fit));
+
+    const total_lines = text_info.line_offsets.len;
+    const partial_start_idx = text_info.line_offsets[partial_start_line];
+    const partial_end_idx = text_info.line_offsets[partial_end_line];
+    const partial_text = text_info.data[partial_start_idx..partial_end_idx];
+
+    const label_node = ui.addNodeStrings(.{
+        .no_id = true,
+        .ignore_hash_sep = true,
+        .draw_text = true,
+        .floating_x = true,
+        .floating_y = true,
+    }, partial_text, label, .{});
+
+    // hack to cut off scrolling at the ends of text
+    const text_size = vec2{ label_node.text_rect.size()[0], line_size * @intToFloat(f32, total_lines) };
+    var max_offset = text_size - parent_size + vec2{ 2, 2 } * UiContext.text_padd;
+    max_offset = vec2{ std.math.max(max_offset[0], 0), std.math.max(max_offset[1], 0) };
+    x_off.* = std.math.min(x_off.*, 0);
+    x_off.* = std.math.max(x_off.*, -max_offset[0]);
+    y_off.* = std.math.min(y_off.*, 0);
+    y_off.* = std.math.max(y_off.*, -max_offset[1]);
+
+    label_node.rel_pos_placement = .top_left;
+    label_node.rel_pos_placement_parent = .top_left;
+    label_node.rel_pos = vec2{ x_off.*, -y_off.* - @intToFloat(f32, partial_start_line) * line_size };
+
+    const highlight_box: ?FileTab.SrcBox = if (lock_line) |line| FileTab.SrcBox{
+        .min = .{ .line = line, .column = 0 },
+        .max = .{ .line = line, .column = 0 },
+    } else null;
+    if (highlight_box) |box| blk: {
+        if (box.min.line == 0 and box.max.line == 0) break :blk;
+
+        const text_y_start = parent.rect.size()[1] - y_off.*;
+        const line_y_start = std.math.max(0, box.min.line - 1) * line_size;
+        const box_y_top = text_y_start - line_y_start - UiContext.text_padd[1];
+        const box_y_size = std.math.max(1, box.max.line - box.min.line) * line_size;
+
+        const box_node = ui.addNode(.{
+            .no_id = true,
+            .draw_border = true,
+            .floating_y = true,
+        }, "", .{});
+        box_node.pref_size = [2]Size{ Size.percent(1, 1), Size.pixels(box_y_size, 1) };
+        box_node.rel_pos[1] = box_y_top - box_y_size;
+    }
+
+    return parent_sig;
 }
 
 fn get_proc_address_fn(window: ?*c.GLFWwindow, proc_name: [:0]const u8) ?*const anyopaque {

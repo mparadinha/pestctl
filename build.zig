@@ -1,4 +1,5 @@
 const std = @import("std");
+const tracy = @import("build_tracy.zig");
 
 pub fn build(b: *std.build.Builder) void {
     // Standard target options allows the person running `zig build` to choose
@@ -10,6 +11,8 @@ pub fn build(b: *std.build.Builder) void {
     // Standard release options allow the person running `zig build` to select
     // between Debug, ReleaseSafe, ReleaseFast, and ReleaseSmall.
     const mode = b.standardReleaseOptions();
+
+    const use_tracy = b.option(bool, "tracy", "Enable Tracy profiling") orelse false;
 
     var exe = b.addExecutable("pestctl", "src/main.zig");
     exe.setTarget(target);
@@ -24,8 +27,7 @@ pub fn build(b: *std.build.Builder) void {
     exe.addIncludeDir("xed/include/public/xed");
     exe.addCSourceFile("src/stb_impls.c", &[_][]u8{""});
     exe.install();
-    //_ = @import("build_tracy.zig").link(b, exe, "tracy-0.8.2");
-    _ = @import("build_tracy.zig").link(b, exe, null);
+    _ = tracy.link(b, exe, if (use_tracy) "tracy-0.8.2" else null);
 
     const run_cmd = exe.run();
     run_cmd.step.dependOn(b.getInstallStep());

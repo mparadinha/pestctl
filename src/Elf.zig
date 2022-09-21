@@ -176,7 +176,7 @@ pub fn findFunctionAtAddr(self: Elf, addr: usize) ?Dwarf.Function {
     return null;
 }
 
-fn readSectionHeader(file: anytype, header: elf.Header, sh_idx: usize) !elf.Elf64_Shdr {
+pub fn readSectionHeader(file: anytype, header: elf.Header, sh_idx: usize) !elf.Elf64_Shdr {
     const saved_filepos = try file.getPos();
 
     std.debug.assert(sh_idx < header.shnum);

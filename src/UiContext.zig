@@ -328,10 +328,11 @@ pub fn addNode(self: *UiContext, flags: Flags, string: []const u8, init_args: an
 }
 
 pub fn addNodeF(self: *UiContext, flags: Flags, comptime fmt: []const u8, args: anytype, init_args: anytype) *Node {
-    const str = std.fmt.allocPrint(self.string_arena.allocator(), fmt, args) catch |e| blk: {
+    const str = std.fmt.allocPrint(self.allocator, fmt, args) catch |e| blk: {
         self.setErrorInfo(@errorReturnTrace(), @errorName(e));
         break :blk "";
     };
+    defer self.allocator.free(str);
     return self.addNode(flags, str, init_args);
 }
 
@@ -359,14 +360,16 @@ pub fn addNodeStringsF(
     hash_args: anytype,
     init_args: anytype,
 ) *Node {
-    const display_str = std.fmt.allocPrint(self.string_arena.allocator(), display_fmt, display_args) catch |e| blk: {
+    const display_str = std.fmt.allocPrint(self.allocator, display_fmt, display_args) catch |e| blk: {
         self.setErrorInfo(@errorReturnTrace(), @errorName(e));
         break :blk "";
     };
-    const hash_str = std.fmt.allocPrint(self.string_arena.allocator(), hash_fmt, hash_args) catch |e| blk: {
+    defer self.allocator.free(display_str);
+    const hash_str = std.fmt.allocPrint(self.allocator, hash_fmt, hash_args) catch |e| blk: {
         self.setErrorInfo(@errorReturnTrace(), @errorName(e));
         break :blk "";
     };
+    defer self.allocator.free(hash_str);
     return self.addNodeStrings(flags, display_str, hash_str, init_args);
 }
 
@@ -380,7 +383,11 @@ pub fn addNodeRaw(self: *UiContext, flags: Flags, string: []const u8, init_args:
     return self.addNodeRawStrings(flags, display_string, hash_string, init_args);
 }
 
-pub fn addNodeRawStrings(self: *UiContext, flags: Flags, display_string: []const u8, hash_string: []const u8, init_args: anytype) !*Node {
+pub fn addNodeRawStrings(self: *UiContext, flags: Flags, display_string_in: []const u8, hash_string_in: []const u8, init_args: anytype) !*Node {
+    const allocator = self.string_arena.allocator();
+    const display_string = try allocator.dupe(u8, display_string_in);
+    const hash_string = try allocator.dupe(u8, hash_string_in);
+
     // if a node already exists that matches this one we just use that one
     // this way the persistant cross-frame data is possible
     const lookup_result = try self.node_table.getOrPut(hash_string);
@@ -601,6 +608,10 @@ pub fn getNodeSignal(self: *UiContext, node: *Node) Signal {
 }
 
 pub fn startBuild(self: *UiContext, screen_w: u32, screen_h: u32, mouse_pos: vec2, events: *window.EventQueue) !void {
+    // clear out the whole string arena
+    self.string_arena.deinit();
+    self.string_arena = std.heap.ArenaAllocator.init(self.allocator);
+
     // remove the `no_id` nodes from the hash table before starting this new frame
     var node_iter = self.node_table.valueIterator();
     while (node_iter.next()) |node| {
