@@ -121,7 +121,18 @@ pub fn initTables(self: *Dwarf) !void {
     //}
 }
 
-pub const SrcLoc = struct { dir: []const u8, file: []const u8, line: u32, column: u32 };
+pub const SrcLoc = struct {
+    dir: []const u8,
+    file: []const u8,
+    line: u32,
+    column: u32,
+
+    pub fn format(value: SrcLoc, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
+        _ = options;
+        _ = fmt;
+        try writer.print("{{.dir={s}, .file={s}, .line={}, column={}}}", value);
+    }
+};
 
 pub const DeclCoords = struct {
     file: u32,

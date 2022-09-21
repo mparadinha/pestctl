@@ -99,6 +99,16 @@ pub fn subtleIconButton(self: *UiContext, string: []const u8) Signal {
     return self.getNodeSignal(node);
 }
 
+/// pushes a new node as parent that is meant only for layout purposes
+pub fn pushLayoutParent(self: *UiContext, hash_string: []const u8, size: [2]Size, layout_axis: Axis) *Node {
+    const node = self.addNodeStrings(.{}, "", hash_string, .{
+        .pref_size = size,
+        .child_layout_axis = layout_axis,
+    });
+    self.pushParent(node);
+    return node;
+}
+
 // don't forget to call `endCtxMenu`
 // TODO: maybe turn this into a generic window function and ctx menu would simply be a special case of a window
 pub fn startCtxMenu(self: *UiContext, placement: Placement) void {

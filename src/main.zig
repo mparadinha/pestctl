@@ -67,6 +67,17 @@ const Icons = struct {
     }
 };
 
+pub const SessionCmd = union(enum) {
+    open_src_file: []const u8, // could be relative or absolute path
+    set_break_at_src: SrcLoc,
+    set_break_at_addr: usize,
+    add_watched_variable: []const u8,
+    continue_execution: void,
+    pause_execution: void,
+    step_line: void,
+    step_instruction: void,
+};
+
 var show_ctx_menu = false;
 var ctx_menu_top_left = @as(vec2, undefined);
 
@@ -137,7 +148,15 @@ pub fn main() !void {
     var file_tab = FileTab.init(allocator);
     defer file_tab.deinit();
 
+    var session_cmds = std.ArrayList(SessionCmd).init(allocator);
+    defer session_cmds.deinit();
+
+    var frame_idx: u64 = 0;
+
     while (!window.should_close()) {
+        var frame_arena = std.heap.ArenaAllocator.init(allocator);
+        defer frame_arena.deinit();
+
         window.framebuffer_size(&width, &height);
         gl.viewport(0, 0, @intCast(i32, width), @intCast(i32, height));
         //const ratio = @intToFloat(f32, width) / @intToFloat(f32, height);
@@ -173,8 +192,6 @@ pub fn main() !void {
             }
         }
 
-        var update_src_focus = false;
-
         try ui.startBuild(width, height, mouse_pos, &window.event_queue);
 
         const whole_x_size = [2]Size{ Size.percent(1, 1), Size.text_dim(1) };
@@ -192,26 +209,17 @@ pub fn main() !void {
         left_side_parent.pref_size = [2]Size{ Size.percent(0.5, 1), Size.percent(1, 0) };
         ui.pushParent(left_side_parent);
         {
-            const open_file_parent = ui.addNode(.{}, "###open_file_parent", .{ .child_layout_axis = .x });
-            open_file_parent.pref_size = [2]Size{ Size.percent(1, 1), Size.by_children(1) };
-            ui.pushParent(open_file_parent);
+            const open_file_parent = ui.pushLayoutParent("open_file_parent", [2]Size{ Size.percent(1, 1), Size.by_children(1) }, .x);
             {
                 const open_button_sig = ui.button("Open Source File");
-                _ = open_button_sig;
                 const text_input_size = [2]Size{ Size.percent(1, 0), Size.text_dim(1) };
                 ui.pushStyle(.{ .pref_size = text_input_size });
                 ui.pushStyle(.{ .bg_color = vec4{ 0.75, 0.75, 0.75, 1 } });
                 const text_input_sig = ui.textInput("textinput", &src_file_buf.buffer, &src_file_buf.len);
                 _ = ui.popStyle();
                 _ = ui.popStyle();
-                if (src_file_buf.len > 0 and (open_button_sig.clicked or text_input_sig.enter_pressed)) {
-                    const src_file_path = if (src_file_buf.slice()[0] == '/') src_file_buf.slice() else blk: {
-                        var tmpbuf: [0x4000]u8 = undefined;
-                        break :blk try std.fmt.bufPrint(&tmpbuf, "{s}/{s}", .{ cwd, src_file_buf.slice() });
-                    };
-                    if (file_tab.addFile(src_file_path)) {
-                        file_tab.active_file = file_tab.files.items.len - 1;
-                    } else |err| std.debug.print("{}: couldn't open file '{s}'\n", .{ err, src_file_buf.slice() });
+                if (open_button_sig.clicked or text_input_sig.enter_pressed) {
+                    try session_cmds.append(.{ .open_src_file = src_file_buf.slice() });
                 }
                 if (text_input_sig.focused and src_file_buf.len > 0) {
                     const text_input_node = ui.topParent().last.?;
@@ -253,7 +261,7 @@ pub fn main() !void {
             }
             std.debug.assert(ui.popParent() == open_file_parent);
 
-            try file_tab.display(&ui, if (session_opt) |*s| s else null);
+            try file_tab.display(&ui, if (session_opt) |*s| s else null, &session_cmds);
 
             if (session_opt) |session| {
                 const rip = session.getRegisters().rip;
@@ -320,11 +328,12 @@ pub fn main() !void {
         }
         std.debug.assert(ui.popParent() == left_side_parent);
 
-        const right_side_parent = ui.addNode(.{ .draw_background = true }, "###right_side_parent", .{ .child_layout_axis = .y });
-        right_side_parent.pref_size = [2]Size{ Size.percent(0.5, 1), Size.percent(1, 0) };
-        ui.pushParent(right_side_parent);
+        const right_side_parent = ui.pushLayoutParent("right_side_parent", [2]Size{ Size.percent(0.5, 1), Size.percent(1, 0) }, .y);
+        right_side_parent.flags.draw_background = true;
         {
             if (session_opt) |*session| {
+                try session.fullUpdate();
+
                 _ = ui.textBoxF("Child pid: {}", .{session.pid});
                 ui.topParent().last.?.pref_size[0] = Size.percent(1, 1);
                 switch (session.status) {
@@ -363,15 +372,11 @@ pub fn main() !void {
                     }
                 }
 
-                const vars_parent = ui.addNode(.{}, "###vars_parent", .{ .child_layout_axis = .y });
-                vars_parent.pref_size = [2]Size{ Size.percent(1, 1), Size.by_children(1) };
-                ui.pushParent(vars_parent);
+                const vars_parent = ui.pushLayoutParent("vars_parent", [2]Size{ Size.percent(1, 1), Size.by_children(1) }, .y);
                 {
                     const row_size = [2]Size{ Size.percent(1, 1), Size.by_children(1) };
                     const column_box_size = [2]Size{ Size.percent(1.0 / 3.0, 1), Size.text_dim(1) };
-                    const table_header_row_parent = ui.addNode(.{}, "###table_header_row_parent", .{ .child_layout_axis = .x });
-                    table_header_row_parent.pref_size = row_size;
-                    ui.pushParent(table_header_row_parent);
+                    const table_header_row_parent = ui.pushLayoutParent("table_header_row_parent", row_size, .x);
                     {
                         ui.pushStyle(.{ .pref_size = column_box_size });
                         _ = ui.textBox("Variable Name");
@@ -399,9 +404,7 @@ pub fn main() !void {
                 }
                 std.debug.assert(ui.popParent() == vars_parent);
 
-                const add_var_parent = ui.addNode(.{}, "###add_var_parent", .{ .child_layout_axis = .x });
-                add_var_parent.pref_size = [2]Size{ Size.percent(1, 1), Size.by_children(1) };
-                ui.pushParent(add_var_parent);
+                const add_var_parent = ui.pushLayoutParent("add_var_parent", [2]Size{ Size.percent(1, 1), Size.by_children(1) }, .x);
                 {
                     const var_input_size = [2]Size{ Size.percent(1, 0), Size.text_dim(1) };
                     const button_sig = ui.button("Add Variable");
@@ -411,9 +414,7 @@ pub fn main() !void {
                     _ = ui.popStyle();
                     _ = ui.popStyle();
                     if (button_sig.clicked or text_sig.enter_pressed) {
-                        session.addWatchedVariable(var_buf.slice()) catch |err| {
-                            std.debug.print("{s}: couldn't add watched varible '{s}'\n", .{ err, var_buf.slice() });
-                        };
+                        try session_cmds.append(.{ .add_watched_variable = var_buf.slice() });
                     }
                 }
                 std.debug.assert(ui.popParent() == add_var_parent);
@@ -423,23 +424,20 @@ pub fn main() !void {
                 const button_size = [2]Size{ Size.percent(0.5, 1), Size.text_dim(1) };
                 ui.pushStyle(.{ .pref_size = button_size });
                 if (ui.button("Continue Running").clicked) {
-                    try session.unpause();
-                    update_src_focus = true;
+                    try session_cmds.append(.{ .continue_execution = {} });
                 }
-                if (ui.button("Pause Child").clicked) session.pause();
+                if (ui.button("Pause Child").clicked) {
+                    try session_cmds.append(.{ .pause_execution = {} });
+                }
                 if (ui.button("Next Line").clicked) {
-                    try session.stepLine();
-                    update_src_focus = true;
+                    try session_cmds.append(.{ .step_line = {} });
                 }
                 if (ui.button("Next Instruction").clicked) {
-                    try session.stepInstructions(1);
-                    update_src_focus = true;
+                    try session_cmds.append(.{ .step_instruction = {} });
                 }
                 _ = ui.popStyle();
 
-                const set_break_parent = ui.addNode(.{}, "###set_break_parent", .{ .child_layout_axis = .x });
-                set_break_parent.pref_size = [2]Size{ Size.percent(1, 1), Size.by_children(1) };
-                ui.pushParent(set_break_parent);
+                const set_break_parent = ui.pushLayoutParent("set_break_parent", [2]Size{ Size.percent(1, 1), Size.by_children(1) }, .x);
                 {
                     const button_sig = ui.button("Set Breakpoint");
 
@@ -464,20 +462,15 @@ pub fn main() !void {
                             std.debug.print("{s}: couldn't parse break line number: '{s}'\n", .{ @errorName(err), num_buf.slice() });
                             break :blk;
                         };
-                        session.setBreakpointAtSrc(.{ .dir = "src", .file = file_buf.slice(), .line = line, .column = 0 }) catch |err| {
-                            std.debug.print("{s}: couldn't set breakpoint at src/{s}:{}\n", .{ @errorName(err), file_buf.slice(), line });
-                            break :blk;
-                        };
+                        try session_cmds.append(.{ .set_break_at_src = .{
+                            .dir = try std.fs.path.join(frame_arena.allocator(), &.{ cwd, "src" }),
+                            .file = file_buf.slice(),
+                            .line = line,
+                            .column = 0,
+                        } });
                     }
                 }
                 std.debug.assert(ui.popParent() == set_break_parent);
-
-                if (last_session_status != session.status) {
-                    update_src_focus = true;
-                }
-                last_session_status = session.status;
-
-                try session.fullUpdate();
             }
         }
         std.debug.assert(ui.popParent() == right_side_parent);
@@ -485,6 +478,24 @@ pub fn main() !void {
         std.debug.assert(ui.popParent() == tabs_parent);
 
         ui.endBuild(dt);
+
+        var update_src_focus = false;
+        for (session_cmds.items) |cmd| {
+            switch (cmd) {
+                .continue_execution,
+                .pause_execution,
+                .step_line,
+                .step_instruction,
+                => update_src_focus = true,
+                else => {},
+            }
+        }
+        if (session_opt) |session| {
+            if (last_session_status != session.status) {
+                update_src_focus = true;
+            }
+            last_session_status = session.status;
+        }
 
         // update src viewing window with the next session information
         if (update_src_focus) {
@@ -498,7 +509,79 @@ pub fn main() !void {
 
         file_tab.updateAnimations(dt);
 
+        // do all the state changes in one place
+        if (session_cmds.items.len > 0) std.debug.print("commands in buffer @ frame idx {}\n", .{frame_idx});
+        for (session_cmds.items) |cmd| {
+            //std.debug.print("  - cmd: {s}\n", .{@tagName(std.meta.activeTag(cmd))});
+            std.debug.print("  - {}\n", .{cmd});
+            switch (cmd) {
+                .open_src_file => |file| case_blk: {
+                    if (file.len == 0) break :case_blk;
+                    const path = if (std.fs.path.isAbsolute(file)) file else blk: {
+                        break :blk try std.fs.path.join(frame_arena.allocator(), &.{ cwd, file });
+                    };
+                    if (file_tab.addFile(path)) {
+                        file_tab.active_file = file_tab.files.items.len - 1;
+                    } else |err| {
+                        std.debug.print("{}: couldn't open file @ {s}\n", .{ err, path });
+                    }
+                },
+                .set_break_at_addr => |addr| {
+                    if (session_opt) |*session| {
+                        try session.setBreakpointAtAddr(addr);
+                        //session.setBreakpointAtAddr(addr) catch |err| {
+                        //    std.debug.print("{s}: failed to set breakpoint at addr 0x{x}\n", .{
+                        //        @errorName(err), addr,
+                        //    });
+                        //};
+                    }
+                },
+                .set_break_at_src => |src| {
+                    if (session_opt) |*session| {
+                        try session.setBreakpointAtSrc(src);
+                        //session.setBreakpointAtSrc(src) catch |err| {
+                        //    std.debug.print("{s}: failed to set breakpoint at src={{.dir={s}, .file={s}, .line={}, .column={}}}\n", .{
+                        //        @errorName(err), src.dir, src.file, src.line, src.column,
+                        //    });
+                        //};
+                    }
+                },
+                .add_watched_variable => |var_name| {
+                    if (session_opt) |*session| {
+                        try session.addWatchedVariable(var_name);
+                        //session.addWatchedVariable(var_buf.slice()) catch |err| {
+                        //    std.debug.print("{s}: failed to add watched varible '{s}'\n", .{
+                        //        err, var_name,
+                        //    });
+                        //};
+                    }
+                },
+                .continue_execution => {
+                    if (session_opt) |*session| {
+                        try session.unpause();
+                    }
+                },
+                .pause_execution => {
+                    if (session_opt) |*session| {
+                        session.pause();
+                    }
+                },
+                .step_line => {
+                    if (session_opt) |*session| {
+                        try session.stepLine();
+                    }
+                },
+                .step_instruction => {
+                    if (session_opt) |*session| {
+                        try session.stepInstructions(1);
+                    }
+                },
+            }
+        }
+        session_cmds.clearRetainingCapacity();
+
         window.update();
+        frame_idx += 1;
         tracy.FrameMark();
     }
 }
@@ -597,9 +680,7 @@ const FileTab = struct {
         return self.findFile(path);
     }
 
-    pub fn display(self: *FileTab, ui: *UiContext, session_opt: ?*Session) !void {
-        _ = session_opt;
-
+    pub fn display(self: *FileTab, ui: *UiContext, session_opt: ?*Session, session_cmds: *std.ArrayList(SessionCmd)) !void {
         const file_tab_size = [2]Size{ Size.percent(1, 1), Size.percent(1, 0) };
         const file_tab_node = ui.addNode(.{
             .draw_border = true,
@@ -693,6 +774,12 @@ const FileTab = struct {
                 const mouse_line = @floor(line_offset / line_size);
                 const src_line = @floatToInt(u32, mouse_line) + 1;
 
+                try session_cmds.append(.{ .set_break_at_src = .{
+                    .dir = std.fs.path.dirname(file.path).?,
+                    .file = std.fs.path.basename(file.path),
+                    .line = src_line,
+                    .column = 0,
+                } });
                 if (session_opt) |session| {
                     if (ui.buttonF("Set Breakpoint At Line {}\n", .{src_line}).clicked) blk: {
                         var break_loc = (try session.elf.dwarf.pathIntoSrc(file.path)) orelse {
