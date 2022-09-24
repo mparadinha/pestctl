@@ -4,6 +4,7 @@ const gl = @import("gl_4v3.zig");
 const c = @import("c.zig");
 const math = @import("math.zig");
 const vec2 = math.vec2;
+const uvec2 = math.uvec2;
 
 pub const InputEvent = union(enum) {
     KeyUp: KeyEvent,
@@ -212,15 +213,7 @@ pub const CursorType = enum {
 
 pub const Window = struct {
     handle: *c.GLFWwindow,
-
     event_queue: EventQueue,
-
-    gamepads: [c.GLFW_JOYSTICK_LAST + 1]Gamepad,
-    active_gamepad_idx: ?usize,
-    // we save the button states on the active gamepad to create input events for them
-    last_update_gamepad_buttons: [c.GLFW_GAMEPAD_BUTTON_LAST + 1]u8 =
-        [_]u8{0} ** (c.GLFW_GAMEPAD_BUTTON_LAST + 1),
-
     cursors: struct {
         arrow: *c.GLFWcursor,
         ibeam: *c.GLFWcursor,
@@ -229,6 +222,8 @@ pub const Window = struct {
         hresize: *c.GLFWcursor,
         vresize: *c.GLFWcursor,
     },
+    mouse_pos: ?vec2,
+    framebuffer_size: ?uvec2,
 
     /// call 'finish_setup' right after 'init'
     /// call 'deinit' to clean up resources
@@ -257,8 +252,6 @@ pub const Window = struct {
         var self = Window{
             .handle = handle,
             .event_queue = EventQueue.init(allocator),
-            .gamepads = undefined,
-            .active_gamepad_idx = null,
             .cursors = .{
                 .arrow = c.glfwCreateStandardCursor(c.GLFW_ARROW_CURSOR).?,
                 .ibeam = c.glfwCreateStandardCursor(c.GLFW_IBEAM_CURSOR).?,
@@ -267,6 +260,8 @@ pub const Window = struct {
                 .hresize = c.glfwCreateStandardCursor(c.GLFW_HRESIZE_CURSOR).?,
                 .vresize = c.glfwCreateStandardCursor(c.GLFW_VRESIZE_CURSOR).?,
             },
+            .mouse_pos = undefined,
+            .framebuffer_size = undefined,
         };
 
         // setup callbacks
@@ -276,15 +271,6 @@ pub const Window = struct {
         _ = c.glfwSetCursorPosCallback(self.handle, glfw_cursor_pos_callback);
         _ = c.glfwSetScrollCallback(self.handle, glfw_scroll_callback);
         _ = c.glfwSetCharCallback(self.handle, glfw_char_callback);
-
-        // setup gamepads
-        for (self.gamepads) |*pad, i| {
-            const id = @intCast(i32, i);
-            pad.id = id;
-            pad.connected = c.glfwJoystickIsGamepad(id) == c.GLFW_TRUE;
-            if (pad.connected) pad.name = std.mem.span(c.glfwGetGamepadName(id));
-        }
-        self.update_gamepads();
 
         return self;
     }
@@ -318,45 +304,21 @@ pub const Window = struct {
         c.glfwSwapBuffers(self.handle);
         c.glfwPollEvents();
 
-        self.update_gamepads();
-
-        // create event for gamepad buttons
-        if (self.active_gamepad_idx) |pad_idx| {
-            const gamepad = self.gamepads[pad_idx];
-            const pad_buttons = gamepad.state.buttons;
-            for (pad_buttons) |state, button_id| {
-                const last_state = self.last_update_gamepad_buttons[button_id];
-                if (last_state == c.GLFW_PRESS and state == c.GLFW_RELEASE) {
-                    self.event_queue.append(.{ .GamepadUp = button_id }) catch unreachable;
-                }
-                if (last_state == c.GLFW_RELEASE and state == c.GLFW_PRESS) {
-                    self.event_queue.append(.{ .GamepadDown = button_id }) catch unreachable;
-                }
-            }
-            self.last_update_gamepad_buttons = pad_buttons;
-        }
+        // there might be some bug in glfw that makes `glfwGetCursorPos` take up to 7ms *per call*
+        // in frames where we type really fast, so we cache it per frame for now
+        self.mouse_pos = null;
+        // same for `glfwGetFramebufferSize`
+        self.framebuffer_size = null;
     }
 
-    /// updates gamepad axes and buttons and keeps track of which gamepad is the active one
-    /// if one is available
-    fn update_gamepads(self: *Window) void {
-        var first_active: ?usize = null;
-        for (self.gamepads) |*pad| {
-            if (c.glfwJoystickIsGamepad(pad.id) == c.GLFW_TRUE) {
-                _ = c.glfwGetGamepadState(pad.id, &pad.state);
-                if (first_active == null) first_active = @intCast(usize, pad.id);
-            } else {
-                pad.state.buttons = [_]u8{0} ** (c.GLFW_GAMEPAD_BUTTON_LAST + 1);
-                pad.state.axes = [_]f32{0} ** (c.GLFW_GAMEPAD_AXIS_LAST + 1);
-                if (self.active_gamepad_idx == @intCast(usize, pad.id))
-                    self.active_gamepad_idx = null;
-            }
-        }
-        if (self.active_gamepad_idx == null) self.active_gamepad_idx = first_active;
-    }
-
-    pub fn framebuffer_size(self: Window, width: *u32, height: *u32) void {
-        c.glfwGetFramebufferSize(self.handle, @ptrCast(*i32, width), @ptrCast(*i32, height));
+    pub fn get_framebuffer_size(self: *Window) uvec2 {
+        return if (self.framebuffer_size) |fb_size| fb_size else blk: {
+            var width: u32 = undefined;
+            var height: u32 = undefined;
+            c.glfwGetFramebufferSize(self.handle, @ptrCast(*i32, &width), @ptrCast(*i32, &height));
+            self.framebuffer_size = uvec2{ width, height };
+            break :blk self.framebuffer_size.?;
+        };
     }
 
     pub fn toggle_cursor_mode(self: *Window) void {
@@ -380,22 +342,6 @@ pub const Window = struct {
             .vresize => self.cursors.vresize,
         };
         c.glfwSetCursor(self.handle, cursor);
-    }
-
-    /// if there's no active gamepad returns a Gamepad with everything zero'ed out
-    // TODO: this should prob return null if theres not active gamepad
-    pub fn active_gamepad(self: Window) Gamepad {
-        if (self.active_gamepad_idx) |idx| return self.gamepads[idx];
-
-        return Gamepad{
-            .id = undefined,
-            .name = "",
-            .connected = false, // TODO: should this fake gamepad pretend to be connected?
-            .state = .{
-                .buttons = [_]u8{0} ** (c.GLFW_GAMEPAD_BUTTON_LAST + 1),
-                .axes = [_]f32{0} ** (c.GLFW_GAMEPAD_AXIS_LAST + 1),
-            },
-        };
     }
 
     pub fn key_pressed(self: *Window, key: i32) bool {
@@ -425,27 +371,27 @@ pub const Window = struct {
         };
     }
 
-    pub fn mouse_pos(self: Window) vec2 {
-        var xpos: f64 = undefined;
-        var ypos: f64 = undefined;
-        c.glfwGetCursorPos(self.handle, &xpos, &ypos);
-        var width: u32 = undefined;
-        var height: u32 = undefined;
-        self.framebuffer_size(&width, &height);
-        return vec2{ @floatCast(f32, xpos), @intToFloat(f32, height) - @floatCast(f32, ypos) };
+    pub fn get_mouse_pos(self: *Window) vec2 {
+        const mouse_pos = if (self.mouse_pos) |pos| pos else blk: {
+            var xpos: f64 = undefined;
+            var ypos: f64 = undefined;
+            c.glfwGetCursorPos(self.handle, &xpos, &ypos);
+            self.mouse_pos = vec2{ @floatCast(f32, xpos), @floatCast(f32, ypos) };
+            break :blk self.mouse_pos.?;
+        };
+        const framebuffer_size = self.get_framebuffer_size();
+
+        return vec2{
+            mouse_pos[0],
+            @intToFloat(f32, framebuffer_size[1]) - mouse_pos[1],
+        };
     }
 
-    pub fn mouse_pos_ndc(self: Window) vec2 {
-        var xpos: f64 = undefined;
-        var ypos: f64 = undefined;
-        c.glfwGetCursorPos(self.handle, &xpos, &ypos);
-        var width: u32 = undefined;
-        var height: u32 = undefined;
-        self.framebuffer_size(&width, &height);
-        return vec2{
-            (2 * (xpos / @intToFloat(f32, width)) - 1),
-            -(2 * (ypos / @intToFloat(f32, height)) - 1),
-        };
+    pub fn get_mouse_pos_ndc(self: *Window) vec2 {
+        const mouse_pos = self.get_mouse_pos();
+        const framebuffer_size = self.get_framebuffer_size();
+        const relative = mouse_pos / @intToFloat(f32, framebuffer_size);
+        return (vec2{ 2, 2 } * relative) - vec2{ 1, 1 };
     }
 
     fn glfw_error_callback(error_code: c_int, error_msg: [*c]const u8) callconv(.C) void {
@@ -515,36 +461,5 @@ pub const Window = struct {
     fn glfw_char_callback(glfw_window: ?*c.GLFWwindow, codepoint: u32) callconv(.C) void {
         const self = @ptrCast(*Window, @alignCast(8, c.glfwGetWindowUserPointer(glfw_window).?));
         self.event_queue.append(.{ .Char = codepoint }) catch unreachable;
-    }
-};
-
-pub const Gamepad = struct {
-    id: i32,
-    name: []const u8,
-    connected: bool,
-    state: c.GLFWgamepadstate,
-
-    const axes_dead_zone = 0.1;
-
-    pub fn button_pressed(self: Gamepad, id: usize) bool {
-        return self.state.buttons[id] == c.GLFW_PRESS;
-    }
-
-    pub fn stick(self: Gamepad, side: enum { left, right }) vec2 {
-        var axis = switch (side) {
-            .left => vec2{
-                self.state.axes[c.GLFW_GAMEPAD_AXIS_LEFT_X],
-                self.state.axes[c.GLFW_GAMEPAD_AXIS_LEFT_Y],
-            },
-            .right => vec2{
-                self.state.axes[c.GLFW_GAMEPAD_AXIS_RIGHT_X],
-                self.state.axes[c.GLFW_GAMEPAD_AXIS_RIGHT_Y],
-            },
-        };
-
-        if (std.math.fabs(axis[0]) < Gamepad.axes_dead_zone) axis[0] = 0;
-        if (std.math.fabs(axis[1]) < Gamepad.axes_dead_zone) axis[1] = 0;
-
-        return axis;
     }
 };

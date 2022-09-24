@@ -500,7 +500,7 @@ pub fn getNodeSignal(self: *UiContext, node: *Node) Signal {
         .released = false,
         .double_clicked = false,
         .triple_clicked = false,
-        .mouse_pos = self.window_ptr.mouse_pos() - node.rect.min,
+        .mouse_pos = self.window_ptr.get_mouse_pos() - node.rect.min,
         .hovering = false,
         .held_down = false,
         .enter_pressed = false,

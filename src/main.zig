@@ -11,8 +11,9 @@ const Font = @import("Font.zig");
 const UiContext = @import("UiContext.zig");
 const Size = UiContext.Size;
 const Session = @import("Session.zig");
-const SrcLoc = Session.SrcLoc;
 const Elf = @import("Elf.zig");
+const Dwarf = @import("Dwarf.zig");
+const SrcLoc = Dwarf.SrcLoc;
 
 const tracy = @import("tracy.zig");
 
@@ -87,8 +88,8 @@ pub fn main() !void {
         .enable_memory_limit = true,
     }){};
     defer _ = general_purpose_allocator.detectLeaks();
-    const allocator = general_purpose_allocator.allocator();
-    //const allocator = std.heap.c_allocator;
+    //const allocator = general_purpose_allocator.allocator();
+    const allocator = std.heap.c_allocator;
 
     var cwd_buf: [0x4000]u8 = undefined;
     const cwd = try std.os.getcwd(&cwd_buf);
@@ -142,7 +143,7 @@ pub fn main() !void {
     }
 
     // @debug
-    try num_buf.appendSlice("73");
+    try num_buf.appendSlice("85");
     try file_buf.appendSlice("main.zig");
 
     var file_tab = FileTab.init(allocator);
@@ -154,10 +155,14 @@ pub fn main() !void {
     var frame_idx: u64 = 0;
 
     while (!window.should_close()) {
+        //std.debug.print("frame_idx={}\n", .{frame_idx});
+
         var frame_arena = std.heap.ArenaAllocator.init(allocator);
         defer frame_arena.deinit();
 
-        window.framebuffer_size(&width, &height);
+        const framebuf_size = window.get_framebuffer_size();
+        width = framebuf_size[0];
+        height = framebuf_size[1];
         gl.viewport(0, 0, @intCast(i32, width), @intCast(i32, height));
         //const ratio = @intToFloat(f32, width) / @intToFloat(f32, height);
 
@@ -165,32 +170,12 @@ pub fn main() !void {
         const dt = cur_time - last_time;
         last_time = cur_time;
 
-        const mouse_pos = window.mouse_pos();
+        const mouse_pos = window.get_mouse_pos();
         //var mouse_diff = mouse_pos - last_mouse_pos;
         last_mouse_pos = mouse_pos;
 
-        {
-            const ev = window.event_queue.find(.MouseUp, c.GLFW_MOUSE_BUTTON_RIGHT);
-            const mods = window.get_modifiers();
-            if (mods.shift and mods.control and mods.alt and ev != null) {
-                _ = window.event_queue.removeAt(ev.?);
-                std.debug.print("all nodes that contain the mouse:\n", .{});
-                for (ui.node_table.key_mappings.items) |keymap| {
-                    const node = keymap.value_ptr;
-                    if (node.rect.contains(mouse_pos)) {
-                        std.debug.print("{*} [{s}###{s}] parent=0x{x}, first=0x{x}, next=0x{x}, rect={d:.2}\n", .{
-                            node,
-                            node.display_string[0..std.math.min(10, node.display_string.len)],
-                            node.hash_string[0..std.math.min(10, node.hash_string.len)],
-                            if (node.parent) |ptr| @ptrToInt(ptr) else 0,
-                            if (node.first) |ptr| @ptrToInt(ptr) else 0,
-                            if (node.next) |ptr| @ptrToInt(ptr) else 0,
-                            node.rect,
-                        });
-                    }
-                }
-            }
-        }
+        // should I move this to the end of the frame next to the session_cmd execution?
+        if (session_opt) |*session| try session.fullUpdate();
 
         try ui.startBuild(width, height, mouse_pos, &window.event_queue);
 
@@ -263,8 +248,8 @@ pub fn main() !void {
 
             try file_tab.display(&ui, if (session_opt) |*s| s else null, &session_cmds);
 
-            if (session_opt) |session| {
-                const rip = session.getRegisters().rip;
+            if (session_opt) |session| disasm_blk: {
+                const rip = session.regs.rip;
 
                 const disasm_text_idx = blk: for (disasm_texts.items) |text, i| {
                     if (text.addr_range[0] <= rip and rip < text.addr_range[1])
@@ -295,7 +280,7 @@ pub fn main() !void {
                     else if (section_addr_range) |section_range|
                         section_range
                     else blk: {
-                        const mem_map = (try session.getMemMapAtAddr(allocator, rip)).?;
+                        const mem_map = (try session.getMemMapAtAddr(allocator, rip)) orelse break :disasm_blk;
                         defer mem_map.deinit(allocator);
                         break :blk mem_map.addr_range;
                     };
@@ -308,13 +293,12 @@ pub fn main() !void {
                     defer allocator.free(mem_block);
                     std.debug.assert((try proc_mem.read(mem_block)) == mem_block.len);
 
-                    std.debug.print("generating diasm (@ rip=0x{x}) for addr_range: 0x{x}-0x{x}\n", .{
-                        rip,
-                        block_addr_range[0],
-                        block_addr_range[1],
+                    std.debug.print("generating diasm (@ rip=0x{x}) for addr_range: 0x{x}-0x{x} (~{} instructions)...", .{
+                        rip, block_addr_range[0], block_addr_range[1], @intToFloat(f32, block_addr_range[1] - block_addr_range[0]) / 4.5,
                     });
-
+                    const start_time = c.glfwGetTime();
                     const text_info = try generateTextInfoForDisassembly(allocator, mem_block, block_addr_range[0]);
+                    std.debug.print("done. (took {d}s)\n", .{c.glfwGetTime() - start_time});
                     try disasm_texts.append(text_info);
                     break :text_blk text_info;
                 };
@@ -332,8 +316,6 @@ pub fn main() !void {
         right_side_parent.flags.draw_background = true;
         {
             if (session_opt) |*session| {
-                try session.fullUpdate();
-
                 _ = ui.textBoxF("Child pid: {}", .{session.pid});
                 ui.topParent().last.?.pref_size[0] = Size.percent(1, 1);
                 switch (session.status) {
@@ -344,12 +326,14 @@ pub fn main() !void {
                     .Running => _ = ui.textBox("Child Status: Running"),
                 }
                 ui.topParent().last.?.pref_size[0] = Size.percent(1, 1);
-                _ = ui.textBoxF("wait_status: 0x{x}", .{session.wait_status});
-                ui.topParent().last.?.pref_size[0] = Size.percent(1, 1);
                 if (session.src_loc) |loc| {
                     _ = ui.textBoxF("src_loc: {s}:{}", .{ loc.file, loc.line });
                 } else _ = ui.textBox("src_loc: null");
                 ui.topParent().last.?.pref_size[0] = Size.percent(1, 1);
+
+                if (ui.button("Wait for Signal").clicked) {
+                    std.debug.print("wait status: {}\n", .{Session.getWaitStatus(session.pid)});
+                }
 
                 const table_regs = .{ "rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp", "rsp", "rip" };
                 const regs = session.regs;
@@ -514,6 +498,7 @@ pub fn main() !void {
         for (session_cmds.items) |cmd| {
             //std.debug.print("  - cmd: {s}\n", .{@tagName(std.meta.activeTag(cmd))});
             std.debug.print("  - {}\n", .{cmd});
+
             switch (cmd) {
                 .open_src_file => |file| case_blk: {
                     if (file.len == 0) break :case_blk;
@@ -526,57 +511,52 @@ pub fn main() !void {
                         std.debug.print("{}: couldn't open file @ {s}\n", .{ err, path });
                     }
                 },
-                .set_break_at_addr => |addr| {
-                    if (session_opt) |*session| {
-                        try session.setBreakpointAtAddr(addr);
-                        //session.setBreakpointAtAddr(addr) catch |err| {
-                        //    std.debug.print("{s}: failed to set breakpoint at addr 0x{x}\n", .{
-                        //        @errorName(err), addr,
-                        //    });
-                        //};
-                    }
+                .set_break_at_addr => |addr| case_blk: {
+                    const session = if (session_opt) |*s| s else break :case_blk;
+                    try session.setBreakpointAtAddr(addr);
+                    //session.setBreakpointAtAddr(addr) catch |err| {
+                    //    std.debug.print("{s}: failed to set breakpoint at addr 0x{x}\n", .{
+                    //        @errorName(err), addr,
+                    //    });
+                    //};
                 },
-                .set_break_at_src => |src| {
-                    if (session_opt) |*session| {
-                        try session.setBreakpointAtSrc(src);
-                        //session.setBreakpointAtSrc(src) catch |err| {
-                        //    std.debug.print("{s}: failed to set breakpoint at src={{.dir={s}, .file={s}, .line={}, .column={}}}\n", .{
-                        //        @errorName(err), src.dir, src.file, src.line, src.column,
-                        //    });
-                        //};
-                    }
+                .set_break_at_src => |src| case_blk: {
+                    const session = if (session_opt) |*s| s else break :case_blk;
+                    try session.setBreakpointAtSrc(src);
+                    //session.setBreakpointAtSrc(src) catch |err| {
+                    //    std.debug.print("{s}: failed to set breakpoint at src={{.dir={s}, .file={s}, .line={}, .column={}}}\n", .{
+                    //        @errorName(err), src.dir, src.file, src.line, src.column,
+                    //    });
+                    //};
                 },
-                .add_watched_variable => |var_name| {
-                    if (session_opt) |*session| {
-                        try session.addWatchedVariable(var_name);
-                        //session.addWatchedVariable(var_buf.slice()) catch |err| {
-                        //    std.debug.print("{s}: failed to add watched varible '{s}'\n", .{
-                        //        err, var_name,
-                        //    });
-                        //};
-                    }
+                .add_watched_variable => |var_name| case_blk: {
+                    const session = if (session_opt) |*s| s else break :case_blk;
+                    try session.addWatchedVariable(var_name);
+                    //session.addWatchedVariable(var_buf.slice()) catch |err| {
+                    //    std.debug.print("{s}: failed to add watched varible '{s}'\n", .{
+                    //        err, var_name,
+                    //    });
+                    //};
                 },
-                .continue_execution => {
-                    if (session_opt) |*session| {
-                        try session.unpause();
-                    }
+                .continue_execution => case_blk: {
+                    const session = if (session_opt) |*s| s else break :case_blk;
+                    try session.unpause();
                 },
-                .pause_execution => {
-                    if (session_opt) |*session| {
-                        session.pause();
-                    }
+                .pause_execution => case_blk: {
+                    const session = if (session_opt) |*s| s else break :case_blk;
+                    try session.pause();
                 },
-                .step_line => {
-                    if (session_opt) |*session| {
-                        try session.stepLine();
-                    }
+                .step_line => case_blk: {
+                    const session = if (session_opt) |*s| s else break :case_blk;
+                    try session.stepLine();
                 },
-                .step_instruction => {
-                    if (session_opt) |*session| {
-                        try session.stepInstructions(1);
-                    }
+                .step_instruction => case_blk: {
+                    const session = if (session_opt) |*s| s else break :case_blk;
+                    try session.stepInstructions(1);
                 },
             }
+
+            if (session_opt) |*session| try session.fullUpdate();
         }
         session_cmds.clearRetainingCapacity();
 
@@ -948,7 +928,7 @@ fn generateTextInfoForDisassembly(allocator: Allocator, data: []const u8, data_s
         switch (c.xed_decode(&decoded_inst, &inst_bytes[0], @intCast(c_uint, inst_bytes.len))) {
             c.XED_ERROR_NONE => {},
             c.XED_ERROR_BUFFER_TOO_SHORT => break :asm_loop,
-            else => |err| std.debug.panic("got error code from xed_decode: {s}\n", .{c.xed_error_enum_t2str(err)}),
+            else => |err| std.debug.panic("data_idx=0x{x}, xed_error: {s}\n", .{ data_idx, c.xed_error_enum_t2str(err) }),
         }
 
         var buffer: [0x1000]u8 = undefined;

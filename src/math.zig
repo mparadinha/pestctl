@@ -12,6 +12,7 @@ pub fn to_degrees(x: anytype) @TypeOf(x) {
 pub const vec2 = @Vector(2, f32);
 pub const vec3 = @Vector(3, f32);
 pub const vec4 = @Vector(4, f32);
+pub const uvec2 = @Vector(2, u32);
 
 pub fn splat(comptime VecType: type, scalar: std.meta.Child(VecType)) VecType {
     const info = @typeInfo(VecType).Vector;
