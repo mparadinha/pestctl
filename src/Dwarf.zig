@@ -271,7 +271,6 @@ pub const DebugUnit = struct {
         try self.readAbbrevTable(debug_abbrev);
 
         self.header_size = try stream.getPos();
-        std.debug.print("header_size=0x{x}\n", .{self.header_size});
 
         const entries_buf_start = offset + self.header_size;
         const entries_buf_size = section_size - self.header_size;

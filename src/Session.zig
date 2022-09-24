@@ -1,28 +1,36 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const pid_t = std.os.pid_t;
 const c = @import("c.zig");
 const Elf = @import("Elf.zig");
+const Dwarf = @import("Dwarf.zig");
+const SrcLoc = Dwarf.SrcLoc;
 
 const Session = @This();
 
 allocator: Allocator,
 exec_path: [:0]const u8,
-pid: std.os.pid_t,
+pid: pid_t,
 status: Status,
-wait_status: u32,
 elf: Elf,
 
-// TODO: switch breakpoints to a linked list (removing items in the middle is needed, while iterating)
-breakpoints: std.ArrayList(BreakPoint),
+breakpoints: std.ArrayList(BreakPoint), // TODO: switch to linked list (removing items in the middle is needed, while iterating)
 src_loc: ?SrcLoc,
 addr_range: ?[2]u64,
 call_stack: []CallFrame,
 regs: Registers,
 watched_vars: std.ArrayList(WatchedVar),
 
-pub const Status = enum { Running, Stopped };
+pub const Status = enum {
+    Running,
+    Stopped,
+};
 
-pub const CallFrame = struct { addr: usize, src: ?SrcLoc, fn_name: ?[]const u8 };
+pub const CallFrame = struct {
+    addr: usize,
+    src: ?SrcLoc,
+    fn_name: ?[]const u8,
+};
 
 const BreakPoint = struct {
     addr: usize,
@@ -38,15 +46,12 @@ pub const WatchedVar = struct {
     },
 };
 
-pub const SrcLoc = Elf.SrcLoc;
-
 pub fn init(allocator: Allocator, exec_path: []const u8) !Session {
     var self = Session{
         .allocator = allocator,
         .exec_path = try allocator.dupeZ(u8, exec_path),
         .pid = undefined,
         .status = .Stopped,
-        .wait_status = undefined,
         .elf = try Elf.init(allocator, exec_path),
         .breakpoints = std.ArrayList(BreakPoint).init(allocator),
         .src_loc = null,
@@ -55,6 +60,7 @@ pub fn init(allocator: Allocator, exec_path: []const u8) !Session {
         .regs = undefined,
         .watched_vars = std.ArrayList(WatchedVar).init(allocator),
     };
+
     try self.startTracing();
 
     return self;
@@ -70,41 +76,45 @@ pub fn deinit(self: *Session) void {
 }
 
 pub fn startTracing(self: *Session) !void {
-    // TODO: use ptrace attach in all cases instead of TRACEME so we can use
-    // the PTRACE_INTERRUPT call
-    // (or maybe not, because of the yama linux module)
-
     self.pid = try std.os.fork();
     if (self.pid == 0) {
-        _ = c.ptrace(.TRACEME, 0, null, null);
-        _ = std.os.linux.syscall3(
-            .execve,
-            @ptrToInt(self.exec_path.ptr),
-            0,
-            @ptrToInt(std.os.environ.ptr),
-        );
+        ptrace(.TRACEME, 0, {}) catch unreachable;
+        const path_ptr = self.exec_path.ptr;
+        const environ_ptr = std.os.environ.ptr;
+        _ = std.os.linux.syscall3(.execve, @ptrToInt(path_ptr), 0, @ptrToInt(environ_ptr));
         unreachable;
     }
 
-    // TODO: this should not disabled when attaching to an already running tracee
-    //const opts = @enumToInt(c.ptrace_options.EXITKILL);
-    //_ = c.ptrace(.SETOPTIONS, self.pid, null, @intToPtr(*anyopaque, opts));
-    //_ = c.ptrace(.SETOPTIONS, 0, null, @intToPtr(*anyopaque, opts));
+    // TODO: if the PTRACE_O_TRACEEXEC is not set we might need to manually raise
+    // a SIGTRAP right after TRACEME
+    // or maybe we can set the O_TRACEEXEC option for ourselves (i.e. the pestctl
+    // process) since these options get inherited by children???
+
+    // when using PTRACE_TRACEME the child gets a SIGTRAP before it starts
+    // so we get a change to take control (unless PTRACE_O_TRACEEXEC is not
+    // in effect, which I think is on by default)
+    std.debug.assert((try getWaitStatus(self.pid)).stop_signal.? == .SIGTRAP);
+
+    const opts =
+        c.PTRACE.O.EXITKILL |
+        //c.PTRACE.O.TRACECLONE | // this was causing some PTRACE_EVENT stuff I'll have to deal with eventually
+        c.PTRACE.O.TRACEEXEC |
+        c.PTRACE.O.TRACEEXIT;
+    try ptrace(.SETOPTIONS, self.pid, opts);
 }
 
-pub fn pause(self: *Session) void {
+pub fn pause(self: *Session) !void {
     if (self.status != .Running) return;
-    //_ = c.kill(self.pid, c.SIGTRAP);
-    // waitpid also isn't working for this case, but I'm not sure why
-    _ = c.kill(self.pid, c.SIGSTOP);
-    //_ = c.ptrace(.INTERRUPT, self.pid, null, null);
+    try sendSignal(self.pid, .SIGSTOP);
+    const wait_status = try getWaitStatus(self.pid);
+    std.debug.print("[Session.pause] after sending SIGSTOP: {}\n", .{wait_status});
     self.status = .Stopped;
 }
 
 pub fn unpause(self: *Session) !void {
     if (self.status != .Stopped) return;
 
-    // invalidate all the data the needs status to be .Stopped
+    // invalidate all the data that is only valid while .Stopped
     self.src_loc = null;
     self.addr_range = null;
 
@@ -114,28 +124,31 @@ pub fn unpause(self: *Session) !void {
             // first run the instruction we're on, so we can modify it with `int3` for the breakpoint
             try self.stepInstructions(1);
 
-            const saved = self.insertByteAtAddr(breakpt.addr, 0xcc);
+            const saved = try self.insertByteAtAddr(breakpt.addr, 0xcc);
             if (saved != 0xcc) breakpt.saved_byte = saved;
         }
     }
 
-    _ = c.ptrace(.CONT, self.pid, null, null);
-    // apparently waitpid does not notify us when we use ptrace(.CONT) so we
-    // manually update the status
+    // TODO: when we send a SIGSTOP to stop the tracee and later do .CONT with
+    // the 0 signal argument on it, we must check that we're not erasing any other
+    // SIGSTOP that might have been sent to the tracee by some other process
+
+    // note: doing a ptrace(.CONT) does produce a notification from waitpid
+    try ptrace(.CONT, self.pid, 0);
+
     self.status = .Running;
 }
 
 pub fn kill(self: *Session) void {
-    _ = c.kill(self.pid, c.SIGKILL);
+    sendSignal(self.pid, .SIGKILL) catch unreachable;
 }
 
 /// checks if the child is stopped at a breakpoint (which we need to restore)
 /// some breakpoints need to be re-setup (in case we want to hit them again)
 pub fn fullUpdate(self: *Session) !void {
-    self.updateStatus();
     if (self.status == .Running) return;
 
-    self.regs = self.getRegisters();
+    self.regs = try self.getRegisters();
     self.src_loc = try self.elf.translateAddrToSrc(self.regs.rip);
 
     // calculate address range for the current src location
@@ -157,20 +170,20 @@ pub fn fullUpdate(self: *Session) !void {
     // if we're stopped at breakpoint, restore the clobbered byte and fix rip
     for (self.breakpoints.items) |*breakpt| {
         if (breakpt.addr == self.regs.rip - 1) {
-            const cc = self.insertByteAtAddr(breakpt.addr, breakpt.saved_byte);
+            const cc = try self.insertByteAtAddr(breakpt.addr, breakpt.saved_byte);
             std.debug.assert(cc == 0xcc);
             var new_regs = self.regs;
             new_regs.rip -= 1;
-            self.setRegisters(new_regs);
+            try self.setRegisters(new_regs);
         }
     }
 
-    self.regs = self.getRegisters();
+    self.regs = try self.getRegisters();
 
     // reset all the breakpoints (except the one we just hit)
     for (self.breakpoints.items) |*breakpt| {
         if (breakpt.addr == self.regs.rip) continue;
-        const saved = self.insertByteAtAddr(breakpt.addr, 0xcc);
+        const saved = try self.insertByteAtAddr(breakpt.addr, 0xcc);
         if (saved != 0xcc) breakpt.saved_byte = saved;
     }
 
@@ -182,7 +195,7 @@ pub fn fullUpdate(self: *Session) !void {
                 const tmp = @intCast(isize, self.regs.rbp) + var_info.rbp_offset;
                 if (tmp < 0) continue; // TODO
                 const addr = @intCast(usize, tmp);
-                const bytes = self.getBytesAtAddr(addr, 4);
+                const bytes = try self.getBytesAtAddr(addr, 4);
                 float.* = @bitCast(f32, std.mem.readIntLittle(u32, &bytes));
                 //std.debug.print("rbp_offset={}, addr=0x{x:0>16}, bytes={d}, float={d}\n", .{ var_info.rbp_offset, addr, bytes, float });
             },
@@ -207,17 +220,17 @@ pub fn fullUpdate(self: *Session) !void {
 
 pub fn setBreakpointAtAddr(self: *Session, addr: usize) !void {
     const was_running = (self.status == .Running);
-    if (was_running) self.pause();
+    if (was_running) try self.pause();
     //defer if (was_running) self.unpause();
 
     std.debug.print("status={}\n", .{self.status});
-    std.debug.print("rip=0x{x} when setting breakpoint\n", .{self.getRegisters().rip});
+    std.debug.print("rip=0x{x} when setting breakpoint\n", .{(try self.getRegisters()).rip});
 
     for (self.breakpoints.items) |breakpt| {
         if (breakpt.addr == addr) return;
     }
 
-    const saved_byte = self.insertByteAtAddr(addr, 0xcc);
+    const saved_byte = try self.insertByteAtAddr(addr, 0xcc);
     std.debug.print("setting breakpoint @ addr=0x{x}, saved_byte=0x{x}\n", .{ addr, saved_byte });
     try self.breakpoints.append(.{
         .addr = addr,
@@ -237,8 +250,8 @@ pub fn stepInstructions(self: *Session, num_instrs: usize) !void {
 
     var instrs_done: usize = 0;
     while (instrs_done < num_instrs) : (instrs_done += 1) {
-        _ = c.ptrace(.SINGLESTEP, self.pid, null, null);
-        self.waitForStatusChange();
+        try ptrace(.SINGLESTEP, self.pid, {});
+        std.debug.assert((try getWaitStatus(self.pid)).stop_signal.? == .SIGTRAP);
     }
 }
 
@@ -257,14 +270,14 @@ pub fn stepLine(self: *Session) !void {
 
     // TODO: a single src line can have multiple discontiguous address ranges
 
-    var rip = self.getRegisters().rip;
+    var rip = (try self.getRegisters()).rip;
     while (addr_range[0] <= rip and rip < addr_range[1]) {
         try self.stepInstructions(1);
-        rip = self.getRegisters().rip;
+        rip = (try self.getRegisters()).rip;
     }
 
     while (true) {
-        rip = self.getRegisters().rip;
+        rip = (try self.getRegisters()).rip;
         if (try self.elf.translateAddrToSrc(rip)) |_| return;
         try self.stepInstructions(1);
     }
@@ -461,52 +474,17 @@ fn currentSrcLoc(self: *Session) !?SrcLoc {
     return (try self.elf.translateAddrToSrc(self.getRegisters().rip));
 }
 
-fn updateStatus(self: *Session) void {
-    const flags = c.WNOHANG | c.WUNTRACED | c.WCONTINUED;
-    const wait_ret = std.os.linux.waitpid(self.pid, &self.wait_status, flags);
-    const errno = std.os.linux.getErrno(wait_ret);
-    if (errno != .SUCCESS) {
-        std.debug.panic("waitpid(pid={}, wait_status={*}, flags=0x{x}) returned {}\n", .{
-            self.pid, &self.wait_status, flags, errno,
-        });
-        //std.debug.print("waitpid(pid={}, wait_status={*}, flags=0x{x}) returned {}\n", .{
-        //    self.pid, &self.wait_status, flags, errno,
-        //});
-        //@import("main.zig").printStackTrace(@returnAddress());
-    }
-
-    const is_stopped = (self.wait_status & 0xff) == 0x7f;
-    const no_state_change = (wait_ret == 0);
-
-    //std.debug.print("self.status={s}, wait_status = 0x{x:0>8}, wait_ret=0x{x}, is_stopped: {}, no_state_change={}, errno={s}\n", .{
-    //    @tagName(self.status), self.wait_status, wait_ret, is_stopped, no_state_change, @tagName(errno),
-    //});
-
-    if (!no_state_change) self.status = if (is_stopped) .Stopped else .Running;
-}
-
-fn waitForStatusChange(self: *Session) void {
-    const wait_ret = std.os.linux.waitpid(self.pid, &self.wait_status, 0);
-    const errno = std.os.linux.getErrno(wait_ret);
-    if (errno != .SUCCESS) {
-        std.debug.print("waitpid(pid={}, wait_status={*}, flags=0x{x}) returned {}\n", .{
-            self.pid, &self.wait_status, 0, errno,
-        });
-        @import("main.zig").printStackTrace(@returnAddress());
-    }
-}
-
 /// returns the byte that was there before we inserted the new one
-fn insertByteAtAddr(self: *Session, addr: usize, byte: u8) u8 {
-    const data = c.ptrace(.PEEKTEXT, self.pid, @intToPtr(*anyopaque, addr), null);
+fn insertByteAtAddr(self: *Session, addr: usize, byte: u8) !u8 {
+    const data = try ptrace(.PEEKTEXT, self.pid, addr);
     const new_data = (data & 0xffff_ffff_ffff_ff00) | byte;
-    _ = c.ptrace(.POKETEXT, self.pid, @intToPtr(*anyopaque, addr), @intToPtr(*anyopaque, new_data));
+    try ptrace(.POKETEXT, self.pid, .{ .addr = addr, .data = new_data });
     return @truncate(u8, data);
 }
 
-pub fn getBytesAtAddr(self: Session, addr: usize, comptime N: u4) [N]u8 {
+pub fn getBytesAtAddr(self: Session, addr: usize, comptime N: u4) ![N]u8 {
     std.debug.assert(N <= 8);
-    const data = c.ptrace(.PEEKTEXT, self.pid, @intToPtr(*anyopaque, addr), null);
+    const data = try ptrace(.PEEKTEXT, self.pid, addr);
     return switch (N) {
         4 => [4]u8{
             @intCast(u8, (data & 0x0000_00ff)),
@@ -630,11 +608,11 @@ pub const Registers = struct {
     }
 };
 
-pub fn getRegisters(self: Session) Registers {
+pub fn getRegisters(self: Session) !Registers {
     var regs: c.user_regs_struct = undefined;
-    _ = c.ptrace(.GETREGS, self.pid, null, &regs);
+    try ptrace(.GETREGS, self.pid, &regs);
     var fp_regs: c.user_fpregs_struct = undefined;
-    _ = c.ptrace(.GETFPREGS, self.pid, null, &fp_regs);
+    try ptrace(.GETFPREGS, self.pid, &fp_regs);
     var registers = Registers{
         .rax = regs.rax,
         .rcx = regs.rcx,
@@ -683,7 +661,7 @@ pub fn getRegisters(self: Session) Registers {
     return registers;
 }
 
-fn setRegisters(self: *Session, registers: Registers) void {
+fn setRegisters(self: *Session, registers: Registers) !void {
     var regs = c.user_regs_struct{
         .rax = registers.rax,
         .rcx = registers.rcx,
@@ -713,7 +691,7 @@ fn setRegisters(self: *Session, registers: Registers) void {
         .gs = registers.gs,
         .orig_rax = registers.orig_rax,
     };
-    _ = c.ptrace(.SETREGS, self.pid, null, &regs);
+    try ptrace(.SETREGS, self.pid, &regs);
     var fp_regs = c.user_fpregs_struct{
         .cwd = undefined,
         .swd = undefined,
@@ -737,7 +715,7 @@ fn setRegisters(self: *Session, registers: Registers) void {
         @ptrCast([*]const u8, &registers.xmm[0]),
         @sizeOf(@TypeOf(registers.xmm)),
     );
-    _ = c.ptrace(.SETFPREGS, self.pid, null, &fp_regs);
+    try ptrace(.SETFPREGS, self.pid, &fp_regs);
 }
 
 /// A doubly-linked list that manages it's own memory
@@ -790,4 +768,194 @@ pub fn FreeList(comptime T: type) type {
             self.last = new_node_ptr;
         }
     };
+}
+
+fn castIntoPtr(comptime PtrType: type, src: anytype) ?PtrType {
+    const SrcType = @TypeOf(src);
+    return switch (@typeInfo(SrcType)) {
+        .Int => if (src == 0) null else @intToPtr(PtrType, src),
+        .ComptimeInt => if (src == 0) null else @intToPtr(PtrType, src),
+        .Pointer => @ptrCast(PtrType, src),
+        else => {
+            @compileError("cannot convert " ++ @typeName(SrcType) ++ " to pointer type " ++ @typeName(PtrType));
+        },
+    };
+}
+
+fn ptrace(comptime req: c.PTRACE.request, pid: pid_t, args: anytype) c.ptrace_error!(switch (req) {
+    .PEEKTEXT, .PEEKDATA, .PEEKUSER, .PEEKSIGINFO, .SECCOMP_GET_FILTER => usize,
+    else => void,
+}) {
+    const Args = @TypeOf(args);
+    const assert = std.debug.assert;
+
+    switch (req) {
+        .TRACEME, .SINGLESTEP, .KILL, .ATTACH, .SYSCALL, .LISTEN, .INTERRUPT => {
+            _ = try c.ptrace(req, pid, null, null);
+        },
+        .PEEKTEXT, .PEEKDATA, .PEEKUSER => {
+            const addr = castIntoPtr(*anyopaque, args);
+            return try c.ptrace(req, pid, addr, null);
+        },
+        .CONT, .DETACH, .SETOPTIONS, .SYSEMU, .SYSEMU_SINGLESTEP, .SEIZE => {
+            comptime assert(@typeInfo(Args) == .Int or @typeInfo(Args) == .ComptimeInt);
+            const data = castIntoPtr(*anyopaque, args);
+            _ = try c.ptrace(req, pid, null, data);
+        },
+        .GETEVENTMSG => {
+            comptime assert(@typeInfo(Args) == .Pointer);
+            comptime assert(@typeInfo(@typeInfo(Args).Pointer.child) == .Int);
+            const data = castIntoPtr(*anyopaque, args);
+            _ = try c.ptrace(req, pid, null, data);
+        },
+        .GETSIGINFO, .SETSIGINFO => {
+            comptime std.debug.assert(Args == *c.siginfo_t);
+            const data = castIntoPtr(*anyopaque, args);
+            _ = try c.ptrace(req, pid, null, data);
+        },
+        .GETREGS, .SETREGS => {
+            comptime assert(Args == *c.user_regs_struct);
+            const data = castIntoPtr(*anyopaque, args);
+            _ = try c.ptrace(req, pid, null, data);
+        },
+        .GETFPREGS, .SETFPREGS => {
+            comptime assert(Args == *c.user_fpregs_struct);
+            const data = castIntoPtr(*anyopaque, args);
+            _ = try c.ptrace(req, pid, null, data);
+        },
+        .POKETEXT, .POKEDATA, .POKEUSER, .PEEKSIGINFO => {
+            comptime assert(@typeInfo(Args).Struct.fields.len == 2);
+            const addr = castIntoPtr(*anyopaque, @field(args, "addr"));
+            const data = castIntoPtr(*anyopaque, @field(args, "data"));
+            _ = try c.ptrace(req, pid, addr, data);
+        },
+        // TODO: assert the correct types for these
+        .SECCOMP_GET_FILTER, .GET_SYSCALL_INFO => {
+            comptime assert(@typeInfo(Args).Struct.fields.len == 2);
+            //const c_ptrace = @cInclude("sys/ptrace.h");
+            const addr = castIntoPtr(*anyopaque, @field(args, "addr"));
+            const data = castIntoPtr(*anyopaque, @field(args, "data"));
+            _ = try c.ptrace(req, pid, addr, data);
+        },
+        .GETREGSET, .SETREGSET => {
+            comptime assert(@typeInfo(Args).Struct.fields.len == 2);
+            const addr = castIntoPtr(*anyopaque, @field(args, "addr"));
+            const Addr = @TypeOf(addr);
+            const data = castIntoPtr(*anyopaque, @field(args, "data"));
+            const Data = @TypeOf(data);
+            comptime assert(@typeInfo(Addr) == .Int or @typeInfo(Addr) == .ComptimeInt);
+            comptime assert(Data == *c.iovec);
+            _ = try c.ptrace(req, pid, addr, data);
+        },
+        .GETSIGMASK, .SETSIGMASK => {
+            comptime assert(Args == *c.sigset_t);
+            //const addr = castIntoPtr(*anyopaque, @sizeOf(c.sigset_t));
+            // https://stackoverflow.com/a/59765080
+            const addr = castIntoPtr(*anyopaque, 8);
+            const data = castIntoPtr(*anyopaque, args);
+            _ = try c.ptrace(req, pid, addr, data);
+        },
+        else => @compileError("TODO: " ++ @tagName(req)),
+    }
+}
+
+pub const WaitStatus = struct {
+    exit_status: ?u8, // valid if exited normally
+    term_signal: ?Signal, // valid if terminated by signal
+    stop_signal: ?Signal, // valid if stopped by signal
+    resumed: bool, // resumed via SIGCONT
+    ptrace_event: ?c.PTRACE.EVENT,
+
+    pub fn parse(status: u32) WaitStatus {
+        const low_bits = @intCast(u8, status & 0x7f);
+        const second_byte = @intCast(u8, (status & 0xff00) >> 8);
+        const third_byte = @intCast(u8, (status & 0xff_0000) >> 16);
+        const exited_normally = (low_bits == 0);
+        const terminated_by_signal = (@bitCast(i8, low_bits + 1) >> 1) > 0;
+        const stopped_by_signal = (status & 0xff) == 0x7f;
+        const had_event = second_byte == @enumToInt(Signal.SIGTRAP) and third_byte != 0;
+        return .{
+            .exit_status = if (exited_normally) second_byte else null,
+            .term_signal = if (terminated_by_signal) @intToEnum(Signal, low_bits) else null,
+            .stop_signal = if (stopped_by_signal) @intToEnum(Signal, second_byte) else null,
+            .resumed = status == 0xffff,
+            .ptrace_event = if (had_event) @intToEnum(c.PTRACE.EVENT, third_byte) else null,
+        };
+    }
+};
+
+pub fn getWaitStatus(pid: pid_t) !WaitStatus {
+    var wait_status: u32 = 0;
+
+    // from `man ptrace`: "Setting the WCONTINUED flag when calling waitpid(2) is
+    // not recommended: the "continued" state is per-process and consuming it can
+    // confuse the real parent of the tracee.
+    //_ = try waitpid(pid, &wait_status, c.__WALL | c.WCONTINUED);
+    _ = try waitpid(pid, &wait_status, c.__WALL);
+
+    return WaitStatus.parse(wait_status);
+}
+
+pub fn getWaitStatusNoHang(pid: pid_t) !?WaitStatus {
+    var wait_status: u32 = 0;
+    const status_pid = try waitpid(pid, &wait_status, c.__WALL | c.WNOHANG);
+    return if (status_pid == 0) null else WaitStatus.parse(wait_status);
+}
+
+pub const waitpid_error = error{
+    ECHILD,
+    EINTR,
+    EINVAL,
+};
+
+pub fn waitpid(pid: pid_t, wstatus: *u32, options: u32) waitpid_error!pid_t {
+    const wait_ret = std.os.linux.waitpid(pid, wstatus, options);
+    const errno = std.os.linux.getErrno(wait_ret);
+    switch (errno) {
+        .SUCCESS => {},
+        .CHILD => return waitpid_error.ECHILD,
+        .INTR => return waitpid_error.EINTR,
+        .INVAL => return waitpid_error.EINVAL,
+        else => std.debug.panic("invalid errno={} for waitpid\n", .{errno}),
+    }
+    return @intCast(i32, wait_ret);
+}
+
+// from the table in `man 7 signal`
+pub const Signal = enum(u8) {
+    SIGHUP = 1,
+    SIGINT = 2,
+    SIGQUIT = 3,
+    SIGILL = 4,
+    SIGTRAP = 5,
+    SIGABRT = 6,
+    SIGBUS = 7,
+    SIGFPE = 8,
+    SIGKILL = 9,
+    SIGUSR1 = 10,
+    SIGSEGV = 11,
+    SIGUSR2 = 12,
+    SIGPIPE = 13,
+    SIGALRM = 14,
+    SIGTERM = 15,
+    SIGSTKFLT = 16,
+    SIGCHLD = 17,
+    SIGCONT = 18,
+    SIGSTOP = 19,
+    SIGTSTP = 20,
+    SIGTTIN = 21,
+    SIGTTOU = 22,
+    SIGURG = 23,
+    SIGXCPU = 24,
+    SIGXFSZ = 25,
+    SIGVTALRM = 26,
+    SIGPROF = 27,
+    SIGWINCH = 28,
+    SIGIO = 29,
+    SIGPWR = 30,
+    SIGSYS = 31,
+};
+
+pub fn sendSignal(pid: pid_t, sig: Signal) !void {
+    try std.os.kill(pid, @enumToInt(sig));
 }

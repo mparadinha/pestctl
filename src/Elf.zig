@@ -2,6 +2,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const elf = std.elf;
 const Dwarf = @import("Dwarf.zig");
+const SrcLoc = Dwarf.SrcLoc;
 
 allocator: Allocator,
 sections: []Section,
@@ -9,8 +10,6 @@ string_section: []const u8,
 dwarf: Dwarf,
 
 const Elf = @This();
-
-pub const SrcLoc = Dwarf.SrcLoc;
 
 pub fn init(allocator: Allocator, exec_path: []const u8) !Elf {
     var self = @as(Elf, undefined);
