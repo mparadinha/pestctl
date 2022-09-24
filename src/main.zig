@@ -314,148 +314,172 @@ pub fn main() !void {
 
         const right_side_parent = ui.pushLayoutParent("right_side_parent", [2]Size{ Size.percent(0.5, 1), Size.percent(1, 0) }, .y);
         right_side_parent.flags.draw_background = true;
-        {
-            if (session_opt) |*session| {
-                _ = ui.textBoxF("Child pid: {}", .{session.pid});
-                ui.topParent().last.?.pref_size[0] = Size.percent(1, 1);
-                switch (session.status) {
-                    .Stopped => {
-                        _ = ui.textBox("Child Status: Stopped");
-                        ui.topParent().last.?.text_color = vec4{ 1, 0.5, 0, 1 };
-                    },
-                    .Running => _ = ui.textBox("Child Status: Running"),
-                }
-                ui.topParent().last.?.pref_size[0] = Size.percent(1, 1);
-                if (session.src_loc) |loc| {
-                    _ = ui.textBoxF("src_loc: {s}:{}", .{ loc.file, loc.line });
-                } else _ = ui.textBox("src_loc: null");
-                ui.topParent().last.?.pref_size[0] = Size.percent(1, 1);
+        if (session_opt) |*session| {
+            _ = ui.textBoxF("Child pid: {}", .{session.pid});
+            ui.topParent().last.?.pref_size[0] = Size.percent(1, 1);
+            switch (session.status) {
+                .Stopped => {
+                    _ = ui.textBox("Child Status: Stopped");
+                    ui.topParent().last.?.text_color = vec4{ 1, 0.5, 0, 1 };
+                },
+                .Running => _ = ui.textBox("Child Status: Running"),
+            }
+            ui.topParent().last.?.pref_size[0] = Size.percent(1, 1);
+            if (session.src_loc) |loc| {
+                _ = ui.textBoxF("src_loc: {s}:{}", .{ loc.file, loc.line });
+            } else _ = ui.textBox("src_loc: null");
+            ui.topParent().last.?.pref_size[0] = Size.percent(1, 1);
 
-                if (ui.button("Wait for Signal").clicked) {
-                    std.debug.print("wait status: {}\n", .{Session.getWaitStatus(session.pid)});
-                }
+            if (ui.button("Wait for Signal").clicked) {
+                std.debug.print("wait status: {}\n", .{Session.getWaitStatus(session.pid)});
+            }
 
-                const table_regs = .{ "rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp", "rsp", "rip" };
-                const regs = session.regs;
-                inline for (table_regs) |reg_name| {
-                    _ = ui.textBoxF(reg_name ++ ": 0x{x:0>16}", .{@field(regs, reg_name)});
-                }
+            const table_regs = .{ "rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp", "rsp", "rip" };
+            const regs = session.regs;
+            inline for (table_regs) |reg_name| {
+                _ = ui.textBoxF(reg_name ++ ": 0x{x:0>16}", .{@field(regs, reg_name)});
+            }
 
-                if (session.addr_range) |range| {
-                    _ = ui.textBoxF("addr_range[0] = 0x{x:0>12}", .{range[0]});
-                    _ = ui.textBoxF("addr_range[1] = 0x{x:0>12}", .{range[1]});
-                }
+            if (session.addr_range) |range| {
+                _ = ui.textBoxF("addr_range[0] = 0x{x:0>12}", .{range[0]});
+                _ = ui.textBoxF("addr_range[1] = 0x{x:0>12}", .{range[1]});
+            }
 
-                _ = ui.textBox("call stack:");
-                for (session.call_stack) |call_frame| {
-                    const function = call_frame.fn_name orelse "???";
-                    if (call_frame.src) |src| {
-                        _ = ui.textBoxF("0x{x:0>12}: {s} @ {s}/{s}:{}", .{ call_frame.addr, function, src.dir, src.file, src.line });
-                    } else {
-                        _ = ui.textBoxF("0x{x:0>12}: {s} @ ???", .{ call_frame.addr, function });
-                    }
+            _ = ui.textBox("call stack:");
+            for (session.call_stack) |call_frame| {
+                const function = call_frame.fn_name orelse "???";
+                if (call_frame.src) |src| {
+                    _ = ui.textBoxF("0x{x:0>12}: {s} @ {s}/{s}:{}", .{ call_frame.addr, function, src.dir, src.file, src.line });
+                } else {
+                    _ = ui.textBoxF("0x{x:0>12}: {s} @ ???", .{ call_frame.addr, function });
                 }
+            }
 
-                const vars_parent = ui.pushLayoutParent("vars_parent", [2]Size{ Size.percent(1, 1), Size.by_children(1) }, .y);
+            if (ui.button("print memory mappings").clicked) {
+                const maps = try session.getMemMaps(allocator);
+                defer {
+                    for (maps) |map| map.deinit(allocator);
+                    allocator.free(maps);
+                }
+                std.debug.print("memory mappings for pid={}\n", .{session.pid});
+                std.debug.print("         address range        | perm |   offset   | device|   inode  | path\n", .{});
+                std.debug.print("------------------------------+------+------------+-------+----------+-----------\n", .{});
+                for (maps) |map| {
+                    std.debug.print("0x{x:0>12}-0x{x:0>12} | {c}{c}{c}{c} | 0x{x:0>8} | {x:0>2}:{x:0>2} | {d: >8} | {s}\n", .{
+                        map.addr_range[0],
+                        map.addr_range[1],
+                        ([2]u8{ 'r', '-' })[if (map.perms.read) 0 else 1],
+                        ([2]u8{ 'w', '-' })[if (map.perms.write) 0 else 1],
+                        ([2]u8{ 'x', '-' })[if (map.perms.execute) 0 else 1],
+                        ([2]u8{ 's', 'p' })[if (map.perms.shared) 0 else 1],
+                        map.offset,
+                        map.device.major,
+                        map.device.minor,
+                        map.inode,
+                        map.path,
+                    });
+                }
+            }
+
+            const vars_parent = ui.pushLayoutParent("vars_parent", [2]Size{ Size.percent(1, 1), Size.by_children(1) }, .y);
+            {
+                const row_size = [2]Size{ Size.percent(1, 1), Size.by_children(1) };
+                const column_box_size = [2]Size{ Size.percent(1.0 / 3.0, 1), Size.text_dim(1) };
+                const table_header_row_parent = ui.pushLayoutParent("table_header_row_parent", row_size, .x);
                 {
-                    const row_size = [2]Size{ Size.percent(1, 1), Size.by_children(1) };
-                    const column_box_size = [2]Size{ Size.percent(1.0 / 3.0, 1), Size.text_dim(1) };
-                    const table_header_row_parent = ui.pushLayoutParent("table_header_row_parent", row_size, .x);
+                    ui.pushStyle(.{ .pref_size = column_box_size });
+                    _ = ui.textBox("Variable Name");
+                    _ = ui.textBox("Type");
+                    _ = ui.textBox("Value");
+                    _ = ui.popStyle();
+                }
+                std.debug.assert(ui.popParent() == table_header_row_parent);
+
+                for (session.watched_vars.items) |var_info| {
+                    const row_parent = ui.addNodeF(.{ .no_id = true }, "###row_parent_{s}", .{var_info.name}, .{ .child_layout_axis = .x });
+                    row_parent.pref_size = row_size;
+                    ui.pushParent(row_parent);
                     {
                         ui.pushStyle(.{ .pref_size = column_box_size });
-                        _ = ui.textBox("Variable Name");
-                        _ = ui.textBox("Type");
-                        _ = ui.textBox("Value");
+                        _ = ui.textBoxF("{s}###{s}_name", .{ var_info.name, var_info.name });
+                        _ = ui.textBoxF("{s}###{s}_type", .{ @tagName(std.meta.activeTag(var_info.value)), var_info.name });
+                        switch (var_info.value) {
+                            .Float => |value| _ = ui.textBoxF("{d}###{s}_value", .{ value, var_info.name }),
+                        }
                         _ = ui.popStyle();
                     }
-                    std.debug.assert(ui.popParent() == table_header_row_parent);
+                    std.debug.assert(ui.popParent() == row_parent);
+                }
+            }
+            std.debug.assert(ui.popParent() == vars_parent);
 
-                    for (session.watched_vars.items) |var_info| {
-                        const row_parent = ui.addNodeF(.{ .no_id = true }, "###row_parent_{s}", .{var_info.name}, .{ .child_layout_axis = .x });
-                        row_parent.pref_size = row_size;
-                        ui.pushParent(row_parent);
-                        {
-                            ui.pushStyle(.{ .pref_size = column_box_size });
-                            _ = ui.textBoxF("{s}###{s}_name", .{ var_info.name, var_info.name });
-                            _ = ui.textBoxF("{s}###{s}_type", .{ @tagName(std.meta.activeTag(var_info.value)), var_info.name });
-                            switch (var_info.value) {
-                                .Float => |value| _ = ui.textBoxF("{d}###{s}_value", .{ value, var_info.name }),
-                            }
-                            _ = ui.popStyle();
-                        }
-                        std.debug.assert(ui.popParent() == row_parent);
-                    }
+            const add_var_parent = ui.pushLayoutParent("add_var_parent", [2]Size{ Size.percent(1, 1), Size.by_children(1) }, .x);
+            {
+                const var_input_size = [2]Size{ Size.percent(1, 0), Size.text_dim(1) };
+                const button_sig = ui.button("Add Variable");
+                ui.pushStyle(.{ .bg_color = vec4{ 0.75, 0.75, 0.75, 1 } });
+                ui.pushStyle(.{ .pref_size = var_input_size });
+                const text_sig = ui.textInput("add_var_textinput", &var_buf.buffer, &var_buf.len);
+                _ = ui.popStyle();
+                _ = ui.popStyle();
+                if (button_sig.clicked or text_sig.enter_pressed) {
+                    try session_cmds.append(.{ .add_watched_variable = var_buf.slice() });
                 }
-                std.debug.assert(ui.popParent() == vars_parent);
+            }
+            std.debug.assert(ui.popParent() == add_var_parent);
 
-                const add_var_parent = ui.pushLayoutParent("add_var_parent", [2]Size{ Size.percent(1, 1), Size.by_children(1) }, .x);
-                {
-                    const var_input_size = [2]Size{ Size.percent(1, 0), Size.text_dim(1) };
-                    const button_sig = ui.button("Add Variable");
-                    ui.pushStyle(.{ .bg_color = vec4{ 0.75, 0.75, 0.75, 1 } });
-                    ui.pushStyle(.{ .pref_size = var_input_size });
-                    const text_sig = ui.textInput("add_var_textinput", &var_buf.buffer, &var_buf.len);
-                    _ = ui.popStyle();
-                    _ = ui.popStyle();
-                    if (button_sig.clicked or text_sig.enter_pressed) {
-                        try session_cmds.append(.{ .add_watched_variable = var_buf.slice() });
-                    }
-                }
-                std.debug.assert(ui.popParent() == add_var_parent);
+            ui.spacer(.y, Size.percent(1, 0));
 
-                ui.spacer(.y, Size.percent(1, 0));
+            const button_size = [2]Size{ Size.percent(0.5, 1), Size.text_dim(1) };
+            ui.pushStyle(.{ .pref_size = button_size });
+            if (ui.button("Continue Running").clicked) {
+                try session_cmds.append(.{ .continue_execution = {} });
+            }
+            if (ui.button("Pause Child").clicked) {
+                try session_cmds.append(.{ .pause_execution = {} });
+            }
+            if (ui.button("Next Line").clicked) {
+                try session_cmds.append(.{ .step_line = {} });
+            }
+            if (ui.button("Next Instruction").clicked) {
+                try session_cmds.append(.{ .step_instruction = {} });
+            }
+            _ = ui.popStyle();
 
-                const button_size = [2]Size{ Size.percent(0.5, 1), Size.text_dim(1) };
-                ui.pushStyle(.{ .pref_size = button_size });
-                if (ui.button("Continue Running").clicked) {
-                    try session_cmds.append(.{ .continue_execution = {} });
-                }
-                if (ui.button("Pause Child").clicked) {
-                    try session_cmds.append(.{ .pause_execution = {} });
-                }
-                if (ui.button("Next Line").clicked) {
-                    try session_cmds.append(.{ .step_line = {} });
-                }
-                if (ui.button("Next Instruction").clicked) {
-                    try session_cmds.append(.{ .step_instruction = {} });
-                }
+            const set_break_parent = ui.pushLayoutParent("set_break_parent", [2]Size{ Size.percent(1, 1), Size.by_children(1) }, .x);
+            {
+                const button_sig = ui.button("Set Breakpoint");
+
+                const line_input_size = [2]Size{ Size.percent(1, 0), Size.text_dim(1) };
+                _ = ui.textBox("Line Number");
+                ui.pushStyle(.{ .bg_color = vec4{ 0.75, 0.75, 0.75, 1 } });
+                ui.pushStyle(.{ .pref_size = line_input_size });
+                const line_sig = ui.textInput("src_linenum_textinput", &num_buf.buffer, &num_buf.len);
+                _ = ui.popStyle();
                 _ = ui.popStyle();
 
-                const set_break_parent = ui.pushLayoutParent("set_break_parent", [2]Size{ Size.percent(1, 1), Size.by_children(1) }, .x);
-                {
-                    const button_sig = ui.button("Set Breakpoint");
+                const file_input_size = [2]Size{ Size.percent(1, 0), Size.text_dim(1) };
+                _ = ui.textBox("File Name");
+                ui.pushStyle(.{ .bg_color = vec4{ 0.75, 0.75, 0.75, 1 } });
+                ui.pushStyle(.{ .pref_size = file_input_size });
+                const file_sig = ui.textInput("src_filename_textinput", &file_buf.buffer, &file_buf.len);
+                _ = ui.popStyle();
+                _ = ui.popStyle();
 
-                    const line_input_size = [2]Size{ Size.percent(1, 0), Size.text_dim(1) };
-                    _ = ui.textBox("Line Number");
-                    ui.pushStyle(.{ .bg_color = vec4{ 0.75, 0.75, 0.75, 1 } });
-                    ui.pushStyle(.{ .pref_size = line_input_size });
-                    const line_sig = ui.textInput("src_linenum_textinput", &num_buf.buffer, &num_buf.len);
-                    _ = ui.popStyle();
-                    _ = ui.popStyle();
-
-                    const file_input_size = [2]Size{ Size.percent(1, 0), Size.text_dim(1) };
-                    _ = ui.textBox("File Name");
-                    ui.pushStyle(.{ .bg_color = vec4{ 0.75, 0.75, 0.75, 1 } });
-                    ui.pushStyle(.{ .pref_size = file_input_size });
-                    const file_sig = ui.textInput("src_filename_textinput", &file_buf.buffer, &file_buf.len);
-                    _ = ui.popStyle();
-                    _ = ui.popStyle();
-
-                    if (button_sig.clicked or line_sig.enter_pressed or file_sig.enter_pressed) blk: {
-                        const line = std.fmt.parseUnsigned(u32, num_buf.slice(), 0) catch |err| {
-                            std.debug.print("{s}: couldn't parse break line number: '{s}'\n", .{ @errorName(err), num_buf.slice() });
-                            break :blk;
-                        };
-                        try session_cmds.append(.{ .set_break_at_src = .{
-                            .dir = try std.fs.path.join(frame_arena.allocator(), &.{ cwd, "src" }),
-                            .file = file_buf.slice(),
-                            .line = line,
-                            .column = 0,
-                        } });
-                    }
+                if (button_sig.clicked or line_sig.enter_pressed or file_sig.enter_pressed) blk: {
+                    const line = std.fmt.parseUnsigned(u32, num_buf.slice(), 0) catch |err| {
+                        std.debug.print("{s}: couldn't parse break line number: '{s}'\n", .{ @errorName(err), num_buf.slice() });
+                        break :blk;
+                    };
+                    try session_cmds.append(.{ .set_break_at_src = .{
+                        .dir = try std.fs.path.join(frame_arena.allocator(), &.{ cwd, "src" }),
+                        .file = file_buf.slice(),
+                        .line = line,
+                        .column = 0,
+                    } });
                 }
-                std.debug.assert(ui.popParent() == set_break_parent);
             }
+            std.debug.assert(ui.popParent() == set_break_parent);
         }
         std.debug.assert(ui.popParent() == right_side_parent);
 
@@ -912,6 +936,9 @@ const AsmTextInfo = struct {
 
 /// don't forget to call `TextInfo.deinit` when done with it
 fn generateTextInfoForDisassembly(allocator: Allocator, data: []const u8, data_start_addr: usize) !AsmTextInfo {
+    const fn_zone = tracy.Zone(@src());
+    defer fn_zone.End();
+
     var text_bytes = std.ArrayList(u8).init(allocator);
     var line_offsets = std.ArrayList(usize).init(allocator);
     var line_addrs = std.ArrayList(usize).init(allocator);
@@ -925,37 +952,53 @@ fn generateTextInfoForDisassembly(allocator: Allocator, data: []const u8, data_s
         var decoded_inst: c.xed_decoded_inst_t = undefined;
         c.xed_decoded_inst_zero(&decoded_inst);
         c.xed_decoded_inst_set_mode(&decoded_inst, c.XED_MACHINE_MODE_LONG_64, c.XED_ADDRESS_WIDTH_64b);
-        switch (c.xed_decode(&decoded_inst, &inst_bytes[0], @intCast(c_uint, inst_bytes.len))) {
+        const decode_zone = tracy.ZoneN(@src(), "xed_decode");
+        const decode_result = c.xed_decode(&decoded_inst, &inst_bytes[0], @intCast(c_uint, inst_bytes.len));
+        decode_zone.End();
+        switch (decode_result) {
             c.XED_ERROR_NONE => {},
             c.XED_ERROR_BUFFER_TOO_SHORT => break :asm_loop,
             else => |err| std.debug.panic("data_idx=0x{x}, xed_error: {s}\n", .{ data_idx, c.xed_error_enum_t2str(err) }),
         }
 
-        var buffer: [0x1000]u8 = undefined;
-        const format_res = c.xed_format_context(c.XED_SYNTAX_INTEL, &decoded_inst, &buffer[0], @intCast(c_int, buffer.len), asm_addr, null, null);
-        std.debug.assert(format_res == 1);
-        const str = std.mem.sliceTo(@ptrCast([*c]const u8, &buffer[0]), 0);
-
         const inst_len = c.xed_decoded_inst_get_length(&decoded_inst);
         data_idx += inst_len;
 
-        var fmt_buf: [0x1000]u8 = undefined;
-        var stream = std.io.fixedBufferStream(&fmt_buf);
+        try text_bytes.ensureUnusedCapacity(0x1000);
+        const line_offset = text_bytes.items.len;
+        var line_buffer = text_bytes.items[line_offset..];
+        line_buffer.len = text_bytes.capacity - line_offset;
+        var stream = std.io.fixedBufferStream(line_buffer);
         var writer = stream.writer();
-        try writer.print("0x{x:0>12}: ", .{asm_addr});
-        for (inst_bytes) |byte, idx| {
-            if (idx < inst_len) {
-                try writer.print("{x:0>2} ", .{byte});
-            } else {
-                try writer.print("   ", .{});
-            }
-        }
-        try writer.print("{s}\n", .{str});
-        const asm_line = stream.getWritten();
 
-        try line_offsets.append(text_bytes.items.len);
+        const fmt_zone = tracy.ZoneN(@src(), "fmt_zone");
+        try writer.print("0x{x:0>12}: ", .{asm_addr});
+        const byte_hex_strs = comptime blk: {
+            var str_bufs = @as([256][2]u8, undefined);
+            for (str_bufs) |*buf, idx| _ = std.fmt.bufPrint(buf, "{x:0>2}", .{idx}) catch unreachable;
+            break :blk str_bufs;
+        };
+        for (inst_bytes) |byte, idx| {
+            const byte_str = if (idx < inst_len) &byte_hex_strs[byte] else "  ";
+            stream.buffer[stream.pos + 0] = byte_str[0];
+            stream.buffer[stream.pos + 1] = byte_str[1];
+            stream.buffer[stream.pos + 2] = ' ';
+            stream.pos += 3;
+        }
+        fmt_zone.End();
+
+        const buffer = stream.buffer[stream.pos..];
+        const format_zone = tracy.ZoneN(@src(), "xed_format_context");
+        const format_res = c.xed_format_context(c.XED_SYNTAX_INTEL, &decoded_inst, &buffer[0], @intCast(c_int, buffer.len), asm_addr, null, null);
+        format_zone.End();
+        std.debug.assert(format_res == 1);
+        const format_str = std.mem.sliceTo(@ptrCast([*c]const u8, &buffer[0]), 0);
+        stream.pos += format_str.len;
+        _ = try writer.write("\n");
+
+        text_bytes.items.len += stream.pos;
+        try line_offsets.append(line_offset);
         try line_addrs.append(asm_addr);
-        try text_bytes.appendSlice(asm_line);
 
         instructions_done += 1;
     }
@@ -989,12 +1032,13 @@ fn showDisassemblyWindow(ui: *UiContext, label: []const u8, text_info: AsmTextIn
         y_off.* = -line_size * line + parent_size[1] / 2;
     }
 
+    const total_lines = text_info.line_offsets.len;
+
     const lines_that_fit = @trunc(parent_size[1] / line_size);
     const cur_middle_line = @trunc(std.math.max(0, -y_off.* + parent_size[1] / 2) / line_size);
     const partial_start_line = @floatToInt(usize, @trunc(std.math.max(0, cur_middle_line - lines_that_fit)));
-    const partial_end_line = @floatToInt(usize, @trunc(cur_middle_line + lines_that_fit));
+    const partial_end_line = std.math.min(@floatToInt(usize, @trunc(cur_middle_line + lines_that_fit)), total_lines);
 
-    const total_lines = text_info.line_offsets.len;
     const partial_start_idx = text_info.line_offsets[partial_start_line];
     const partial_end_idx = text_info.line_offsets[partial_end_line];
     const partial_text = text_info.data[partial_start_idx..partial_end_idx];
