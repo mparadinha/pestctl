@@ -121,6 +121,7 @@ pub fn unpause(self: *Session) !void {
     // if we're resuming from a breakpoint we have to reset it
     for (self.breakpoints.items) |*breakpt| {
         if (breakpt.addr == self.regs.rip) {
+            std.debug.print("rip is at a breakpoint addr: byte at rip: 0x{x}\n", .{(try self.getBytesAtAddr(self.regs.rip, 4))[0]});
             // first run the instruction we're on, so we can modify it with `int3` for the breakpoint
             try self.stepInstructions(1);
 
@@ -146,6 +147,11 @@ pub fn kill(self: *Session) void {
 /// checks if the child is stopped at a breakpoint (which we need to restore)
 /// some breakpoints need to be re-setup (in case we want to hit them again)
 pub fn fullUpdate(self: *Session) !void {
+    while (try getWaitStatusNoHang(self.pid)) |status| {
+        std.debug.print("[fullUpdate] {}\n", .{status});
+        self.status = .Stopped;
+    }
+
     if (self.status == .Running) return;
 
     self.regs = try self.getRegisters();
@@ -251,7 +257,10 @@ pub fn stepInstructions(self: *Session, num_instrs: usize) !void {
     var instrs_done: usize = 0;
     while (instrs_done < num_instrs) : (instrs_done += 1) {
         try ptrace(.SINGLESTEP, self.pid, {});
-        std.debug.assert((try getWaitStatus(self.pid)).stop_signal.? == .SIGTRAP);
+        const wait_status = try getWaitStatus(self.pid);
+        if (wait_status.stop_signal) |sig| {
+            if (sig != .SIGTRAP) std.debug.print("expected a SIGTRAP because of the SINGLESTEP but got {s} instead (TODO: we should keep track of this\n", .{@tagName(sig)});
+        } else std.debug.panic("{}\n", .{wait_status});
     }
 }
 
@@ -782,7 +791,7 @@ fn castIntoPtr(comptime PtrType: type, src: anytype) ?PtrType {
     };
 }
 
-fn ptrace(comptime req: c.PTRACE.request, pid: pid_t, args: anytype) c.ptrace_error!(switch (req) {
+pub fn ptrace(comptime req: c.PTRACE.request, pid: pid_t, args: anytype) c.ptrace_error!(switch (req) {
     .PEEKTEXT, .PEEKDATA, .PEEKUSER, .PEEKSIGINFO, .SECCOMP_GET_FILTER => usize,
     else => void,
 }) {
@@ -886,13 +895,11 @@ pub const WaitStatus = struct {
 
 pub fn getWaitStatus(pid: pid_t) !WaitStatus {
     var wait_status: u32 = 0;
-
     // from `man ptrace`: "Setting the WCONTINUED flag when calling waitpid(2) is
     // not recommended: the "continued" state is per-process and consuming it can
     // confuse the real parent of the tracee.
     //_ = try waitpid(pid, &wait_status, c.__WALL | c.WCONTINUED);
     _ = try waitpid(pid, &wait_status, c.__WALL);
-
     return WaitStatus.parse(wait_status);
 }
 

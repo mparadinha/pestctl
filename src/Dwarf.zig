@@ -127,6 +127,14 @@ pub const SrcLoc = struct {
     line: u32,
     column: u32,
 
+    pub fn cmp(src_a: SrcLoc, src_b: SrcLoc) bool {
+        if (src_a.column != src_b.column) return false;
+        if (src_a.line != src_b.line) return false;
+        if (!std.mem.eql(u8, src_a.file, src_b.file)) return false;
+        if (!std.mem.eql(u8, src_a.dir, src_b.dir)) return false;
+        return true;
+    }
+
     pub fn format(value: SrcLoc, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
         _ = options;
         _ = fmt;

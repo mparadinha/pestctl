@@ -126,7 +126,6 @@ pub fn main() !void {
 
     var session_opt = if (cmdline_args.exec_path) |path| try Session.init(allocator, path) else null;
     defer if (session_opt) |*session| session.deinit();
-    var last_session_status: Session.Status = if (session_opt) |s| s.status else .Stopped;
 
     var last_mouse_pos = vec2{ 0, 0 };
     var last_time = @floatCast(f32, c.glfwGetTime());
@@ -148,6 +147,7 @@ pub fn main() !void {
 
     var file_tab = FileTab.init(allocator);
     defer file_tab.deinit();
+    var last_src_loc = @as(?SrcLoc, null);
 
     var session_cmds = std.ArrayList(SessionCmd).init(allocator);
     defer session_cmds.deinit();
@@ -334,6 +334,10 @@ pub fn main() !void {
                 std.debug.print("wait status: {}\n", .{Session.getWaitStatus(session.pid)});
             }
 
+            if (ui.button("Force Send `ptrace(.CONT)`").clicked) {
+                try Session.ptrace(.CONT, session.pid, 0);
+            }
+
             const table_regs = .{ "rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp", "rsp", "rip" };
             const regs = session.regs;
             inline for (table_regs) |reg_name| {
@@ -487,34 +491,19 @@ pub fn main() !void {
 
         ui.endBuild(dt);
 
-        var update_src_focus = false;
-        for (session_cmds.items) |cmd| {
-            switch (cmd) {
-                .continue_execution,
-                .pause_execution,
-                .step_line,
-                .step_instruction,
-                => update_src_focus = true,
-                else => {},
-            }
-        }
-        if (session_opt) |session| {
-            if (last_session_status != session.status) {
-                update_src_focus = true;
-            }
-            last_session_status = session.status;
-        }
-
-        // update src viewing window with the next session information
-        if (update_src_focus) {
-            if (session_opt) |*session| {
-                if (session.src_loc) |loc| try file_tab.focusOnSrc(loc);
-            }
-        }
-
         gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
         try ui.render();
 
+        const cur_src_loc = if (session_opt) |s| s.src_loc else null;
+        var focused_src_loc = cur_src_loc;
+        if (last_src_loc != null and cur_src_loc != null) {
+            if (SrcLoc.cmp(last_src_loc.?, cur_src_loc.?)) {
+                focused_src_loc = null;
+                last_src_loc = cur_src_loc;
+            }
+        }
+
+        if (focused_src_loc) |src| try file_tab.focusOnSrc(src);
         file_tab.updateAnimations(dt);
 
         // do all the state changes in one place
@@ -978,8 +967,9 @@ fn generateTextInfoForDisassembly(allocator: Allocator, data: []const u8, data_s
             for (str_bufs) |*buf, idx| _ = std.fmt.bufPrint(buf, "{x:0>2}", .{idx}) catch unreachable;
             break :blk str_bufs;
         };
-        for (inst_bytes) |byte, idx| {
-            const byte_str = if (idx < inst_len) &byte_hex_strs[byte] else "  ";
+        var idx: usize = 0;
+        while (idx < std.math.max(10, inst_len)) : (idx += 1) {
+            const byte_str = if (idx < inst_len) &byte_hex_strs[inst_bytes[idx]] else "  ";
             stream.buffer[stream.pos + 0] = byte_str[0];
             stream.buffer[stream.pos + 1] = byte_str[1];
             stream.buffer[stream.pos + 2] = ' ';
@@ -1040,7 +1030,10 @@ fn showDisassemblyWindow(ui: *UiContext, label: []const u8, text_info: AsmTextIn
     const partial_end_line = std.math.min(@floatToInt(usize, @trunc(cur_middle_line + lines_that_fit)), total_lines);
 
     const partial_start_idx = text_info.line_offsets[partial_start_line];
-    const partial_end_idx = text_info.line_offsets[partial_end_line];
+    const partial_end_idx = if (partial_end_line == total_lines)
+        text_info.data.len
+    else
+        text_info.line_offsets[partial_end_line];
     const partial_text = text_info.data[partial_start_idx..partial_end_idx];
 
     const label_node = ui.addNodeStrings(.{
