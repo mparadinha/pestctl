@@ -34,7 +34,7 @@ first_error_name: []const u8,
 parent_stack: Stack(*Node),
 style_stack: Stack(Style),
 auto_pop_style: bool,
-root_node: *Node,
+root_node: ?*Node,
 ctx_menu_root_node: ?*Node,
 tooltip_root_node: ?*Node,
 screen_size: vec2,
@@ -72,7 +72,7 @@ pub fn init(allocator: Allocator, font_path: []const u8, icon_font_path: []const
         .parent_stack = Stack(*Node).init(allocator),
         .style_stack = Stack(Style).init(allocator),
         .auto_pop_style = false,
-        .root_node = undefined,
+        .root_node = null,
         .tooltip_root_node = null,
         .ctx_menu_root_node = null,
         .screen_size = undefined,
@@ -150,6 +150,9 @@ pub const Node = struct {
     // post-layout data
     rect: Rect,
     clip_rect: Rect,
+
+    // persists across frames (but gets updated every frame)
+    signal: Signal,
 
     // persistent cross-frame state
     hot_trans: f32,
@@ -322,7 +325,7 @@ pub fn addNode(self: *UiContext, flags: Flags, string: []const u8, init_args: an
 
     const node = self.addNodeRaw(flags, string, init_args) catch |e| blk: {
         self.setErrorInfo(@errorReturnTrace(), @errorName(e));
-        break :blk self.root_node;
+        break :blk self.root_node.?;
     };
     return node;
 }
@@ -346,7 +349,7 @@ pub fn addNodeStrings(self: *UiContext, flags: Flags, display_string: []const u8
 
     const node = self.addNodeRawStrings(flags, display_string, hash_string, init_args) catch |e| blk: {
         self.setErrorInfo(@errorReturnTrace(), @errorName(e));
-        break :blk self.root_node;
+        break :blk self.root_node.?;
     };
     return node;
 }
@@ -434,6 +437,7 @@ pub fn addNodeRawStrings(self: *UiContext, flags: Flags, display_string_in: []co
     // update cross-frame (persistant) data
     node.last_frame_touched = self.frame_idx;
     if (!lookup_result.found_existing) {
+        node.signal = self.computeNodeSignal(node);
         node.first_frame_touched = self.frame_idx;
         node.rel_pos_placement = .btm_left;
         node.rel_pos_placement_parent = .btm_left;
@@ -493,7 +497,109 @@ pub fn pushTmpStyle(self: *UiContext, partial_style: anytype) void {
     self.auto_pop_style = true;
 }
 
-pub fn getNodeSignal(self: *UiContext, node: *Node) Signal {
+pub fn setFocusedNode(self: *UiContext, node: *Node) void {
+    self.focused_node_key = self.keyFromNode(node);
+}
+
+pub fn startBuild(self: *UiContext, screen_w: u32, screen_h: u32, mouse_pos: vec2, events: *window.EventQueue) !void {
+    self.hot_node_key = null;
+    // get the signal in the reverse order that we render in (if a node is on top
+    // of another, the top one should get the inputs, no the bottom one)
+    if (self.tooltip_root_node) |node| self.computeSignalsForTree(node);
+    if (self.ctx_menu_root_node) |node| self.computeSignalsForTree(node);
+    if (self.root_node) |node| self.computeSignalsForTree(node);
+
+    // clear out the whole string arena
+    self.string_arena.deinit();
+    self.string_arena = std.heap.ArenaAllocator.init(self.allocator);
+
+    // remove the `no_id` nodes from the hash table before starting this new frame
+    var node_iter = self.node_table.valueIterator();
+    while (node_iter.next()) |node| {
+        if (node.flags.no_id) try node_iter.removeCurrent();
+    }
+
+    const screen_size = vec2{ @intToFloat(f32, screen_w), @intToFloat(f32, screen_h) };
+    self.screen_size = screen_size;
+    self.mouse_pos = mouse_pos;
+    self.events = events;
+
+    std.debug.assert(self.parent_stack.len() == 0);
+
+    self.style_stack.clear();
+    const default_style = Style{};
+    try self.style_stack.push(default_style);
+
+    const root_pref_sizes = [2]Size{ Size.pixels(screen_size[0], 1), Size.pixels(screen_size[1], 1) };
+    const whole_screen_rect = Rect{ .min = vec2{ 0, 0 }, .max = screen_size };
+    self.root_node = try self.addNodeRaw(.{ .clip_children = true }, "###INTERNAL_ROOT_NODE", .{
+        .pref_size = root_pref_sizes,
+        .rect = whole_screen_rect,
+        .clip_rect = whole_screen_rect,
+    });
+    try self.parent_stack.push(self.root_node.?);
+
+    self.ctx_menu_root_node = null;
+    self.tooltip_root_node = null;
+
+    self.first_error_trace = null;
+
+    var mouse_cursor = window.CursorType.arrow;
+    if (self.focused_node_key) |key| mouse_cursor = self.node_table.getFromHash(key).?.cursor_type;
+    if (self.hot_node_key) |key| mouse_cursor = self.node_table.getFromHash(key).?.cursor_type;
+    if (self.active_node_key) |key| mouse_cursor = self.node_table.getFromHash(key).?.cursor_type;
+    self.window_ptr.set_cursor(mouse_cursor);
+}
+
+pub fn endBuild(self: *UiContext, dt: f32) void {
+    if (self.first_error_trace) |error_trace| {
+        std.debug.print("{}\n", .{error_trace});
+        std.debug.panic("An error occurred during the UI building phase: {s}", .{self.first_error_name});
+    }
+
+    _ = self.style_stack.pop().?;
+    const parent = self.parent_stack.pop().?;
+    std.debug.assert(parent == self.root_node.?);
+
+    std.debug.assert(self.parent_stack.len() == 0);
+
+    // stale node pruning, or else they just keep taking up memory forever
+    var node_iter = self.node_table.valueIterator();
+    while (node_iter.next()) |node_ptr| {
+        if (node_ptr.last_frame_touched < self.frame_idx) {
+            node_iter.removeCurrent() catch unreachable;
+        }
+    }
+
+    // in case the hot/active/focused node key is pointing to a stale node
+    if (self.hot_node_key != null and !self.node_table.hasKeyHash(self.hot_node_key.?)) self.hot_node_key = null;
+    if (self.active_node_key != null and !self.node_table.hasKeyHash(self.active_node_key.?)) self.active_node_key = null;
+    if (self.focused_node_key != null and !self.node_table.hasKeyHash(self.focused_node_key.?)) self.focused_node_key = null;
+
+    // update the transition/animation values
+    const fast_rate = 1 - std.math.pow(f32, 2, -20.0 * dt);
+    node_iter = self.node_table.valueIterator();
+    while (node_iter.next()) |node_ptr| {
+        const node_key = self.keyFromNode(node_ptr);
+        const is_hot = (self.hot_node_key == node_key);
+        const is_active = (self.active_node_key == node_key);
+        const hot_target = if (is_hot) @as(f32, 1) else @as(f32, 0);
+        const active_target = if (is_active) @as(f32, 1) else @as(f32, 0);
+        node_ptr.hot_trans += (hot_target - node_ptr.hot_trans) * fast_rate;
+        node_ptr.active_trans += (active_target - node_ptr.active_trans) * fast_rate;
+    }
+
+    self.frame_idx += 1;
+}
+
+fn computeSignalsForTree(self: *UiContext, root: *Node) void {
+    var node_iterator = ReverseOrderBreadthFirstNodeIterator.init(root);
+    while (node_iterator.next()) |node| {
+        node.signal = self.computeNodeSignal(node);
+    }
+}
+
+pub fn computeNodeSignal(self: *UiContext, node: *Node) Signal {
     var signal = Signal{
         .clicked = false,
         .pressed = false,
@@ -508,6 +614,9 @@ pub fn getNodeSignal(self: *UiContext, node: *Node) Signal {
         .scroll_offset = vec2{ 0, 0 },
         .focused = false,
     };
+
+    const is_interactable = node.flags.clickable or node.flags.selectable or node.flags.scrollable;
+    if (!is_interactable) return signal;
 
     const mouse_is_over = node.rect.contains(self.mouse_pos);
     const node_key = self.keyFromNode(node);
@@ -548,7 +657,7 @@ pub fn getNodeSignal(self: *UiContext, node: *Node) Signal {
     }
 
     if (node.flags.selectable) {
-        if (mouse_down_ev != null) is_focused = hot_key_matches;
+        if (mouse_down_ev != null) is_focused = is_hot;
 
         // selectables support recieving clicks when the mouse up event happens outside
         if (is_focused and active_key_matches and mouse_up_ev != null) {
@@ -582,7 +691,7 @@ pub fn getNodeSignal(self: *UiContext, node: *Node) Signal {
     signal.focused = is_focused;
 
     // set/reset the hot and active keys
-    if (is_hot and !hot_key_matches) self.hot_node_key = node_key;
+    if (is_hot and self.hot_node_key == null) self.hot_node_key = node_key;
     if (!is_hot and hot_key_matches) self.hot_node_key = null;
     if (is_active and !active_key_matches) self.active_node_key = node_key;
     if (!is_active and active_key_matches) self.active_node_key = null;
@@ -607,95 +716,11 @@ pub fn getNodeSignal(self: *UiContext, node: *Node) Signal {
     return signal;
 }
 
-pub fn startBuild(self: *UiContext, screen_w: u32, screen_h: u32, mouse_pos: vec2, events: *window.EventQueue) !void {
-    // clear out the whole string arena
-    self.string_arena.deinit();
-    self.string_arena = std.heap.ArenaAllocator.init(self.allocator);
-
-    // remove the `no_id` nodes from the hash table before starting this new frame
-    var node_iter = self.node_table.valueIterator();
-    while (node_iter.next()) |node| {
-        if (node.flags.no_id) try node_iter.removeCurrent();
-    }
-
-    const screen_size = vec2{ @intToFloat(f32, screen_w), @intToFloat(f32, screen_h) };
-    self.screen_size = screen_size;
-    self.mouse_pos = mouse_pos;
-    self.events = events;
-
-    std.debug.assert(self.parent_stack.len() == 0);
-
-    self.style_stack.clear();
-    const default_style = Style{};
-    try self.style_stack.push(default_style);
-
-    const root_pref_sizes = [2]Size{ Size.pixels(screen_size[0], 1), Size.pixels(screen_size[1], 1) };
-    const whole_screen_rect = Rect{ .min = vec2{ 0, 0 }, .max = screen_size };
-    self.root_node = try self.addNodeRaw(.{ .clip_children = true }, "###INTERNAL_ROOT_NODE", .{
-        .pref_size = root_pref_sizes,
-        .rect = whole_screen_rect,
-        .clip_rect = whole_screen_rect,
-    });
-    try self.parent_stack.push(self.root_node);
-
-    self.ctx_menu_root_node = null;
-    self.tooltip_root_node = null;
-
-    self.first_error_trace = null;
-
-    var mouse_cursor = window.CursorType.arrow;
-    if (self.focused_node_key) |key| mouse_cursor = self.node_table.getFromHash(key).?.cursor_type;
-    if (self.hot_node_key) |key| mouse_cursor = self.node_table.getFromHash(key).?.cursor_type;
-    if (self.active_node_key) |key| mouse_cursor = self.node_table.getFromHash(key).?.cursor_type;
-    self.window_ptr.set_cursor(mouse_cursor);
-}
-
-pub fn endBuild(self: *UiContext, dt: f32) void {
-    if (self.first_error_trace) |error_trace| {
-        std.debug.print("{}\n", .{error_trace});
-        std.debug.panic("An error occurred during the UI building phase: {s}", .{self.first_error_name});
-    }
-
-    _ = self.style_stack.pop().?;
-    const parent = self.parent_stack.pop().?;
-    std.debug.assert(parent == self.root_node);
-
-    std.debug.assert(self.parent_stack.len() == 0);
-
-    // stale node pruning, or else they just keep taking up memory forever
-    var node_iter = self.node_table.valueIterator();
-    while (node_iter.next()) |node_ptr| {
-        if (node_ptr.last_frame_touched < self.frame_idx) {
-            node_iter.removeCurrent() catch unreachable;
-        }
-    }
-
-    // in case the hot/active/focused node key is pointing to a stale node
-    if (self.hot_node_key != null and !self.node_table.hasKeyHash(self.hot_node_key.?)) self.hot_node_key = null;
-    if (self.active_node_key != null and !self.node_table.hasKeyHash(self.active_node_key.?)) self.active_node_key = null;
-    if (self.focused_node_key != null and !self.node_table.hasKeyHash(self.focused_node_key.?)) self.focused_node_key = null;
-
-    // update the transition/animation values
-    const fast_rate = 1 - std.math.pow(f32, 2, -20.0 * dt);
-    node_iter = self.node_table.valueIterator();
-    while (node_iter.next()) |node_ptr| {
-        const node_key = self.keyFromNode(node_ptr);
-        const is_hot = (self.hot_node_key == node_key);
-        const is_active = (self.active_node_key == node_key);
-        const hot_target = if (is_hot) @as(f32, 1) else @as(f32, 0);
-        const active_target = if (is_active) @as(f32, 1) else @as(f32, 0);
-        node_ptr.hot_trans += (hot_target - node_ptr.hot_trans) * fast_rate;
-        node_ptr.active_trans += (active_target - node_ptr.active_trans) * fast_rate;
-    }
-
-    self.frame_idx += 1;
-}
-
 pub fn render(self: *UiContext) !void {
     var shader_inputs = std.ArrayList(ShaderInput).init(self.allocator);
     defer shader_inputs.deinit();
 
-    try self.setupTreeForRender(&shader_inputs, self.root_node);
+    try self.setupTreeForRender(&shader_inputs, self.root_node.?);
     if (self.ctx_menu_root_node) |node| try self.setupTreeForRender(&shader_inputs, node);
     if (self.tooltip_root_node) |node| try self.setupTreeForRender(&shader_inputs, node);
 
@@ -1412,6 +1437,51 @@ pub const DepthFirstNodeIterator = struct {
     }
 };
 
+pub const ReverseOrderBreadthFirstNodeIterator = struct {
+    cur_node: *Node,
+    reached_top: bool,
+
+    const Self = @This();
+
+    pub fn init(root: *Node) Self {
+        var self = Self{ .cur_node = root, .reached_top = false };
+        while (self.cur_node.last) |last| self.cur_node = last;
+        return self;
+    }
+
+    pub fn next(self: *Self) ?*Node {
+        if (self.reached_top) return null;
+
+        var cur_node = self.cur_node;
+
+        var next_node = @as(?*Node, cur_node);
+        if (self.cur_node.prev) |prev| {
+            next_node = prev;
+        } else if (self.cur_node.parent) |parent| {
+            // find first sibling of parent with children
+            var aunt = parent.prev;
+            while (aunt != null and aunt.?.child_count == 0) aunt = aunt.?.prev;
+
+            if (aunt) |aunt_node| {
+                next_node = aunt_node.last.?;
+                while (next_node.?.last) |last| next_node = last;
+            } else if (parent.parent) |gparent_node| {
+                next_node = gparent_node.last.?;
+            } else {
+                next_node = null;
+            }
+        } else {
+            next_node = null;
+        }
+
+        if (next_node) |node| {
+            self.cur_node = node;
+        } else self.reached_top = true;
+
+        return cur_node;
+    }
+};
+
 /// very small wrapper around std.ArrayList that provides push, pop, and top functions
 pub fn Stack(comptime T: type) type {
     return struct {
@@ -1597,8 +1667,9 @@ pub fn randomString(prng: *PRNG) [32]u8 {
 pub fn dumpNodeTree(self: *UiContext) void {
     var node_iter = self.node_table.valueIterator();
     while (node_iter.next()) |node| {
-        std.debug.print("{*} :: first=0x{x:0>15}, last=0x{x:0>15}, next=0x{x:0>15}, prev=0x{x:0>15}, parent=0x{x:0>15}, child_count={}\n", .{
+        std.debug.print("{*} [{s}] :: first=0x{x:0>15}, last=0x{x:0>15}, next=0x{x:0>15}, prev=0x{x:0>15}, parent=0x{x:0>15}, child_count={}\n", .{
             node,
+            node.hash_string,
             if (node.first) |ptr| @ptrToInt(ptr) else 0,
             if (node.last) |ptr| @ptrToInt(ptr) else 0,
             if (node.next) |ptr| @ptrToInt(ptr) else 0,

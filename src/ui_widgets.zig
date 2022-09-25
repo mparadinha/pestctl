@@ -49,7 +49,7 @@ pub fn textBox(self: *UiContext, string: []const u8) Signal {
         .draw_border = true,
         .draw_background = true,
     }, string, .{});
-    return self.getNodeSignal(node);
+    return node.signal;
 }
 
 pub fn textBoxF(self: *UiContext, comptime fmt: []const u8, args: anytype) Signal {
@@ -71,7 +71,7 @@ pub fn button(self: *UiContext, string: []const u8) Signal {
     }, string, .{
         .cursor_type = .hand,
     });
-    return self.getNodeSignal(node);
+    return node.signal;
 }
 
 pub fn buttonF(self: *UiContext, comptime fmt: []const u8, args: anytype) Signal {
@@ -96,7 +96,7 @@ pub fn subtleIconButton(self: *UiContext, string: []const u8) Signal {
         .cursor_type = .hand,
         .font_type = .icon,
     });
-    return self.getNodeSignal(node);
+    return node.signal;
 }
 
 /// pushes a new node as parent that is meant only for layout purposes
@@ -188,7 +188,7 @@ pub fn scrollableRegion(self: *UiContext, string: []const u8, axis: Axis) Signal
     };
     self.spacer(axis, Size.pixels(node.scroll_offset[axis_idx], 1));
 
-    return self.getNodeSignal(node);
+    return node.signal;
 }
 
 pub fn scrollableRegionF(self: *UiContext, comptime fmt: []const u8, args: anytype, axis: Axis) Signal {
@@ -205,7 +205,7 @@ pub fn scrollableText(self: *UiContext, hash_string: []const u8, string: []const
     self.pushParent(top_node);
     defer _ = self.popParent();
     self.label(string);
-    return self.getNodeSignal(top_node);
+    return top_node.signal;
 }
 
 pub fn textInput(self: *UiContext, hash_string: []const u8, buffer: []u8, buf_len: *usize) Signal {
@@ -239,7 +239,7 @@ pub fn textInputRaw(self: *UiContext, hash_string: []const u8, buffer: []u8, buf
         widget_node.cursor = buf_len.*;
         widget_node.mark = buf_len.*;
     }
-    const sig = self.getNodeSignal(widget_node);
+    const sig = widget_node.signal;
 
     self.pushParent(widget_node);
     defer _ = self.popParent();

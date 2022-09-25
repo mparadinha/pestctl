@@ -127,23 +127,21 @@ pub fn main() !void {
     var session_opt = if (cmdline_args.exec_path) |path| try Session.init(allocator, path) else null;
     defer if (session_opt) |*session| session.deinit();
 
-    var last_mouse_pos = vec2{ 0, 0 };
     var last_time = @floatCast(f32, c.glfwGetTime());
 
     var src_file_buf = try std.BoundedArray(u8, 0x1000).init(0);
     var num_buf = try std.BoundedArray(u8, 0x1000).init(0);
     var file_buf = try std.BoundedArray(u8, 0x1000).init(0);
     var var_buf = try std.BoundedArray(u8, 0x1000).init(0);
+    // @debug
+    try num_buf.appendSlice("85");
+    try file_buf.appendSlice("main.zig");
 
     var disasm_texts = std.ArrayList(AsmTextInfo).init(allocator);
     defer {
         for (disasm_texts.items) |text| text.deinit(allocator);
         disasm_texts.deinit();
     }
-
-    // @debug
-    try num_buf.appendSlice("85");
-    try file_buf.appendSlice("main.zig");
 
     var file_tab = FileTab.init(allocator);
     defer file_tab.deinit();
@@ -171,8 +169,6 @@ pub fn main() !void {
         last_time = cur_time;
 
         const mouse_pos = window.get_mouse_pos();
-        //var mouse_diff = mouse_pos - last_mouse_pos;
-        last_mouse_pos = mouse_pos;
 
         // should I move this to the end of the frame next to the session_cmd execution?
         if (session_opt) |*session| try session.fullUpdate();
@@ -211,7 +207,7 @@ pub fn main() !void {
                     ui.startCtxMenu(.{ .top_left = text_input_node.rect.min });
                     {
                         const children_size = [2]Size{ Size.by_children(1), Size.by_children(1) };
-                        const bg_color = vec4{ 0, 0, 0, 0.75 };
+                        const bg_color = vec4{ 0, 0, 0, 0.85 };
                         const tooltip_bg = ui.addNode(.{ .no_id = true, .draw_background = true }, "", .{
                             .bg_color = bg_color,
                             .pref_size = children_size,
@@ -718,7 +714,7 @@ const FileTab = struct {
                 .scrollable = true,
                 .clip_children = true,
             }, "###{s}::line_scroll_parent", .{active_name}, .{ .pref_size = line_scroll_size });
-            const line_sig = ui.getNodeSignal(line_scroll_parent);
+            const line_sig = line_scroll_parent.signal;
             ui.pushParent(line_scroll_parent);
             const line_text_node = blk: {
                 // TODO: what about files with more than 1k lines?
@@ -835,8 +831,7 @@ fn textDisplay(ui: *UiContext, label: []const u8, text: []const u8, lock_line: ?
         .scrollable = true,
         .clip_children = true,
     }, "###{s}::parent", .{label}, .{ .child_layout_axis = .y, .pref_size = text_box_size });
-    const parent_sig = ui.getNodeSignal(parent);
-
+    const parent_sig = parent.signal;
     ui.pushParent(parent);
     defer std.debug.assert(ui.popParent() == parent);
 
@@ -1009,7 +1004,7 @@ fn showDisassemblyWindow(ui: *UiContext, label: []const u8, text_info: AsmTextIn
         .scrollable = true,
         .clip_children = true,
     }, "###{s}:parent", .{label}, .{ .child_layout_axis = .y, .pref_size = text_box_size });
-    const parent_sig = ui.getNodeSignal(parent);
+    const parent_sig = parent.signal;
     ui.pushParent(parent);
     defer std.debug.assert(ui.popParent() == parent);
 
