@@ -419,11 +419,83 @@ pub fn main() !void {
                 const button_sig = ui.button("Add Variable");
                 ui.pushStyle(.{ .bg_color = vec4{ 0.75, 0.75, 0.75, 1 } });
                 ui.pushStyle(.{ .pref_size = var_input_size });
-                const text_sig = ui.textInput("add_var_textinput", &var_buf.buffer, &var_buf.len);
+                const text_input_sig = ui.textInput("add_var_textinput", &var_buf.buffer, &var_buf.len);
                 _ = ui.popStyle();
                 _ = ui.popStyle();
-                if (button_sig.clicked or text_sig.enter_pressed) {
+                if (button_sig.clicked or text_input_sig.enter_pressed) {
                     try session_cmds.append(.{ .add_watched_variable = var_buf.slice() });
+                }
+                if (text_input_sig.focused and var_buf.len > 0) {
+                    const text_input_node = ui.topParent().last.?;
+                    ui.startCtxMenu(.{ .top_left = text_input_node.rect.min });
+                    {
+                        const children_size = [2]Size{ Size.by_children(1), Size.by_children(1) };
+                        const bg_color = vec4{ 0, 0, 0, 0.85 };
+                        const tooltip_bg = ui.addNode(.{ .no_id = true, .draw_background = true }, "", .{
+                            .bg_color = bg_color,
+                            .pref_size = children_size,
+                        });
+                        ui.pushParent(tooltip_bg);
+                        defer std.debug.assert(ui.popParent() == tooltip_bg);
+
+                        const search_str = var_buf.slice();
+
+                        //var start_time = c.glfwGetTime();
+                        var shown_vars = std.BoundedArray([]const u8, 10).init(0) catch unreachable;
+                        var min_score_stored = @as(f32, 0);
+                        var min_score_stored_idx = @as(usize, 0);
+                        for (session.elf.dwarf.units) |comp_unit| {
+                            for (comp_unit.variables) |variable| {
+                                const score = strCmpScore(search_str, variable.name);
+                                //std.debug.print("'{s}' got a score of {}\n", .{ variable.name, score });
+                                if (score > min_score_stored) {
+                                    if (shown_vars.len < shown_vars.buffer.len) {
+                                        shown_vars.append(variable.name) catch unreachable;
+                                    } else {
+                                        shown_vars.buffer[min_score_stored_idx] = variable.name;
+                                        // recalculate the min_score
+                                        min_score_stored = score;
+                                        for (shown_vars.slice()) |stored_var, stored_idx| {
+                                            const new_score = strCmpScore(search_str, stored_var);
+                                            if (new_score < min_score_stored) {
+                                                min_score_stored = new_score;
+                                                min_score_stored_idx = stored_idx;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // sort the entries based on score
+                        const SortCtx = struct {
+                            target: []const u8,
+                            pub fn lessThan(ctx: @This(), lhs: []const u8, rhs: []const u8) bool {
+                                return strCmpScore(ctx.target, lhs) < strCmpScore(ctx.target, rhs);
+                            }
+                        };
+                        std.sort.sort([]const u8, shown_vars.slice(), SortCtx{ .target = search_str }, SortCtx.lessThan);
+                        std.mem.reverse([]const u8, shown_vars.slice());
+
+                        var total_vars = @as(usize, 0);
+                        for (session.elf.dwarf.units) |comp_unit| total_vars += comp_unit.variables.len;
+                        //const delta_time = c.glfwGetTime() - start_time;
+                        //std.debug.print("var suggestions took {d:2.4}ms for {} choices\n", .{ delta_time * 1000, total_vars });
+
+                        const fill_x_size = [2]Size{ Size.percent(1, 1), Size.text_dim(1) };
+                        ui.pushStyle(.{ .pref_size = fill_x_size });
+                        for (shown_vars.slice()) |name, idx| {
+                            const var_button_sig = ui.buttonF("{s}###var_button_{}", .{ name, idx });
+                            const var_button_node = ui.topParent().last.?;
+                            var_button_node.flags.draw_background = false;
+                            var_button_node.border_color = vec4{ 0, 0, 0, 0 };
+                            if (var_button_sig.clicked) {
+                                std.debug.print("TODO: use '{s}' variable\n", .{name});
+                            }
+                        }
+                        _ = ui.popStyle();
+                    }
+                    ui.endCtxMenu();
                 }
             }
             std.debug.assert(ui.popParent() == add_var_parent);
@@ -485,6 +557,13 @@ pub fn main() !void {
 
         std.debug.assert(ui.popParent() == tabs_parent);
 
+        //if (window.event_queue.searchAndRemove(.KeyUp, .{ .key = c.GLFW_KEY_D, .mods = .{ .shift = true } })) {
+        //    const dump_file = "ui_main_tree.dot";
+        //    std.debug.print("dumping root tree to {s}\n", .{dump_file});
+        //    try ui.dumpNodeTreeGraph(ui.root_node.?, dump_file);
+        //    return;
+        //}
+
         ui.endBuild(dt);
 
         gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
@@ -495,9 +574,9 @@ pub fn main() !void {
         if (last_src_loc != null and cur_src_loc != null) {
             if (SrcLoc.cmp(last_src_loc.?, cur_src_loc.?)) {
                 focused_src_loc = null;
-                last_src_loc = cur_src_loc;
             }
         }
+        last_src_loc = cur_src_loc;
 
         if (focused_src_loc) |src| try file_tab.focusOnSrc(src);
         file_tab.updateAnimations(dt);
@@ -1074,6 +1153,18 @@ fn showDisassemblyWindow(ui: *UiContext, label: []const u8, text_info: AsmTextIn
     }
 
     return parent_sig;
+}
+
+fn strCmpScore(str_a: []const u8, str_b: []const u8) f32 {
+    var score = @as(f32, 0);
+
+    var max_idx = std.math.min(str_a.len, str_b.len);
+    var idx = @as(usize, 0);
+    while (idx < max_idx) : (idx += 1) {
+        if (str_a[idx] == str_b[idx]) score += 1;
+    }
+
+    return score;
 }
 
 fn get_proc_address_fn(window: ?*c.GLFWwindow, proc_name: [:0]const u8) ?*const anyopaque {

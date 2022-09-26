@@ -672,6 +672,7 @@ pub fn computeNodeSignal(self: *UiContext, node: *Node) Signal {
         if (is_focused and enter_up_ev != null) {
             signal.enter_pressed = true;
             used_enter_up_ev = true;
+            is_focused = false;
         }
     }
 
@@ -1678,4 +1679,44 @@ pub fn dumpNodeTree(self: *UiContext) void {
             node.child_count,
         });
     }
+}
+
+pub fn dumpNodeTreeGraph(self: *UiContext, root: *Node, save_path: []const u8) !void {
+    const savefile = try std.fs.cwd().createFile(save_path, .{});
+    defer savefile.close();
+    var writer = savefile.writer();
+
+    _ = try writer.write("digraph {\n");
+    _ = try writer.write("  overlap=true;\n");
+    _ = try writer.write("  ranksep=2;\n");
+
+    var node_iter = self.node_table.valueIterator();
+    while (node_iter.next()) |node| {
+        try writer.print("  Node_0x{x} [label=\"{s}\"];\n", .{ @ptrToInt(node), std.fmt.fmtSliceEscapeLower(node.hash_string) });
+        if (node.parent) |other| try writer.print("    Node_0x{x} -> Node_0x{x} [label=\"parent\"];\n", .{ @ptrToInt(node), @ptrToInt(other) });
+        if (node.first) |other| try writer.print("    Node_0x{x} -> Node_0x{x} [label=\"first\"];\n", .{ @ptrToInt(node), @ptrToInt(other) });
+        if (node.last) |other| try writer.print("    Node_0x{x} -> Node_0x{x} [label=\"last\"];\n", .{ @ptrToInt(node), @ptrToInt(other) });
+        if (node.next) |other| try writer.print("    Node_0x{x} -> Node_0x{x} [label=\"next\"];\n", .{ @ptrToInt(node), @ptrToInt(other) });
+        if (node.prev) |other| try writer.print("    Node_0x{x} -> Node_0x{x} [label=\"prev\"];\n", .{ @ptrToInt(node), @ptrToInt(other) });
+    }
+
+    node_iter = self.node_table.valueIterator();
+    while (node_iter.next()) |node| {
+        if (node.child_count == 0) continue;
+
+        _ = try writer.write("  subgraph {\n");
+        _ = try writer.write("    rankdir=LR;\n");
+        _ = try writer.write("    rank=same;\n");
+
+        var child = node.first;
+        while (child) |child_node| : (child = child_node.next) {
+            try writer.print("    Node_0x{x};\n", .{@ptrToInt(child_node)});
+        }
+
+        _ = try writer.write("  }\n");
+    }
+
+    _ = try writer.write("}\n");
+
+    _ = root;
 }
