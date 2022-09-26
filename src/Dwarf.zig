@@ -148,8 +148,11 @@ pub const DeclCoords = struct {
     column: u32,
 
     pub fn toSrcLoc(self: DeclCoords, line_prog: LineProg) SrcLoc {
+        if (self.file >= line_prog.files.len) {
+            std.debug.print("dummy print\n", .{});
+        }
         return .{
-            .dir = line_prog.dirs[line_prog.files[self.file].dir],
+            .dir = line_prog.include_dirs[line_prog.files[self.file].dir],
             .file = line_prog.files[self.file].name,
             .line = self.line,
             .column = self.column,
@@ -190,7 +193,7 @@ pub const Variable = struct {
     loc: ?LocationDesc,
 
     @"type": ?*Type,
-    function: ?*Function,
+    function: ?*Function, // TODO: replace with a Scope instead
 };
 
 pub const Type = struct {

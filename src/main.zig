@@ -441,22 +441,25 @@ pub fn main() !void {
                         const search_str = var_buf.slice();
 
                         //var start_time = c.glfwGetTime();
-                        var shown_vars = std.BoundedArray([]const u8, 10).init(0) catch unreachable;
+                        var shown_vars = std.BoundedArray(Dwarf.Variable, 10).init(0) catch unreachable;
+                        var var_comp_unit_idx = @as([shown_vars.buffer.len]usize, undefined);
                         var min_score_stored = @as(f32, 0);
                         var min_score_stored_idx = @as(usize, 0);
-                        for (session.elf.dwarf.units) |comp_unit| {
+                        for (session.elf.dwarf.units) |comp_unit, comp_unit_idx| {
                             for (comp_unit.variables) |variable| {
                                 const score = strCmpScore(search_str, variable.name);
                                 //std.debug.print("'{s}' got a score of {}\n", .{ variable.name, score });
                                 if (score > min_score_stored) {
                                     if (shown_vars.len < shown_vars.buffer.len) {
-                                        shown_vars.append(variable.name) catch unreachable;
+                                        var_comp_unit_idx[shown_vars.len] = comp_unit_idx;
+                                        shown_vars.append(variable) catch unreachable;
                                     } else {
-                                        shown_vars.buffer[min_score_stored_idx] = variable.name;
+                                        var_comp_unit_idx[min_score_stored_idx] = comp_unit_idx;
+                                        shown_vars.buffer[min_score_stored_idx] = variable;
                                         // recalculate the min_score
                                         min_score_stored = score;
                                         for (shown_vars.slice()) |stored_var, stored_idx| {
-                                            const new_score = strCmpScore(search_str, stored_var);
+                                            const new_score = strCmpScore(search_str, stored_var.name);
                                             if (new_score < min_score_stored) {
                                                 min_score_stored = new_score;
                                                 min_score_stored_idx = stored_idx;
@@ -468,29 +471,43 @@ pub fn main() !void {
                         }
 
                         // sort the entries based on score
-                        const SortCtx = struct {
-                            target: []const u8,
-                            pub fn lessThan(ctx: @This(), lhs: []const u8, rhs: []const u8) bool {
-                                return strCmpScore(ctx.target, lhs) < strCmpScore(ctx.target, rhs);
+                        {
+                            var target = var_buf.slice();
+                            var vars_slice = shown_vars.slice();
+                            var idx = @as(usize, 1);
+                            while (idx < vars_slice.len) : (idx += 1) {
+                                var cmp_idx = idx;
+                                cmp_loop: while (cmp_idx > 0) : (cmp_idx -= 1) {
+                                    const cur = &vars_slice[cmp_idx];
+                                    const prev = &vars_slice[cmp_idx - 1];
+                                    if (strCmpScore(target, cur.name) > strCmpScore(target, prev.name)) {
+                                        std.mem.swap(Dwarf.Variable, cur, prev);
+                                        std.mem.swap(usize, &var_comp_unit_idx[cmp_idx], &var_comp_unit_idx[cmp_idx - 1]);
+                                    } else break :cmp_loop;
+                                }
                             }
-                        };
-                        std.sort.sort([]const u8, shown_vars.slice(), SortCtx{ .target = search_str }, SortCtx.lessThan);
-                        std.mem.reverse([]const u8, shown_vars.slice());
+                        }
 
-                        var total_vars = @as(usize, 0);
-                        for (session.elf.dwarf.units) |comp_unit| total_vars += comp_unit.variables.len;
+                        //var total_vars = @as(usize, 0);
+                        //for (session.elf.dwarf.units) |comp_unit| total_vars += comp_unit.variables.len;
                         //const delta_time = c.glfwGetTime() - start_time;
                         //std.debug.print("var suggestions took {d:2.4}ms for {} choices\n", .{ delta_time * 1000, total_vars });
 
                         const fill_x_size = [2]Size{ Size.percent(1, 1), Size.text_dim(1) };
                         ui.pushStyle(.{ .pref_size = fill_x_size });
-                        for (shown_vars.slice()) |name, idx| {
-                            const var_button_sig = ui.buttonF("{s}###var_button_{}", .{ name, idx });
+                        for (shown_vars.slice()) |variable, idx| {
+                            const unit_idx = var_comp_unit_idx[idx];
+                            const line_prog = session.elf.dwarf.line_progs[unit_idx];
+                            const var_button_sig = if (variable.decl_coords) |decl_coords| blk: {
+                                std.debug.print("idx={}, unit_idx={}\n", .{ idx, unit_idx });
+                                const src = decl_coords.toSrcLoc(line_prog);
+                                break :blk ui.buttonF("{s} ({s}:{})###var_button_{}", .{ variable.name, src.file, src.line, idx });
+                            } else ui.buttonF("{s}###var_button_{}", .{ variable.name, idx });
                             const var_button_node = ui.topParent().last.?;
                             var_button_node.flags.draw_background = false;
                             var_button_node.border_color = vec4{ 0, 0, 0, 0 };
                             if (var_button_sig.clicked) {
-                                std.debug.print("TODO: use '{s}' variable\n", .{name});
+                                std.debug.print("TODO: use '{s}' variable\n", .{variable.name});
                             }
                         }
                         _ = ui.popStyle();
