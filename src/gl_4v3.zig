@@ -3493,8 +3493,10 @@ pub fn getPointerv(_pname: GLenum, _params: ?*?*anyopaque) void {
 }
 // Extensions:
 
+pub const LoadError = error{EntryPointNotFound};
+
 // Loader API:
-pub fn load(load_ctx: anytype, comptime get_proc_address: fn (@TypeOf(load_ctx), [:0]const u8) ?*const anyopaque) !void {
+pub fn load(load_ctx: anytype, comptime get_proc_address: fn (@TypeOf(load_ctx), [:0]const u8) ?*const anyopaque) LoadError!void {
     var success = true;
     if (get_proc_address(load_ctx, "glTexStorage2D")) |proc| {
         function_pointers.glTexStorage2D = @ptrCast(?function_signatures.glTexStorage2D, proc);
@@ -6701,7 +6703,7 @@ pub fn load(load_ctx: anytype, comptime get_proc_address: fn (@TypeOf(load_ctx),
         success = false;
     }
     if (!success)
-        return error.EntryPointNotFound;
+        return LoadError.EntryPointNotFound;
 }
 
 const function_signatures = struct {

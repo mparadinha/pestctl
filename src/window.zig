@@ -225,12 +225,16 @@ pub const Window = struct {
     mouse_pos: ?vec2,
     framebuffer_size: ?uvec2,
 
+    pub const InitError = GlfwError || gl.LoadError;
+
     /// call 'finish_setup' right after 'init'
     /// call 'deinit' to clean up resources
-    pub fn init(allocator: Allocator, width: u32, height: u32, title: []const u8) Window {
+    pub fn init(allocator: Allocator, width: u32, height: u32, title: []const u8) InitError!Window {
         _ = c.glfwSetErrorCallback(glfw_error_callback); // returns previous callback
 
-        if (c.glfwInit() != c.GLFW_TRUE) unreachable;
+        if (c.glfwInit() != c.GLFW_TRUE) {
+            if (returnGlfwError()) unreachable else |err| return err;
+        }
 
         c.glfwWindowHint(c.GLFW_CONTEXT_VERSION_MAJOR, 3);
         c.glfwWindowHint(c.GLFW_CONTEXT_VERSION_MINOR, 3);
@@ -243,7 +247,7 @@ pub const Window = struct {
             @ptrCast([*c]const u8, title),
             null,
             null,
-        ) orelse unreachable;
+        ) orelse if (returnGlfwError()) unreachable else |err| return err;
 
         c.glfwMakeContextCurrent(handle);
         c.glfwSwapInterval(1);
@@ -271,6 +275,11 @@ pub const Window = struct {
         _ = c.glfwSetCursorPosCallback(self.handle, glfw_cursor_pos_callback);
         _ = c.glfwSetScrollCallback(self.handle, glfw_scroll_callback);
         _ = c.glfwSetCharCallback(self.handle, glfw_char_callback);
+
+        // load OpenGL now
+        try gl.load(handle, get_proc_address_fn);
+        gl.enable(gl.DEBUG_OUTPUT);
+        gl.debugMessageCallback(gl_error_callback, null);
 
         return self;
     }
@@ -463,3 +472,87 @@ pub const Window = struct {
         self.event_queue.append(.{ .Char = codepoint }) catch unreachable;
     }
 };
+
+pub const GlfwError = error{
+    NotInitialized,
+    NoCurrentContext,
+    InvalidEnum,
+    InvalidValue,
+    OutOfMemory,
+    ApiUnavailable,
+    VersionUnavailable,
+    PlatformError,
+    FormatUnavailable,
+    NoWindowContext,
+};
+
+pub fn returnGlfwError() GlfwError!void {
+    const error_code = c.glfwGetError(null);
+    return switch (error_code) {
+        c.GLFW_NO_ERROR => {},
+        c.GLFW_NOT_INITIALIZED => GlfwError.NotInitialized,
+        c.GLFW_NO_CURRENT_CONTEXT => GlfwError.NoCurrentContext,
+        c.GLFW_INVALID_ENUM => GlfwError.InvalidEnum,
+        c.GLFW_INVALID_VALUE => GlfwError.InvalidValue,
+        c.GLFW_OUT_OF_MEMORY => GlfwError.OutOfMemory,
+        c.GLFW_API_UNAVAILABLE => GlfwError.ApiUnavailable,
+        c.GLFW_VERSION_UNAVAILABLE => GlfwError.VersionUnavailable,
+        c.GLFW_PLATFORM_ERROR => GlfwError.PlatformError,
+        c.GLFW_FORMAT_UNAVAILABLE => GlfwError.FormatUnavailable,
+        c.GLFW_NO_WINDOW_CONTEXT => GlfwError.NoWindowContext,
+        else => std.debug.panic("unknown glfw error code 0x{x}\n", .{error_code}),
+    };
+}
+
+fn get_proc_address_fn(window: ?*c.GLFWwindow, proc_name: [:0]const u8) ?*const anyopaque {
+    _ = window;
+    const fn_ptr = c.glfwGetProcAddress(proc_name.ptr);
+    // without this I got a "cast discards const qualifier" error
+    return @intToPtr(?*const anyopaque, @ptrToInt(fn_ptr));
+}
+
+fn gl_error_callback(
+    source: u32,
+    error_type: u32,
+    id: u32,
+    severity: u32,
+    len: i32,
+    msg: [*:0]const u8,
+    user_param: ?*const anyopaque,
+) callconv(.C) void {
+    _ = len;
+    _ = user_param;
+
+    if (severity == gl.DEBUG_SEVERITY_NOTIFICATION) return;
+
+    const source_str = switch (source) {
+        0x824B => "SOURCE_OTHER",
+        0x824A => "SOURCE_APPLICATION",
+        0x8249 => "SOURCE_THIRD_PARTY",
+        0x8248 => "SOURCE_SHADER_COMPILER",
+        0x8247 => "SOURCE_WINDOW_SYSTEM",
+        0x8246 => "SOURCE_API",
+        else => unreachable,
+    };
+    const error_type_str = switch (error_type) {
+        0x826A => "TYPE_POP_GROUP",
+        0x8269 => "TYPE_PUSH_GROUP",
+        0x8268 => "TYPE_MARKER",
+        0x8251 => "TYPE_OTHER",
+        0x8250 => "TYPE_PERFORMANCE",
+        0x824F => "TYPE_PORTABILITY",
+        0x824E => "TYPE_UNDEFINED_BEHAVIOR",
+        0x824D => "TYPE_DEPRECATED_BEHAVIOR",
+        0x824C => "TYPE_ERROR",
+        else => unreachable,
+    };
+    const severity_str = switch (severity) {
+        0x826B => "SEVERITY_NOTIFICATION",
+        0x9148 => "SEVERITY_LOW",
+        0x9147 => "SEVERITY_MEDIUM",
+        0x9146 => "SEVERITY_HIGH",
+        else => unreachable,
+    };
+
+    std.debug.print("OpenGL: ({s}, {s}, {s}, id={}) {s}\n", .{ source_str, severity_str, error_type_str, id, msg });
+}
