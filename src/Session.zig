@@ -4,6 +4,7 @@ const pid_t = std.os.pid_t;
 const c = @import("c.zig");
 const Elf = @import("Elf.zig");
 const Dwarf = @import("Dwarf.zig");
+const DW = Dwarf.DW;
 const SrcLoc = Dwarf.SrcLoc;
 
 const Session = @This();
@@ -19,7 +20,7 @@ src_loc: ?SrcLoc,
 addr_range: ?[2]u64,
 call_stack: []CallFrame,
 regs: Registers,
-watched_vars: std.ArrayList(WatchedVar),
+watched_vars: std.ArrayList(Dwarf.Variable),
 
 pub const Status = enum {
     Running,
@@ -38,14 +39,6 @@ const BreakPoint = struct {
     only_once: bool = false,
 };
 
-pub const WatchedVar = struct {
-    name: []const u8,
-    rbp_offset: i32, // TODO: all other types of storage lmao
-    value: union(enum) {
-        Float: f32,
-    },
-};
-
 pub fn init(allocator: Allocator, exec_path: []const u8) !Session {
     var self = Session{
         .allocator = allocator,
@@ -58,7 +51,7 @@ pub fn init(allocator: Allocator, exec_path: []const u8) !Session {
         .addr_range = null,
         .call_stack = &[0]CallFrame{},
         .regs = undefined,
-        .watched_vars = std.ArrayList(WatchedVar).init(allocator),
+        .watched_vars = std.ArrayList(Dwarf.Variable).init(allocator),
     };
 
     try self.startTracing();
@@ -194,19 +187,20 @@ pub fn fullUpdate(self: *Session) !void {
     }
 
     // update watched vars
-    for (self.watched_vars.items) |*var_info| {
-        switch (var_info.value) {
-            .Float => |*float| {
-                //std.debug.print("rbp=0x{x:0>16}, offset={}\n", .{ self.regs.rbp, var_info.rbp_offset });
-                const tmp = @intCast(isize, self.regs.rbp) + var_info.rbp_offset;
-                if (tmp < 0) continue; // TODO
-                const addr = @intCast(usize, tmp);
-                const bytes = try self.getBytesAtAddr(addr, 4);
-                float.* = @bitCast(f32, std.mem.readIntLittle(u32, &bytes));
-                //std.debug.print("rbp_offset={}, addr=0x{x:0>16}, bytes={d}, float={d}\n", .{ var_info.rbp_offset, addr, bytes, float });
-            },
-        }
-    }
+    // TODO
+    //for (self.watched_vars.items) |*var_info| {
+    //    switch (var_info.value) {
+    //        .Float => |*float| {
+    //            //std.debug.print("rbp=0x{x:0>16}, offset={}\n", .{ self.regs.rbp, var_info.rbp_offset });
+    //            const tmp = @intCast(isize, self.regs.rbp) + var_info.rbp_offset;
+    //            if (tmp < 0) continue; // TODO
+    //            const addr = @intCast(usize, tmp);
+    //            const bytes = try self.getBytesAtAddr(addr, 4);
+    //            float.* = @bitCast(f32, std.mem.readIntLittle(u32, &bytes));
+    //            //std.debug.print("rbp_offset={}, addr=0x{x:0>16}, bytes={d}, float={d}\n", .{ var_info.rbp_offset, addr, bytes, float });
+    //        },
+    //    }
+    //}
 
     const proc_file = try self.procMemFile();
     defer proc_file.close();
@@ -244,7 +238,92 @@ pub fn setBreakpointAtAddr(self: *Session, addr: usize) !void {
     });
 }
 
-const Error = error{ NoAddrForSrc, VarNotFound };
+pub const Error = error{ NoAddrForSrc, VarNotAvailable, NoVarLocation, NotStopped };
+
+pub const Value = union(enum) {
+    Float32: f32,
+    Uint32: u32,
+    Int32: i32,
+};
+
+pub fn getVariableValue(self: *Session, variable: Dwarf.Variable) !Value {
+    if (self.status == .Running) return Error.NotStopped;
+
+    switch (variable.scope orelse return Error.NoVarLocation) {
+        .function => |function| {
+            const low_pc = function.low_pc orelse return Error.NoVarLocation;
+            const high_pc = function.high_pc orelse return Error.NoVarLocation;
+            if (!(low_pc <= self.regs.rip and self.regs.rip < high_pc)) return Error.VarNotAvailable;
+        },
+        else => @panic("TODO"),
+    }
+
+    // TODO: if we don't have type information assume u64
+
+    if (variable.@"type") |ty| {
+        //std.debug.print("ty for {s} is {s}\n", .{ variable.name, ty.name });
+        switch (ty.data) {
+            .Base => |base| {
+                std.debug.assert(base.endianess == .little);
+                std.debug.assert(base.data_bit_offset == 0);
+                switch (base.encoding) {
+                    //DW.ATE.@"void" => {},
+                    //DW.ATE.address => {},
+                    //DW.ATE.boolean => {},
+                    //DW.ATE.complex_float => {},
+                    //DW.ATE.float => {},
+                    //DW.ATE.signed => {},
+                    //DW.ATE.signed_char => {},
+                    DW.ATE.unsigned => {
+                        std.debug.assert(base.byte_size == 4);
+                        const loc = variable.loc orelse return Error.NoVarLocation;
+                        switch (loc) {
+                            .expr => |expr| {
+                                const max_registers = @typeInfo(Dwarf.Register).Enum.fields.len;
+                                const regs = self.regs;
+                                // zig fmt: off
+                                var registers: [max_registers]usize = undefined;
+                                std.mem.copy(usize, registers[0..16], &([16]usize {
+                                    regs.rax, regs.rbx, regs.rcx, regs.rdx, regs.rsi, regs.rdi, regs.rbp, regs.rsp,
+                                    regs.r8, regs.r9, regs.r10, regs.r11, regs.r12, regs.r13, regs.r14, regs.r15,
+                                }));
+                                // zig fmt: on
+                                // TODO: get the actual frame_base register (it might not be rbp)
+                                const expr_result = Dwarf.Expression.result(expr, registers, @enumToInt(Dwarf.Register.rbp)) catch unreachable;
+                                switch (expr_result) {
+                                    .generic => |addr| {
+                                        const proc_mem = try self.procMemFile();
+                                        defer proc_mem.close();
+                                        try proc_mem.seekTo(addr);
+                                        const value = try proc_mem.reader().readIntLittle(u32);
+                                        return Value{ .Uint32 = value };
+                                    },
+                                    .typed => @panic("TODO"),
+                                }
+                            },
+                            .loclist_offset => @panic("TODO"),
+                        }
+                    },
+                    //DW.ATE.unsigned_char => {},
+                    //DW.ATE.imaginary_float => {},
+                    //DW.ATE.packed_decimal => {},
+                    //DW.ATE.numeric_string => {},
+                    //DW.ATE.edited => {},
+                    //DW.ATE.signed_fixed => {},
+                    //DW.ATE.unsigned_fixed => {},
+                    //DW.ATE.decimal_float => {},
+                    //DW.ATE.UTF => {},
+                    //DW.ATE.UCS => {},
+                    //DW.ATE.ASCII => {},
+                    else => std.debug.panic("TODO: {s}\n", .{DW.ATE.asStr(base.encoding)}),
+                }
+            },
+            else => @panic("TODO"),
+        }
+    }
+
+    return Value{ .Float32 = 1234567890.2 };
+}
 
 pub fn setBreakpointAtSrc(self: *Session, src: SrcLoc) !void {
     const addr = (try self.findAddrForThisLineOrNextOne(src)) orelse return Error.NoAddrForSrc;
@@ -378,81 +457,6 @@ pub fn getMemMaps(self: Session, allocator: Allocator) ![]MemMapInfo {
     }
 
     return maps.toOwnedSlice();
-}
-
-pub fn addWatchedVariable(self: *Session, name: []const u8) !void {
-    const dwarf = self.elf.dwarf;
-    const DW = @import("Dwarf.zig").DW;
-    const forms = @import("Dwarf.zig").forms;
-    for (dwarf.units) |unit| {
-        var stream = std.io.fixedBufferStream(unit.entries_buf);
-        var reader = stream.reader();
-        const skip_info = forms.SkipInfo{ .address_size = unit.address_size, .is_64 = unit.is_64 };
-        const read_info = forms.ReadInfo{
-            .address_size = unit.address_size,
-            .is_64 = unit.is_64,
-            .version = unit.version,
-            .debug_info_opt = unit.debug_info,
-            .debug_str_opt = dwarf.debug_str,
-        };
-
-        var child_level: usize = 0;
-        while ((try stream.getPos()) < unit.entries_buf.len) {
-            const abbrev_code = try std.leb.readULEB128(usize, reader);
-            const abbrev = unit.abbrevs[abbrev_code];
-
-            if (abbrev.has_children) child_level += 1;
-            if (abbrev.tag == 0) {
-                child_level -= 1;
-                if (child_level == 0) break;
-            }
-
-            switch (abbrev.tag) {
-                DW.TAG.variable => {
-                    var varloc_opt: ?[]const u8 = null;
-                    var name_opt: ?[]const u8 = null;
-                    for (abbrev.attribs) |pair| {
-                        switch (pair.attrib) {
-                            DW.AT.location => {
-                                if (pair.form != DW.FORM.exprloc) {
-                                    try forms.skip(skip_info, reader, pair.form);
-                                    continue;
-                                }
-                                varloc_opt = try forms.readExprLoc(reader, pair.form);
-                            },
-                            DW.AT.name => {
-                                name_opt = try forms.readString(read_info, reader, pair.form);
-                            },
-                            else => try forms.skip(skip_info, reader, pair.form),
-                        }
-                    }
-                    if (name_opt == null or varloc_opt == null) continue;
-
-                    if (std.mem.eql(u8, name, name_opt.?)) {
-                        const exprloc = varloc_opt.?;
-                        std.debug.assert(exprloc[0] == DW.OP.fbreg);
-                        var tmp_stream = std.io.fixedBufferStream(exprloc[1..]);
-                        var tmp_reader = tmp_stream.reader();
-                        const rbp_offset = try std.leb.readILEB128(i32, tmp_reader);
-                        try self.watched_vars.append(.{
-                            .name = name_opt.?,
-                            .rbp_offset = rbp_offset,
-                            .value = undefined,
-                        });
-                        //std.debug.print("found var '{s}' w/ exprloc={} (rbp_offset={})\n", .{
-                        //    name, std.fmt.fmtSliceHexLower(varloc_opt.?), rbp_offset,
-                        //});
-                        return;
-                    }
-                },
-                else => {
-                    for (abbrev.attribs) |pair| try forms.skip(skip_info, reader, pair.form);
-                },
-            }
-        }
-    }
-    std.debug.print("couldn't find debug info for variable named '{s}'\n", .{name});
-    return Error.VarNotFound;
 }
 
 // translate addr to src location

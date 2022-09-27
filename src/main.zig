@@ -72,7 +72,7 @@ pub const SessionCmd = union(enum) {
     open_src_file: []const u8, // could be relative or absolute path
     set_break_at_src: SrcLoc,
     set_break_at_addr: usize,
-    add_watched_variable: []const u8,
+    add_watched_variable: Dwarf.Variable,
     continue_execution: void,
     pause_execution: void,
     step_line: void,
@@ -134,7 +134,7 @@ pub fn main() !void {
     var file_buf = try std.BoundedArray(u8, 0x1000).init(0);
     var var_buf = try std.BoundedArray(u8, 0x1000).init(0);
     // @debug
-    try num_buf.appendSlice("85");
+    try num_buf.appendSlice("106");
     try file_buf.appendSlice("main.zig");
 
     var disasm_texts = std.ArrayList(AsmTextInfo).init(allocator);
@@ -396,16 +396,28 @@ pub fn main() !void {
                 std.debug.assert(ui.popParent() == table_header_row_parent);
 
                 for (session.watched_vars.items) |var_info| {
-                    const row_parent = ui.addNodeF(.{ .no_id = true }, "###row_parent_{s}", .{var_info.name}, .{ .child_layout_axis = .x });
+                    const var_name = var_info.name;
+                    const row_parent = ui.addNodeF(.{ .no_id = true }, "###row_parent_{s}", .{var_name}, .{ .child_layout_axis = .x });
                     row_parent.pref_size = row_size;
                     ui.pushParent(row_parent);
                     {
                         ui.pushStyle(.{ .pref_size = column_box_size });
-                        _ = ui.textBoxF("{s}###{s}_name", .{ var_info.name, var_info.name });
-                        _ = ui.textBoxF("{s}###{s}_type", .{ @tagName(std.meta.activeTag(var_info.value)), var_info.name });
-                        switch (var_info.value) {
-                            .Float => |value| _ = ui.textBoxF("{d}###{s}_value", .{ value, var_info.name }),
+                        _ = ui.textBoxF("{s}###{s}_name", .{ var_name, var_name });
+                        _ = ui.textBoxF("{s}###{s}_type", .{ if (var_info.@"type") |ty| ty.name else "???", var_name });
+                        if (session.getVariableValue(var_info)) |value| switch (value) {
+                            .Float32 => |f| _ = ui.textBoxF("{d}\n", .{f}),
+                            .Uint32 => |uint| _ = ui.textBoxF("{}\n", .{uint}),
+                            .Int32 => |int| _ = ui.textBoxF("{}\n", .{int}),
+                        } else |err| switch (err) {
+                            Session.Error.VarNotAvailable => _ = ui.textBox("<not available>"),
+                            Session.Error.NoVarLocation => _ = ui.textBox("<no location>"),
+                            Session.Error.NotStopped => _ = ui.textBox("<not stopped>"),
+                            else => return err,
                         }
+                        _ = ui.textBox("TODO: value");
+                        //switch (var_info.value) {
+                        //    .Float => |value| _ = ui.textBoxF("{d}###{s}_value", .{ value, var_info.name }),
+                        //}
                         _ = ui.popStyle();
                     }
                     std.debug.assert(ui.popParent() == row_parent);
@@ -416,15 +428,16 @@ pub fn main() !void {
             const add_var_parent = ui.pushLayoutParent("add_var_parent", [2]Size{ Size.percent(1, 1), Size.by_children(1) }, .x);
             {
                 const var_input_size = [2]Size{ Size.percent(1, 0), Size.text_dim(1) };
-                const button_sig = ui.button("Add Variable");
+                //const button_sig = ui.button("Add Variable");
+                _ = ui.textBox("Add Variable");
                 ui.pushStyle(.{ .bg_color = vec4{ 0.75, 0.75, 0.75, 1 } });
                 ui.pushStyle(.{ .pref_size = var_input_size });
                 const text_input_sig = ui.textInput("add_var_textinput", &var_buf.buffer, &var_buf.len);
                 _ = ui.popStyle();
                 _ = ui.popStyle();
-                if (button_sig.clicked or text_input_sig.enter_pressed) {
-                    try session_cmds.append(.{ .add_watched_variable = var_buf.slice() });
-                }
+                //if (button_sig.clicked or text_input_sig.enter_pressed) {
+                //    try session_cmds.append(.{ .add_watched_variable = var_buf.slice() });
+                //}
                 if (text_input_sig.focused and var_buf.len > 0) {
                     const text_input_node = ui.topParent().last.?;
                     ui.startCtxMenu(.{ .top_left = text_input_node.rect.min });
@@ -499,7 +512,6 @@ pub fn main() !void {
                             const unit_idx = var_comp_unit_idx[idx];
                             const line_prog = session.elf.dwarf.line_progs[unit_idx];
                             const var_button_sig = if (variable.decl_coords) |decl_coords| blk: {
-                                std.debug.print("idx={}, unit_idx={}\n", .{ idx, unit_idx });
                                 const src = decl_coords.toSrcLoc(line_prog);
                                 break :blk ui.buttonF("{s} ({s}:{})###var_button_{}", .{ variable.name, src.file, src.line, idx });
                             } else ui.buttonF("{s}###var_button_{}", .{ variable.name, idx });
@@ -508,6 +520,7 @@ pub fn main() !void {
                             var_button_node.border_color = vec4{ 0, 0, 0, 0 };
                             if (var_button_sig.clicked) {
                                 std.debug.print("TODO: use '{s}' variable\n", .{variable.name});
+                                try session_cmds.append(.{ .add_watched_variable = variable });
                             }
                         }
                         _ = ui.popStyle();
@@ -634,12 +647,12 @@ pub fn main() !void {
                     //    });
                     //};
                 },
-                .add_watched_variable => |var_name| case_blk: {
+                .add_watched_variable => |variable| case_blk: {
                     const session = if (session_opt) |*s| s else break :case_blk;
-                    try session.addWatchedVariable(var_name);
-                    //session.addWatchedVariable(var_buf.slice()) catch |err| {
+                    try session.watched_vars.append(variable);
+                    //session.watched_vars.append(variable) catch |err| {
                     //    std.debug.print("{s}: failed to add watched varible '{s}'\n", .{
-                    //        err, var_name,
+                    //        err, variable.name,
                     //    });
                     //};
                 },

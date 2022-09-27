@@ -1,11 +1,12 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const stringFromTable = @import("Elf.zig").stringFromTable;
+
 pub const forms = @import("dwarf/forms.zig");
 pub const LineProg = @import("dwarf/LineProg.zig");
 pub const Frame = @import("dwarf/Frame.zig");
+pub const Expression = @import("dwarf/Expression.zig");
 pub const DW = @import("dwarf/constants.zig");
-const stringFromTable = @import("Elf.zig").stringFromTable;
-const Registers = @import("Session.zig").Registers;
 
 const Dwarf = @This();
 
@@ -148,9 +149,6 @@ pub const DeclCoords = struct {
     column: u32,
 
     pub fn toSrcLoc(self: DeclCoords, line_prog: LineProg) SrcLoc {
-        if (self.file >= line_prog.files.len) {
-            std.debug.print("dummy print\n", .{});
-        }
         return .{
             .dir = line_prog.include_dirs[line_prog.files[self.file].dir],
             .file = line_prog.files[self.file].name,
@@ -193,16 +191,28 @@ pub const Variable = struct {
     loc: ?LocationDesc,
 
     @"type": ?*Type,
-    function: ?*Function, // TODO: replace with a Scope instead
+    scope: ?Scope,
 };
 
 pub const Type = struct {
     name: []const u8,
     data: union(enum) {
-        Base: struct {},
+        Base: struct {
+            encoding: u16, // one of DW_ATE
+            endianess: Endianess,
+            byte_size: usize,
+            data_bit_offset: u16,
+        },
         Struct: struct {},
         Enum: struct {},
     },
+
+    pub const Endianess = enum { little, big };
+};
+
+pub const Scope = union(enum) {
+    function: *Function,
+    comp_unit: *DebugUnit,
 };
 
 pub const LocationDesc = union(enum) {
@@ -308,7 +318,7 @@ pub const DebugUnit = struct {
             const var_ptr = &self.variables[fixup.var_idx];
             if (fixup.fn_idx) |idx| {
                 const fn_ptr = &self.functions[idx];
-                var_ptr.function = fn_ptr;
+                var_ptr.scope = .{ .function = fn_ptr };
             }
             if (fixup.type_offset) |type_offset| {
                 const type_idx = std.mem.indexOfScalar(usize, type_offsets, type_offset) orelse
@@ -611,7 +621,7 @@ pub const DebugUnit = struct {
                         .decl_coords = null,
                         .loc = null,
                         .@"type" = null,
-                        .function = null,
+                        .scope = null,
                     };
                     var type_offset = @as(?usize, null);
                     for (abbrev.attribs) |pair| {
@@ -704,7 +714,53 @@ pub const DebugUnit = struct {
             }
 
             switch (abbrev.tag) {
-                DW.TAG.base_type,
+                DW.TAG.base_type => {
+                    var name_opt: ?[]const u8 = null;
+                    var encoding_opt: ?u16 = null;
+                    var endianess_opt: ?u16 = null;
+                    var byte_size_opt: ?usize = null;
+                    var bit_size_opt: ?usize = null;
+                    var data_bit_offset_opt: ?u16 = null;
+                    for (abbrev.attribs) |pair| {
+                        switch (pair.attrib) {
+                            DW.AT.name => name_opt = try forms.readString(read_info, reader, pair.form),
+                            DW.AT.encoding => encoding_opt = try forms.readConstant(u16, read_info, reader, pair),
+                            DW.AT.endianity => endianess_opt = try forms.readConstant(u16, read_info, reader, pair),
+                            DW.AT.byte_size => byte_size_opt = try forms.readConstant(u16, read_info, reader, pair),
+                            DW.AT.bit_size => bit_size_opt = try forms.readConstant(u16, read_info, reader, pair),
+                            DW.AT.data_bit_offset => data_bit_offset_opt = try forms.readConstant(u16, read_info, reader, pair),
+                            else => try forms.skip(skip_info, reader, pair.form),
+                        }
+                    }
+
+                    const name = name_opt orelse "";
+                    const encoding = encoding_opt orelse
+                        std.debug.panic("base_type '{s}' missing encoding information\n", .{name});
+                    const endianess = if (endianess_opt) |endianess| switch (endianess) {
+                        DW.END.default => Type.Endianess.little,
+                        DW.END.big => Type.Endianess.big,
+                        DW.END.little => Type.Endianess.little,
+                        else => std.debug.panic("invalid DW_END 0x{x}\n", .{endianess}),
+                    } else Type.Endianess.little;
+                    const byte_size = if (byte_size_opt) |byte_size|
+                        byte_size
+                    else if (bit_size_opt) |bit_size|
+                        @divExact(bit_size, 8)
+                    else
+                        std.debug.panic("base_type '{s}' is missing size information\n", .{name});
+                    const data_bit_offset = if (data_bit_offset_opt) |offset| offset else 0;
+
+                    try type_offsets.append(tag_offset);
+                    try types.append(.{
+                        .name = name,
+                        .data = .{ .Base = .{
+                            .encoding = encoding,
+                            .endianess = endianess,
+                            .byte_size = byte_size,
+                            .data_bit_offset = data_bit_offset,
+                        } },
+                    });
+                },
                 DW.TAG.const_type,
                 DW.TAG.pointer_type,
                 DW.TAG.reference_type,
@@ -755,7 +811,7 @@ pub fn pathIntoSrc(self: Dwarf, path: []const u8) !?SrcLoc {
 // note: this mapping between DWARF register and machine registers is described here:
 // https://refspecs.linuxbase.org/elf/x86_64-SysV-psABI.pdf, section 3.6.2, table 3.18
 // zig fmt: off
-pub const Register = enum {
+pub const Register = enum(u8) {
     rax, rbx, rcx, rdx, rsi, rdi, rbp, rsp,               // 0-7
     r8, r9, r10, r11, r12, r13, r14, r15,                 // 8-15
     ret,                                                  // 16
@@ -771,7 +827,7 @@ pub fn callStackAddrs(
     self: Dwarf,
     allocator: Allocator,
     starting_addr: usize,
-    starting_regs: Registers,
+    starting_regs: @import("Session.zig").Registers,
     proc_mem: std.fs.File,
 ) ![]usize {
     var call_stack = std.ArrayList(usize).init(allocator);

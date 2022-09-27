@@ -1,4 +1,4 @@
-// the constants in this file were lifted from the zig 0.10.0 std library
+// most of the constants in this file were lifted from the zig 0.10.0 std library
 
 const std = @import("std");
 
@@ -955,7 +955,7 @@ pub const RLE = struct {
     pub const start_length = 0x07;
 };
 
-pub const CC = enum(u8) {
+pub const CC = struct {
     pub fn asStr(value: u16) []const u8 {
         return dwarfString(@This(), value);
     }
@@ -964,18 +964,50 @@ pub const CC = enum(u8) {
         return dwarfIsValid(@This(), value);
     }
 
-    normal = 0x1,
-    program = 0x2,
-    nocall = 0x3,
+    pub const normal = 0x1;
+    pub const program = 0x2;
+    pub const nocall = 0x3;
 
-    pass_by_reference = 0x4,
-    pass_by_value = 0x5,
+    pub const pass_by_reference = 0x4;
+    pub const pass_by_value = 0x5;
 
-    lo_user = 0x40,
-    hi_user = 0xff,
+    pub const lo_user = 0x40;
+    pub const hi_user = 0xff;
 
-    GNU_renesas_sh = 0x40,
-    GNU_borland_fastcall_i386 = 0x41,
+    pub const GNU_renesas_sh = 0x40;
+    pub const GNU_borland_fastcall_i386 = 0x41;
+};
+
+pub const DS = struct {
+    pub fn asStr(value: u16) []const u8 {
+        return dwarfString(@This(), value);
+    }
+
+    pub fn isValid(value: u16) bool {
+        return dwarfIsValid(@This(), value);
+    }
+
+    pub const unsigned = 0x01;
+    pub const leading_overpunch = 0x02;
+    pub const trailing_overpunch = 0x03;
+    pub const leading_separate = 0x04;
+    pub const trailing_separate = 0x05;
+};
+
+pub const END = struct {
+    pub fn asStr(value: u16) []const u8 {
+        return dwarfString(@This(), value);
+    }
+
+    pub fn isValid(value: u16) bool {
+        return dwarfIsValid(@This(), value);
+    }
+
+    pub const default = 0x00;
+    pub const big = 0x01;
+    pub const little = 0x02;
+    pub const lo_user = 0x40;
+    pub const hi_user = 0xff;
 };
 
 pub fn dwarfString(comptime T: type, value: u16) []const u8 {
