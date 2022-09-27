@@ -210,19 +210,44 @@ pub fn main() !void {
                         defer std.debug.assert(ui.popParent() == tooltip_bg);
 
                         const input = src_file_buf.slice();
+                        // TODO: don't crash if user writes "tmp/dir////"
                         const inner_dir = if (std.mem.lastIndexOfScalar(u8, input, '/')) |idx| blk: {
                             break :blk input[0 .. idx + 1];
                         } else "";
 
-                        var tmpbuf: [0x1000]u8 = undefined;
-                        const full_dir_path = try std.fmt.bufPrint(&tmpbuf, "{s}/{s}", .{ cwd, inner_dir });
+                        var tmp_arena = std.heap.ArenaAllocator.init(allocator);
+                        defer tmp_arena.deinit();
+                        var arena_alloc = tmp_arena.allocator();
+
+                        const input_path = try std.fs.path.join(arena_alloc, &.{ cwd, input });
+                        const full_dir_path = try std.fs.path.join(arena_alloc, &.{ cwd, inner_dir });
+
+                        const FileEntry = struct { name: []const u8, path: []const u8, kind: std.fs.File.Kind };
+                        const ScoreCtx = struct {
+                            target: []const u8,
+                            pub fn score(ctx: @This(), file: FileEntry) f32 {
+                                return strCmpScore(ctx.target, file.path);
+                            }
+                        };
+                        var scored_files = ScoredList(FileEntry, 20, ScoreCtx).init(.{ .target = input_path });
 
                         var dir = try std.fs.openDirAbsolute(full_dir_path, .{ .iterate = true });
                         var dir_iter = dir.iterate();
+                        while (try dir_iter.next()) |entry| {
+                            scored_files.addEntry(.{
+                                .name = try arena_alloc.dupe(u8, entry.name),
+                                .path = try std.fs.path.join(arena_alloc, &.{ cwd, inner_dir, entry.name }),
+                                .kind = entry.kind,
+                            });
+                        }
+
                         const fill_x_size = [2]Size{ Size.percent(1, 1), Size.text_dim(1) };
                         ui.pushStyle(.{ .pref_size = fill_x_size });
-                        while (try dir_iter.next()) |entry| {
-                            const button_sig = ui.buttonF("{s}{s}", .{ inner_dir, entry.name });
+                        for (scored_files.slice()) |entry| {
+                            const button_sig = if (entry.kind == .Directory)
+                                ui.buttonF("{s}{s}/", .{ inner_dir, entry.name })
+                            else
+                                ui.buttonF("{s}{s} ({})", .{ inner_dir, entry.name, entry.kind });
                             ui.topParent().last.?.flags.draw_background = false;
                             ui.topParent().last.?.border_color = vec4{ 0, 0, 0, 0 };
                             if (button_sig.clicked) {
@@ -447,63 +472,27 @@ pub fn main() !void {
 
                         const search_str = var_buf.slice();
 
-                        //var start_time = c.glfwGetTime();
-                        var shown_vars = std.BoundedArray(Dwarf.Variable, 10).init(0) catch unreachable;
-                        var var_comp_unit_idx = @as([shown_vars.buffer.len]usize, undefined);
-                        var min_score_stored = @as(f32, 0);
-                        var min_score_stored_idx = @as(usize, 0);
+                        const score_var_zone = tracy.ZoneN(@src(), "score_var");
+                        const VarEntry = struct { variable: Dwarf.Variable, comp_unit_idx: usize };
+                        const ScoreCtx = struct {
+                            target: []const u8,
+                            pub fn score(ctx: @This(), entry: VarEntry) f32 {
+                                return strCmpScore(ctx.target, entry.variable.name);
+                            }
+                        };
+                        var scored_vars = ScoredList(VarEntry, 10, ScoreCtx).init(.{ .target = search_str });
                         for (session.elf.dwarf.units) |comp_unit, comp_unit_idx| {
                             for (comp_unit.variables) |variable| {
-                                const score = strCmpScore(search_str, variable.name);
-                                //std.debug.print("'{s}' got a score of {}\n", .{ variable.name, score });
-                                if (score > min_score_stored) {
-                                    if (shown_vars.len < shown_vars.buffer.len) {
-                                        var_comp_unit_idx[shown_vars.len] = comp_unit_idx;
-                                        shown_vars.append(variable) catch unreachable;
-                                    } else {
-                                        var_comp_unit_idx[min_score_stored_idx] = comp_unit_idx;
-                                        shown_vars.buffer[min_score_stored_idx] = variable;
-                                        // recalculate the min_score
-                                        min_score_stored = score;
-                                        for (shown_vars.slice()) |stored_var, stored_idx| {
-                                            const new_score = strCmpScore(search_str, stored_var.name);
-                                            if (new_score < min_score_stored) {
-                                                min_score_stored = new_score;
-                                                min_score_stored_idx = stored_idx;
-                                            }
-                                        }
-                                    }
-                                }
+                                scored_vars.addEntry(.{ .variable = variable, .comp_unit_idx = comp_unit_idx });
                             }
                         }
-
-                        // sort the entries based on score
-                        {
-                            var target = var_buf.slice();
-                            var vars_slice = shown_vars.slice();
-                            var idx = @as(usize, 1);
-                            while (idx < vars_slice.len) : (idx += 1) {
-                                var cmp_idx = idx;
-                                cmp_loop: while (cmp_idx > 0) : (cmp_idx -= 1) {
-                                    const cur = &vars_slice[cmp_idx];
-                                    const prev = &vars_slice[cmp_idx - 1];
-                                    if (strCmpScore(target, cur.name) > strCmpScore(target, prev.name)) {
-                                        std.mem.swap(Dwarf.Variable, cur, prev);
-                                        std.mem.swap(usize, &var_comp_unit_idx[cmp_idx], &var_comp_unit_idx[cmp_idx - 1]);
-                                    } else break :cmp_loop;
-                                }
-                            }
-                        }
-
-                        //var total_vars = @as(usize, 0);
-                        //for (session.elf.dwarf.units) |comp_unit| total_vars += comp_unit.variables.len;
-                        //const delta_time = c.glfwGetTime() - start_time;
-                        //std.debug.print("var suggestions took {d:2.4}ms for {} choices\n", .{ delta_time * 1000, total_vars });
+                        score_var_zone.End();
 
                         const fill_x_size = [2]Size{ Size.percent(1, 1), Size.text_dim(1) };
                         ui.pushStyle(.{ .pref_size = fill_x_size });
-                        for (shown_vars.slice()) |variable, idx| {
-                            const unit_idx = var_comp_unit_idx[idx];
+                        for (scored_vars.slice()) |var_ctx, idx| {
+                            const variable = var_ctx.variable;
+                            const unit_idx = var_ctx.comp_unit_idx;
                             const line_prog = session.elf.dwarf.line_progs[unit_idx];
                             const var_button_sig = if (variable.decl_coords) |decl_coords| blk: {
                                 const src = decl_coords.toSrcLoc(line_prog);
@@ -1189,6 +1178,78 @@ fn strCmpScore(str_a: []const u8, str_b: []const u8) f32 {
     }
 
     return score;
+}
+
+// `ScoreCtx` must have a function called `score` which takes in a `T` and returns `f32`
+pub fn ScoredList(
+    comptime T: type,
+    comptime slots: usize,
+    comptime ScoreCtx: anytype,
+) type {
+    std.debug.assert(slots > 0);
+    std.debug.assert(@hasDecl(ScoreCtx, "score"));
+    std.debug.assert(@TypeOf(ScoreCtx.score) == fn (ScoreCtx, T) f32);
+    return struct {
+        buffer: [slots]T,
+        len: usize,
+        scores: [slots]f32,
+        score_ctx: ScoreCtx,
+
+        const Self = @This();
+
+        pub fn init(ctx: ScoreCtx) Self {
+            return .{ .buffer = undefined, .len = 0, .scores = undefined, .score_ctx = ctx };
+        }
+
+        pub fn addEntry(self: *Self, entry: T) void {
+            const score = self.score_ctx.score(entry);
+            if (self.len < slots) {
+                self.buffer[self.len] = entry;
+                self.scores[self.len] = score;
+                self.len += 1;
+            } else {
+                const min_idx = indexOfMin(f32, &self.scores);
+                self.buffer[min_idx] = entry;
+                self.scores[min_idx] = score;
+            }
+        }
+
+        pub fn slice(self: *Self) []T {
+            self.sort();
+            return self.buffer[0..self.len];
+        }
+
+        /// might returns less than `n` entries
+        pub fn topEntries(self: *Self, n: usize) []T {
+            return self.slice()[0..std.math.min(n, self.len)];
+        }
+
+        /// sort in decreasing order (using insertion sort)
+        fn sort(self: *Self) void {
+            var sort_idx: usize = 1;
+            while (sort_idx < self.len) : (sort_idx += 1) {
+                var cmp_idx: usize = sort_idx;
+                cmp_loop: while (cmp_idx > 0) : (cmp_idx -= 1) {
+                    if (self.scores[cmp_idx] > self.scores[cmp_idx - 1]) {
+                        std.mem.swap(T, &self.buffer[cmp_idx], &self.buffer[cmp_idx - 1]);
+                        std.mem.swap(f32, &self.scores[cmp_idx], &self.scores[cmp_idx - 1]);
+                    } else break :cmp_loop;
+                }
+            }
+        }
+    };
+}
+
+fn indexOfMin(comptime T: type, slice: []const T) usize {
+    var min = slice[0];
+    var min_idx: usize = 0;
+    for (slice) |value, idx| {
+        if (value < min) {
+            min = value;
+            min_idx = idx;
+        }
+    }
+    return min_idx;
 }
 
 pub fn printStackTrace(ret_addr: usize) void {

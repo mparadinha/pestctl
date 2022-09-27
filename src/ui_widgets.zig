@@ -490,10 +490,10 @@ fn textOpFromAction(action: TextAction, cursor: usize, mark: usize, unicode_buf:
             start_word_loop: while (i >= 0 and i <= buf.len) : (i = castWrappedAdd(i, delta_sign)) {
                 if (i == buf.len and delta_sign > 0) break;
                 if (i == buf.len and delta_sign < 0) continue;
+                if (i == 0 and delta_sign < 0) break;
                 for (word_seps) |sep| {
                     if (buf[i] == sep) continue :start_word_loop;
                 }
-                if (i == 0 and delta_sign < 0) break;
                 if (delta_sign < 0 and i < buf.len) i += 1;
                 break :start_word_loop;
             }
@@ -633,10 +633,9 @@ fn abs(value: anytype) @TypeOf(value) {
     return if (value < 0) -value else value;
 }
 
-fn castWrappedAdd(src: anytype, diff: anytype) @TypeOf(src) {
-    const SrcType = @TypeOf(src);
-    const DiffType = @TypeOf(diff);
-    return @intCast(SrcType, @intCast(DiffType, src) + diff);
+fn castWrappedAdd(src: usize, diff: isize) usize {
+    const new_src = @intCast(isize, src) + diff;
+    return @intCast(usize, std.math.max(0, new_src));
 }
 
 fn castAndSub(comptime T: type, a: anytype, b: anytype) T {
