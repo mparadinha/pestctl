@@ -99,6 +99,18 @@ pub fn subtleIconButton(self: *UiContext, string: []const u8) Signal {
     return node.signal;
 }
 
+pub fn subtleIconButtonF(self: *UiContext, comptime fmt: []const u8, args: anytype) Signal {
+    const node = self.addNodeF(.{
+        .clickable = true,
+        .draw_text = true,
+        .draw_active_effects = true,
+    }, fmt, args, .{
+        .cursor_type = .hand,
+        .font_type = .icon,
+    });
+    return node.signal;
+}
+
 /// pushes a new node as parent that is meant only for layout purposes
 pub fn pushLayoutParent(self: *UiContext, hash_string: []const u8, size: [2]Size, layout_axis: Axis) *Node {
     const node = self.addNodeStrings(.{}, "", hash_string, .{
@@ -169,43 +181,77 @@ pub fn endTooltip(self: *UiContext) void {
     std.debug.assert(parent == self.tooltip_root_node);
 }
 
-/// pushes itself as the parent. make sure to use popParent later
-pub fn scrollableRegion(self: *UiContext, string: []const u8, axis: Axis) Signal {
-    //const percent_sizes = switch (axis) {
-    //    .x => [2]Size{ Size.percent(1, 0), Size.percent(1, 0) },
-    //    .y => [2]Size{ Size.percent(1, 0), Size.percent(1, 0) },
-    //};
-    const percent_sizes = [2]Size{ Size.percent(1, 0), Size.percent(1, 0) };
-
-    const node = self.addNode(.{
+/// returns the new parent (which gets pushed on the parent stack) for this region
+pub fn startScrollRegion(self: *UiContext, hash_string: []const u8) *Node {
+    const parent = self.addNodeF(.{
         .scrollable = true,
-    }, string, .{ .pref_size = percent_sizes, .child_layout_axis = axis });
-    self.pushParent(node);
-
-    const axis_idx: usize = switch (axis) {
-        .x => 0,
-        .y => 1,
-    };
-    self.spacer(axis, Size.pixels(node.scroll_offset[axis_idx], 1));
-
-    return node.signal;
+        .clip_children = true,
+    }, "###{s}:scroll_region_parent", .{hash_string}, .{ .child_layout_axis = .y });
+    self.pushParent(parent);
+    return parent;
 }
 
-pub fn scrollableRegionF(self: *UiContext, comptime fmt: []const u8, args: anytype, axis: Axis) Signal {
-    const str = std.fmt.allocPrint(self.string_arena.allocator(), fmt, args) catch |e| blk: {
-        self.setErrorInfo(@errorReturnTrace(), @errorName(e));
-        break :blk "";
-    };
-    return self.scrollableRegion(str, axis);
+pub fn endScrollRegion(self: *UiContext, parent: *Node, start_scroll: f32, end_scroll: f32) void {
+    const Icons = @import("main.zig").Icons;
+    const hash_string = parent.hash_string;
+
+    const bar_node = self.addNode(.{ .draw_background = true, .no_id = true, .floating_x = true }, "", .{});
+    bar_node.child_layout_axis = .y;
+    bar_node.pref_size = [2]Size{ Size.by_children(1), Size.percent(1, 0) };
+    bar_node.bg_color = vec4{ 0, 0, 0, 0.3 };
+    bar_node.rel_pos_placement = .top_right;
+    bar_node.rel_pos_placement_parent = .top_right;
+    {
+        self.pushParent(bar_node);
+        defer std.debug.assert(self.popParent() == bar_node);
+
+        if (self.subtleIconButtonF("{s}###{s}:up_scroll_btn", .{ Icons.up_open, hash_string }).clicked) std.debug.print("SCROLL UP! :D\n", .{});
+
+        const scroll_bar_region = self.addNodeF(.{}, "###{s}:scroll_bar_region", .{hash_string}, .{});
+        scroll_bar_region.pref_size = [2]Size{ Size.percent(1, 0), Size.percent(1, 0) };
+        {
+            self.pushParent(scroll_bar_region);
+            defer std.debug.assert(self.popParent() == scroll_bar_region);
+
+            const scroll_size = end_scroll - start_scroll;
+            const scroll_pct = std.math.clamp(
+                abs((parent.scroll_offset[1] - start_scroll) / scroll_size),
+                0,
+                1,
+            );
+
+            if (scroll_pct > 0) self.spacer(.y, Size.percent(scroll_pct, 0));
+
+            const bar_sig = self.addNodeF(.{
+                .clickable = true,
+                .draw_text = true,
+            }, "{s}###{s}:bar_btn", .{ Icons.circle, hash_string }, .{
+                .font_type = .icon,
+            }).signal;
+            std.debug.print("bar_sig={}\n", .{bar_sig});
+            if (bar_sig.held_down and parent.rect.size()[1] > 0) {
+                const bar_pct = abs((parent.rect.max[1] - self.mouse_pos[1]) / parent.rect.size()[1]);
+                std.debug.print("bar_pct={d}\n", .{bar_pct});
+                parent.scroll_offset[1] = (scroll_size * bar_pct) + start_scroll;
+            }
+            //const bar_box = self.addNode(.{ .draw_background = true, .no_id = true, .floating_x = true }, "", .{});
+            //const bar_box_x_pct = 0.85;
+            //const bar_box_y_pct = std.math.min(1, parent.rect.size()[1] / max_scroll);
+            //bar_box.pref_size = [2]Size{ Size.percent(bar_box_x_pct, 1), Size.percent(bar_box_y_pct, 1) };
+            //bar_box.bg_color = vec4{ 0.5, 0.5, 0.5, 1 };
+            //bar_box.rel_pos[0] = bar_node.rect.size()[0] * (1 - bar_box_x_pct) / 2;
+        }
+
+        if (self.subtleIconButtonF("{s}###{s}:down_scroll_btn", .{ Icons.down_open, hash_string }).clicked) std.debug.print("SCROLL DOWN! :D\n", .{});
+    }
+
+    std.debug.assert(self.popParent() == parent);
 }
 
-pub fn scrollableText(self: *UiContext, hash_string: []const u8, string: []const u8) Signal {
-    // TODO: replace this with the new mechanism used for the file tab text
-    const top_node = self.addNodeF(.{ .clip_children = true, .draw_border = true, .draw_background = true }, "{s}::top_node", .{hash_string}, .{ .child_layout_axis = .x });
-    self.pushParent(top_node);
-    defer _ = self.popParent();
-    self.label(string);
-    return top_node.signal;
+pub fn dropDownList(self: *UiContext, hash_string: []const u8, choices: []const []const u8, cur_choice: *usize) void {
+    _ = hash_string;
+    // TODO
+    self.label(choices[cur_choice.*]);
 }
 
 pub fn textInput(self: *UiContext, hash_string: []const u8, buffer: []u8, buf_len: *usize) Signal {

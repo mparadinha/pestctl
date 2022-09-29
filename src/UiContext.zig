@@ -10,7 +10,6 @@ const vec4 = math.vec4;
 const mat4 = math.mat4;
 const Font = @import("Font.zig");
 const window = @import("window.zig");
-
 const UiContext = @This();
 pub usingnamespace @import("ui_widgets.zig");
 
@@ -51,7 +50,7 @@ const NodeKey = NodeTable.Hash;
 
 // call `deinit` to cleanup resources
 pub fn init(allocator: Allocator, font_path: []const u8, icon_font_path: []const u8, window_ptr: *window.Window) !UiContext {
-    var self = UiContext{
+    return UiContext{
         .allocator = allocator,
         .generic_shader = gfx.Shader.from_srcs(allocator, "ui_generic", .{
             .vertex = vertex_shader_src,
@@ -84,7 +83,6 @@ pub fn init(allocator: Allocator, font_path: []const u8, icon_font_path: []const
         .active_node_key = null,
         .focused_node_key = null,
     };
-    return self;
 }
 
 pub fn deinit(self: *UiContext) void {
@@ -169,6 +167,7 @@ pub const Node = struct {
     last_click_time: f32, // used for double click checks
     last_double_click_time: f32, // used for triple click checks
     scroll_offset: vec2,
+    toogle: bool,
 };
 
 pub const Axis = enum { x, y };
@@ -214,6 +213,17 @@ pub const Size = union(enum) {
             .percent => |percent| percent.strictness,
             .by_children => |by_children| by_children.strictness,
         };
+    }
+
+    pub fn format(value: Size, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
+        _ = options;
+        _ = fmt;
+        switch (value) {
+            .pixels => |v| try writer.print("pixels({d}, {d})", .{ v.value, v.strictness }),
+            .text_dim => |v| try writer.print("text_dim({d})", .{v.strictness}),
+            .percent => |v| try writer.print("percent({d}, {d})", .{ v.value, v.strictness }),
+            .by_children => |v| try writer.print("by_children({d})", .{v.strictness}),
+        }
     }
 };
 
@@ -423,13 +433,6 @@ pub fn addNodeRawStrings(self: *UiContext, flags: Flags, display_string_in: []co
         @field(node, field_name) = @field(style, field_name);
     }
 
-    // calling textRect is too expensive to do multiple times per frame
-    const font_rect = try ((switch (node.font_type) {
-        .text => &self.font,
-        .icon => &self.icon_font,
-    }).textRect(display_string));
-    node.text_rect = .{ .min = font_rect.min, .max = font_rect.max };
-
     // reset layout data (but not the final screen rect which we need for signal stuff)
     node.calc_size = vec2{ 0, 0 };
     node.calc_rel_pos = vec2{ 0, 0 };
@@ -439,6 +442,7 @@ pub fn addNodeRawStrings(self: *UiContext, flags: Flags, display_string_in: []co
     if (!lookup_result.found_existing) {
         node.signal = self.computeNodeSignal(node);
         node.first_frame_touched = self.frame_idx;
+        node.rel_pos = vec2{ 0, 0 };
         node.rel_pos_placement = .btm_left;
         node.rel_pos_placement_parent = .btm_left;
         node.last_click_time = 0;
@@ -451,6 +455,13 @@ pub fn addNodeRawStrings(self: *UiContext, flags: Flags, display_string_in: []co
         const field_name = field_type_info.name;
         @field(node, field_name) = @field(init_args, field_name);
     }
+
+    // calling textRect is too expensive to do multiple times per frame
+    const font_rect = try ((switch (node.font_type) {
+        .text => &self.font,
+        .icon => &self.icon_font,
+    }).textRect(display_string));
+    node.text_rect = .{ .min = font_rect.min, .max = font_rect.max };
 
     if (self.auto_pop_style) {
         _ = self.popStyle();
@@ -649,6 +660,9 @@ pub fn computeNodeSignal(self: *UiContext, node: *Node) Signal {
         } else if (is_hot and active_key_matches and mouse_up_ev != null) {
             signal.released = true;
             signal.clicked = true;
+            is_active = false;
+            used_mouse_up_ev = true;
+        } else if (!is_hot and active_key_matches and mouse_up_ev != null) {
             is_active = false;
             used_mouse_up_ev = true;
         }
@@ -1692,7 +1706,12 @@ pub fn dumpNodeTreeGraph(self: *UiContext, root: *Node, save_path: []const u8) !
 
     var node_iter = self.node_table.valueIterator();
     while (node_iter.next()) |node| {
-        try writer.print("  Node_0x{x} [label=\"{s}\"];\n", .{ @ptrToInt(node), std.fmt.fmtSliceEscapeLower(node.hash_string) });
+        try writer.print("  Node_0x{x} [label=\"", .{@ptrToInt(node)});
+        try writer.print("{s}\n", .{std.fmt.fmtSliceEscapeLower(node.hash_string)});
+        try writer.print("{any}\n", .{node.pref_size});
+        try writer.print("{d}\n", .{node.rect});
+        if (node.child_count > 0) try writer.print("child_layout={}\n", .{node.child_layout_axis});
+        try writer.print("\"];\n", .{});
         if (node.parent) |other| try writer.print("    Node_0x{x} -> Node_0x{x} [label=\"parent\"];\n", .{ @ptrToInt(node), @ptrToInt(other) });
         if (node.first) |other| try writer.print("    Node_0x{x} -> Node_0x{x} [label=\"first\"];\n", .{ @ptrToInt(node), @ptrToInt(other) });
         if (node.last) |other| try writer.print("    Node_0x{x} -> Node_0x{x} [label=\"last\"];\n", .{ @ptrToInt(node), @ptrToInt(other) });

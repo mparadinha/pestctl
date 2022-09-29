@@ -37,7 +37,7 @@ fn parseCmdlineArgs(arg_slices: [][:0]const u8) CmdlineArgs {
 }
 
 // icon font (and this mapping) was generated using fontello.com
-const Icons = struct {
+pub const Icons = struct {
     // zig fmt: off
     pub const cancel        = utf8LitFromCodepoint(59392);
     pub const th_list       = utf8LitFromCodepoint(59393);
@@ -139,10 +139,16 @@ pub fn main() !void {
 
     var file_tab = FileTab.init(allocator);
     defer file_tab.deinit();
+    // @debug
+    try file_tab.addFile("src/main.zig");
+    file_tab.active_file = 0;
+
     var last_src_loc = @as(?SrcLoc, null);
 
     var session_cmds = std.ArrayList(SessionCmd).init(allocator);
     defer session_cmds.deinit();
+
+    var test_list_idx: usize = 2;
 
     var frame_idx: u64 = 0;
 
@@ -169,8 +175,9 @@ pub fn main() !void {
 
         try ui.startBuild(width, height, mouse_pos, &window.event_queue);
 
-        const whole_x_size = [2]Size{ Size.percent(1, 1), Size.text_dim(1) };
-        ui.pushTmpStyle(.{ .pref_size = whole_x_size });
+        const fill_x_size = [2]Size{ Size.percent(1, 1), Size.text_dim(1) };
+
+        ui.pushTmpStyle(.{ .pref_size = fill_x_size });
         _ = ui.textBoxF("#nodes={}, frame_time={d:2.4}ms ###info_text_box", .{ ui.node_table.key_mappings.items.len, dt * 1000 });
 
         const tabs_parent = ui.addNode(.{}, "###tabs_parent", .{ .child_layout_axis = .x });
@@ -241,13 +248,12 @@ pub fn main() !void {
                             });
                         }
 
-                        const fill_x_size = [2]Size{ Size.percent(1, 1), Size.text_dim(1) };
                         ui.pushStyle(.{ .pref_size = fill_x_size });
                         for (scored_files.slice()) |entry| {
                             const button_sig = if (entry.kind == .Directory)
                                 ui.buttonF("{s}{s}/", .{ inner_dir, entry.name })
                             else
-                                ui.buttonF("{s}{s} ({})", .{ inner_dir, entry.name, entry.kind });
+                                ui.buttonF("{s}{s}", .{ inner_dir, entry.name });
                             ui.topParent().last.?.flags.draw_background = false;
                             ui.topParent().last.?.border_color = vec4{ 0, 0, 0, 0 };
                             if (button_sig.clicked) {
@@ -261,7 +267,7 @@ pub fn main() !void {
             }
             std.debug.assert(ui.popParent() == open_file_parent);
 
-            try file_tab.display(&ui, if (session_opt) |*s| s else null, &session_cmds);
+            try file_tab.display(&ui, &session_cmds);
 
             if (session_opt) |session| disasm_blk: {
                 const rip = session.regs.rip;
@@ -344,6 +350,9 @@ pub fn main() !void {
                 _ = ui.textBoxF("src_loc: {s}:{}", .{ loc.file, loc.line });
             } else _ = ui.textBox("src_loc: null");
             ui.topParent().last.?.pref_size[0] = Size.percent(1, 1);
+
+            const test_list_choices = [_][]const u8{ "zero", "one", "two", "three" };
+            ui.dropDownList("test_list", &test_list_choices, &test_list_idx);
 
             if (ui.button("Wait for Signal").clicked) {
                 std.debug.print("wait status: {}\n", .{Session.getWaitStatus(session.pid)});
@@ -488,7 +497,6 @@ pub fn main() !void {
                         }
                         score_var_zone.End();
 
-                        const fill_x_size = [2]Size{ Size.percent(1, 1), Size.text_dim(1) };
                         ui.pushStyle(.{ .pref_size = fill_x_size });
                         for (scored_vars.slice()) |var_ctx, idx| {
                             const variable = var_ctx.variable;
@@ -570,17 +578,17 @@ pub fn main() !void {
 
         std.debug.assert(ui.popParent() == tabs_parent);
 
-        //if (window.event_queue.searchAndRemove(.KeyUp, .{ .key = c.GLFW_KEY_D, .mods = .{ .shift = true } })) {
-        //    const dump_file = "ui_main_tree.dot";
-        //    std.debug.print("dumping root tree to {s}\n", .{dump_file});
-        //    try ui.dumpNodeTreeGraph(ui.root_node.?, dump_file);
-        //    return;
-        //}
-
         ui.endBuild(dt);
 
         gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
         try ui.render();
+
+        if (window.event_queue.searchAndRemove(.KeyUp, .{ .key = c.GLFW_KEY_D, .mods = .{ .shift = true } })) {
+            const dump_file = "ui_main_tree.dot";
+            std.debug.print("dumping root tree to {s}\n", .{dump_file});
+            try ui.dumpNodeTreeGraph(ui.root_node.?, dump_file);
+            return;
+        }
 
         const cur_src_loc = if (session_opt) |s| s.src_loc else null;
         var focused_src_loc = cur_src_loc;
@@ -761,7 +769,7 @@ const FileTab = struct {
         return self.findFile(path);
     }
 
-    pub fn display(self: *FileTab, ui: *UiContext, session_opt: ?*Session, session_cmds: *std.ArrayList(SessionCmd)) !void {
+    pub fn display(self: *FileTab, ui: *UiContext, session_cmds: *std.ArrayList(SessionCmd)) !void {
         const file_tab_size = [2]Size{ Size.percent(1, 1), Size.percent(1, 0) };
         const file_tab_node = ui.addNode(.{
             .draw_border = true,
@@ -784,7 +792,7 @@ const FileTab = struct {
             if (sig.clicked) self.active_file = i;
         }
         if (ui.subtleIconButton(Icons.plus).clicked) std.debug.print("TODO: open file menu\n", .{});
-        _ = ui.popParent(); // buttons parent
+        std.debug.assert(ui.popParent() == buttons_parent);
 
         const active_name = if (self.active_file) |idx| self.files.items[idx].path else "";
         const active_content = if (self.active_file) |idx| self.files.items[idx].content else "";
@@ -828,7 +836,7 @@ const FileTab = struct {
 
                 break :blk line_text_node;
             };
-            _ = ui.popParent(); // line_scroll_parent
+            std.debug.assert(ui.popParent() == line_scroll_parent);
 
             const text_sig = try textDisplay(ui, active_name, active_content, file.lock_line, file.focus_box);
             const text_scroll_node = file_box_parent.last.?;
@@ -861,23 +869,6 @@ const FileTab = struct {
                     .line = src_line,
                     .column = 0,
                 } });
-                if (session_opt) |session| {
-                    if (ui.buttonF("Set Breakpoint At Line {}\n", .{src_line}).clicked) blk: {
-                        var break_loc = (try session.elf.dwarf.pathIntoSrc(file.path)) orelse {
-                            std.debug.print("couldn't find {s} in the debug info file list\n", .{file.path});
-                            break :blk;
-                        };
-                        break_loc.line = src_line;
-                        session.setBreakpointAtSrc(break_loc) catch |err| {
-                            std.debug.print("{s}: couldn't set breakpoint at {s}:{}\n", .{ @errorName(err), file.path, src_line });
-                            break :blk;
-                        };
-
-                        show_ctx_menu = false;
-                    }
-                } else {
-                    ui.label("No Debug Information Loaded");
-                }
 
                 if (ui.events.match(.MouseDown, {})) |_| {
                     if (!ctx_menu_node.rect.contains(ui.mouse_pos)) show_ctx_menu = false;
@@ -890,11 +881,10 @@ const FileTab = struct {
             line_scroll_parent.scroll_offset[1] = text_scroll_node.scroll_offset[1];
             line_text_node.rel_pos[1] = -line_scroll_parent.scroll_offset[1];
 
-            _ = ui.popParent(); // file_box_parent (line + text parent)
-
+            std.debug.assert(ui.popParent() == file_box_parent);
         }
 
-        _ = ui.popParent(); // file tab parent
+        std.debug.assert(ui.popParent() == file_tab_node);
     }
 
     pub fn updateAnimations(self: *FileTab, dt: f32) void {
@@ -918,14 +908,9 @@ const FileTab = struct {
 };
 
 fn textDisplay(ui: *UiContext, label: []const u8, text: []const u8, lock_line: ?f32, highlight_box: ?FileTab.SrcBox) !UiContext.Signal {
-    const text_box_size = [2]Size{ Size.percent(1, 0), Size.percent(1, 0) };
-    const parent = ui.addNodeF(.{
-        .scrollable = true,
-        .clip_children = true,
-    }, "###{s}::parent", .{label}, .{ .child_layout_axis = .y, .pref_size = text_box_size });
+    const parent = ui.startScrollRegion(label);
+    parent.pref_size = [2]Size{ Size.percent(1, 0), Size.percent(1, 0) };
     const parent_sig = parent.signal;
-    ui.pushParent(parent);
-    defer std.debug.assert(ui.popParent() == parent);
 
     const parent_size = parent.rect.size();
     const line_size = ui.font.getScaledMetrics().line_advance;
@@ -968,10 +953,8 @@ fn textDisplay(ui: *UiContext, label: []const u8, text: []const u8, lock_line: ?
     const text_size = vec2{ label_node.text_rect.size()[0], line_size * @intToFloat(f32, total_lines) };
     var max_offset = text_size - parent_size + vec2{ 2, 2 } * UiContext.text_padd;
     max_offset = vec2{ std.math.max(max_offset[0], 0), std.math.max(max_offset[1], 0) };
-    x_off.* = std.math.min(x_off.*, 0);
-    x_off.* = std.math.max(x_off.*, -max_offset[0]);
-    y_off.* = std.math.min(y_off.*, 0);
-    y_off.* = std.math.max(y_off.*, -max_offset[1]);
+    x_off.* = std.math.clamp(x_off.*, -max_offset[0], 0);
+    y_off.* = std.math.clamp(y_off.*, -max_offset[1], 0);
 
     label_node.rel_pos_placement = .top_left;
     label_node.rel_pos_placement_parent = .top_left;
@@ -993,6 +976,8 @@ fn textDisplay(ui: *UiContext, label: []const u8, text: []const u8, lock_line: ?
         box_node.pref_size = [2]Size{ Size.percent(1, 1), Size.pixels(box_y_size, 1) };
         box_node.rel_pos[1] = box_y_top - box_y_size;
     }
+
+    ui.endScrollRegion(parent, 0, -max_offset[1]);
 
     return parent_sig;
 }
@@ -1091,23 +1076,18 @@ fn generateTextInfoForDisassembly(allocator: Allocator, data: []const u8, data_s
 fn showDisassemblyWindow(ui: *UiContext, label: []const u8, text_info: AsmTextInfo, lock_line: ?f32) !UiContext.Signal {
     // TODO: hightlight box ranges
 
-    const text_box_size = [2]Size{ Size.percent(1, 0), Size.percent(0.3, 0) };
-    const parent = ui.addNodeF(.{
-        .scrollable = true,
-        .clip_children = true,
-    }, "###{s}:parent", .{label}, .{ .child_layout_axis = .y, .pref_size = text_box_size });
+    const parent = ui.startScrollRegion(label);
+    parent.pref_size = [2]Size{ Size.percent(1, 0), Size.percent(0.25, 0) };
     const parent_sig = parent.signal;
-    ui.pushParent(parent);
-    defer std.debug.assert(ui.popParent() == parent);
 
     const parent_size = parent.rect.size();
     const line_size = ui.font.getScaledMetrics().line_advance;
 
     const x_off = &parent.scroll_offset[0];
     const y_off = &parent.scroll_offset[1];
-    if (lock_line) |line| {
-        y_off.* = -line_size * line + parent_size[1] / 2;
-    }
+    //if (lock_line) |line| {
+    //    y_off.* = -line_size * line + parent_size[1] / 2;
+    //}
 
     const total_lines = text_info.line_offsets.len;
 
@@ -1135,10 +1115,8 @@ fn showDisassemblyWindow(ui: *UiContext, label: []const u8, text_info: AsmTextIn
     const text_size = vec2{ label_node.text_rect.size()[0], line_size * @intToFloat(f32, total_lines) };
     var max_offset = text_size - parent_size + vec2{ 2, 2 } * UiContext.text_padd;
     max_offset = vec2{ std.math.max(max_offset[0], 0), std.math.max(max_offset[1], 0) };
-    x_off.* = std.math.min(x_off.*, 0);
-    x_off.* = std.math.max(x_off.*, -max_offset[0]);
-    y_off.* = std.math.min(y_off.*, 0);
-    y_off.* = std.math.max(y_off.*, -max_offset[1]);
+    x_off.* = std.math.clamp(x_off.*, -max_offset[0], 0);
+    y_off.* = std.math.clamp(y_off.*, -max_offset[1], 0);
 
     label_node.rel_pos_placement = .top_left;
     label_node.rel_pos_placement_parent = .top_left;
@@ -1165,6 +1143,8 @@ fn showDisassemblyWindow(ui: *UiContext, label: []const u8, text_info: AsmTextIn
         box_node.rel_pos[1] = box_y_top - box_y_size;
     }
 
+    ui.endScrollRegion(parent, 0, -max_offset[1]);
+
     return parent_sig;
 }
 
@@ -1184,7 +1164,7 @@ fn strCmpScore(str_a: []const u8, str_b: []const u8) f32 {
 pub fn ScoredList(
     comptime T: type,
     comptime slots: usize,
-    comptime ScoreCtx: anytype,
+    comptime ScoreCtx: type,
 ) type {
     std.debug.assert(slots > 0);
     std.debug.assert(@hasDecl(ScoreCtx, "score"));
