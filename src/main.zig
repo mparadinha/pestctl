@@ -77,6 +77,7 @@ pub const SessionCmd = union(enum) {
     pause_execution: void,
     step_line: void,
     step_instruction: void,
+    dump_ui_tree: []const u8, // path of graphviz save file
 };
 
 var show_ctx_menu = false;
@@ -584,10 +585,7 @@ pub fn main() !void {
         try ui.render();
 
         if (window.event_queue.searchAndRemove(.KeyUp, .{ .key = c.GLFW_KEY_D, .mods = .{ .shift = true } })) {
-            const dump_file = "ui_main_tree.dot";
-            std.debug.print("dumping root tree to {s}\n", .{dump_file});
-            try ui.dumpNodeTreeGraph(ui.root_node.?, dump_file);
-            return;
+            try session_cmds.append(.{ .dump_ui_tree = "ui_main_tree.dot" });
         }
 
         const cur_src_loc = if (session_opt) |s| s.src_loc else null;
@@ -663,6 +661,10 @@ pub fn main() !void {
                     const session = if (session_opt) |*s| s else break :case_blk;
                     try session.stepInstructions(1);
                 },
+                .dump_ui_tree => |path| {
+                    std.debug.print("dumping root tree to {s}\n", .{path});
+                    try ui.dumpNodeTreeGraph(ui.root_node.?, path);
+                },
             }
 
             if (session_opt) |*session| try session.fullUpdate();
@@ -689,10 +691,17 @@ const FileTab = struct {
     const FileInfo = struct {
         path: []const u8,
         content: []const u8,
+        line_offsets: []const usize,
         lock_line: ?f32,
         target_lock_line: ?f32,
         focus_box: ?SrcBox,
         target_focus_box: ?SrcBox,
+
+        pub fn free(self: FileInfo, allocator: Allocator) void {
+            allocator.free(self.path);
+            allocator.free(self.content);
+            allocator.free(self.line_offsets);
+        }
     };
 
     pub fn init(allocator: Allocator) FileTab {
@@ -704,10 +713,7 @@ const FileTab = struct {
     }
 
     pub fn deinit(self: FileTab) void {
-        for (self.files.items) |file_info| {
-            self.allocator.free(file_info.path);
-            self.allocator.free(file_info.content);
-        }
+        for (self.files.items) |file| file.free(self.allocator);
         self.files.deinit();
     }
 
@@ -723,9 +729,19 @@ const FileTab = struct {
         errdefer self.allocator.free(content);
         const dupe_path = try self.allocator.dupe(u8, path);
         errdefer self.allocator.free(dupe_path);
+
+        var line_offsets = std.ArrayList(usize).init(self.allocator);
+        try line_offsets.append(0);
+        for (content) |char, i| {
+            if (char != '\n') continue;
+            try line_offsets.append(i);
+        }
+        errdefer line_offsets.deinit();
+
         try self.files.append(.{
             .path = dupe_path,
             .content = content,
+            .line_offsets = line_offsets.toOwnedSlice(),
             .lock_line = null,
             .target_lock_line = null,
             .focus_box = null,
@@ -794,9 +810,6 @@ const FileTab = struct {
         if (ui.subtleIconButton(Icons.plus).clicked) std.debug.print("TODO: open file menu\n", .{});
         std.debug.assert(ui.popParent() == buttons_parent);
 
-        const active_name = if (self.active_file) |idx| self.files.items[idx].path else "";
-        const active_content = if (self.active_file) |idx| self.files.items[idx].content else "";
-
         if (self.active_file) |file_idx| {
             const file = &self.files.items[file_idx];
 
@@ -813,19 +826,22 @@ const FileTab = struct {
             const line_scroll_parent = ui.addNodeF(.{
                 .scrollable = true,
                 .clip_children = true,
-            }, "###{s}::line_scroll_parent", .{active_name}, .{ .pref_size = line_scroll_size });
+            }, "###{s}::line_scroll_parent", .{file.path}, .{ .pref_size = line_scroll_size });
             const line_sig = line_scroll_parent.signal;
             ui.pushParent(line_scroll_parent);
             const line_text_node = blk: {
-                // TODO: what about files with more than 1k lines?
-                var tmpbuf: [50_000]u8 = undefined;
-                var i: usize = 1;
-                var offset: usize = 0;
-                while (i < 1000) : (i += 1) {
-                    offset += (try std.fmt.bufPrint(tmpbuf[offset..], "{}\n", .{i})).len;
-                }
-                const lines_text = tmpbuf[0..offset];
+                const n_lines = file.line_offsets.len;
+                const max_line_fmt_size = @floatToInt(usize, @ceil(@log10(@intToFloat(f32, n_lines)))) + 1;
+                var tmpbuf = try self.allocator.alloc(u8, max_line_fmt_size * n_lines);
+                defer self.allocator.free(tmpbuf);
 
+                var i: usize = 0;
+                var offset: usize = 0;
+                while (i < n_lines) : (i += 1) {
+                    offset += (try std.fmt.bufPrint(tmpbuf[offset..], "{}\n", .{i + 1})).len;
+                }
+
+                const lines_text = tmpbuf[0..offset];
                 const line_text_node = ui.addNode(.{
                     .no_id = true,
                     .draw_text = true,
@@ -838,7 +854,14 @@ const FileTab = struct {
             };
             std.debug.assert(ui.popParent() == line_scroll_parent);
 
-            const text_sig = try textDisplay(ui, active_name, active_content, file.lock_line, file.focus_box);
+            const text_sig = try textDisplay(
+                ui,
+                file.path,
+                [2]Size{ Size.percent(1, 0), Size.percent(1, 0) },
+                .{ .content = file.content, .line_offsets = file.line_offsets },
+                file.lock_line,
+                if (file.focus_box) |box| &[1]FileTab.SrcBox{box} else &[0]FileTab.SrcBox{},
+            );
             const text_scroll_node = file_box_parent.last.?;
 
             // if we manually scroll the text stop the line locking
@@ -907,39 +930,56 @@ const FileTab = struct {
     }
 };
 
-fn textDisplay(ui: *UiContext, label: []const u8, text: []const u8, lock_line: ?f32, highlight_box: ?FileTab.SrcBox) !UiContext.Signal {
-    const parent = ui.startScrollRegion(label);
-    parent.pref_size = [2]Size{ Size.percent(1, 0), Size.percent(1, 0) };
-    const parent_sig = parent.signal;
+fn showDisassemblyWindow(ui: *UiContext, label: []const u8, asm_text_info: AsmTextInfo, lock_line: ?f32) !UiContext.Signal {
+    // TODO: hightlight box ranges
+    const highlight_box: ?FileTab.SrcBox = if (lock_line) |line| FileTab.SrcBox{
+        .min = .{ .line = line, .column = 0 },
+        .max = .{ .line = line, .column = 0 },
+    } else null;
 
+    const size = [2]Size{ Size.percent(1, 0), Size.percent(0.25, 0) };
+    const text_info = TextDisplayInfo{ .content = asm_text_info.data, .line_offsets = asm_text_info.line_offsets };
+    const src_boxes = if (highlight_box) |box| &[1]FileTab.SrcBox{box} else &[0]FileTab.SrcBox{};
+    return try textDisplay(ui, label, size, text_info, lock_line, src_boxes);
+}
+
+const TextDisplayInfo = struct {
+    content: []const u8,
+    line_offsets: []const usize, // indices into `content`
+};
+
+fn textDisplay(
+    ui: *UiContext,
+    label: []const u8,
+    size: [2]UiContext.Size,
+    text_info: TextDisplayInfo,
+    lock_line: ?f32,
+    boxes: []const FileTab.SrcBox,
+) !UiContext.Signal {
+    const parent = ui.startScrollRegion(label);
+    parent.pref_size = size;
+    const parent_sig = parent.signal;
     const parent_size = parent.rect.size();
+
     const line_size = ui.font.getScaledMetrics().line_advance;
 
     const x_off = &parent.scroll_offset[0];
     const y_off = &parent.scroll_offset[1];
-    if (lock_line) |line| {
-        y_off.* = -line_size * line + parent_size[1] / 2;
-    }
+    if (lock_line) |line| y_off.* = -line_size * line + parent_size[1] / 2;
 
-    const lines_that_fit = @trunc(parent.rect.size()[1] / line_size);
+    const total_lines = text_info.line_offsets.len;
+
+    const lines_that_fit = @trunc(parent_size[1] / line_size);
     const cur_middle_line = @trunc(std.math.max(0, -y_off.* + parent_size[1] / 2) / line_size);
     const partial_start_line = @floatToInt(usize, @trunc(std.math.max(0, cur_middle_line - lines_that_fit)));
-    const partial_end_line = @floatToInt(usize, @trunc(cur_middle_line + lines_that_fit));
+    const partial_end_line = std.math.min(@floatToInt(usize, @trunc(cur_middle_line + lines_that_fit)), total_lines);
 
-    var total_lines: usize = 1;
-    var partial_start_idx: usize = 0;
-    var partial_end_idx: usize = text.len;
-    var last_newline: usize = 0;
-    for (text) |char, i| {
-        if (char != '\n') continue;
-        if (total_lines <= partial_start_line) partial_start_idx = i + 1;
-        if (total_lines <= partial_end_line) partial_end_idx = i + 1;
-        total_lines += 1;
-        last_newline = i;
-    }
-    if (text.len == 0) total_lines = 0;
-
-    const partial_text = text[partial_start_idx..partial_end_idx];
+    const partial_start_idx = text_info.line_offsets[partial_start_line];
+    const partial_end_idx = if (partial_end_line == total_lines)
+        text_info.content.len
+    else
+        text_info.line_offsets[partial_end_line];
+    const partial_text = text_info.content[partial_start_idx..partial_end_idx];
 
     const label_node = ui.addNodeStrings(.{
         .no_id = true,
@@ -960,8 +1000,8 @@ fn textDisplay(ui: *UiContext, label: []const u8, text: []const u8, lock_line: ?
     label_node.rel_pos_placement_parent = .top_left;
     label_node.rel_pos = vec2{ x_off.*, -y_off.* - @intToFloat(f32, partial_start_line) * line_size };
 
-    if (highlight_box) |box| blk: {
-        if (box.min.line == 0 and box.max.line == 0) break :blk;
+    for (boxes) |box| {
+        if (box.min.line == 0 and box.max.line == 0) break;
 
         const text_y_start = parent.rect.size()[1] - y_off.*;
         const line_y_start = std.math.max(0, box.min.line - 1) * line_size;
@@ -995,7 +1035,7 @@ const AsmTextInfo = struct {
     }
 };
 
-/// don't forget to call `TextInfo.deinit` when done with it
+/// don't forget to call `AsmTextInfo.deinit` when done with it
 fn generateTextInfoForDisassembly(allocator: Allocator, data: []const u8, data_start_addr: usize) !AsmTextInfo {
     const fn_zone = tracy.Zone(@src());
     defer fn_zone.End();
@@ -1071,81 +1111,6 @@ fn generateTextInfoForDisassembly(allocator: Allocator, data: []const u8, data_s
         .line_offsets = line_offsets.toOwnedSlice(),
         .line_addrs = line_addrs.toOwnedSlice(),
     };
-}
-
-fn showDisassemblyWindow(ui: *UiContext, label: []const u8, text_info: AsmTextInfo, lock_line: ?f32) !UiContext.Signal {
-    // TODO: hightlight box ranges
-
-    const parent = ui.startScrollRegion(label);
-    parent.pref_size = [2]Size{ Size.percent(1, 0), Size.percent(0.25, 0) };
-    const parent_sig = parent.signal;
-
-    const parent_size = parent.rect.size();
-    const line_size = ui.font.getScaledMetrics().line_advance;
-
-    const x_off = &parent.scroll_offset[0];
-    const y_off = &parent.scroll_offset[1];
-    //if (lock_line) |line| {
-    //    y_off.* = -line_size * line + parent_size[1] / 2;
-    //}
-
-    const total_lines = text_info.line_offsets.len;
-
-    const lines_that_fit = @trunc(parent_size[1] / line_size);
-    const cur_middle_line = @trunc(std.math.max(0, -y_off.* + parent_size[1] / 2) / line_size);
-    const partial_start_line = @floatToInt(usize, @trunc(std.math.max(0, cur_middle_line - lines_that_fit)));
-    const partial_end_line = std.math.min(@floatToInt(usize, @trunc(cur_middle_line + lines_that_fit)), total_lines);
-
-    const partial_start_idx = text_info.line_offsets[partial_start_line];
-    const partial_end_idx = if (partial_end_line == total_lines)
-        text_info.data.len
-    else
-        text_info.line_offsets[partial_end_line];
-    const partial_text = text_info.data[partial_start_idx..partial_end_idx];
-
-    const label_node = ui.addNodeStrings(.{
-        .no_id = true,
-        .ignore_hash_sep = true,
-        .draw_text = true,
-        .floating_x = true,
-        .floating_y = true,
-    }, partial_text, label, .{});
-
-    // hack to cut off scrolling at the ends of text
-    const text_size = vec2{ label_node.text_rect.size()[0], line_size * @intToFloat(f32, total_lines) };
-    var max_offset = text_size - parent_size + vec2{ 2, 2 } * UiContext.text_padd;
-    max_offset = vec2{ std.math.max(max_offset[0], 0), std.math.max(max_offset[1], 0) };
-    x_off.* = std.math.clamp(x_off.*, -max_offset[0], 0);
-    y_off.* = std.math.clamp(y_off.*, -max_offset[1], 0);
-
-    label_node.rel_pos_placement = .top_left;
-    label_node.rel_pos_placement_parent = .top_left;
-    label_node.rel_pos = vec2{ x_off.*, -y_off.* - @intToFloat(f32, partial_start_line) * line_size };
-
-    const highlight_box: ?FileTab.SrcBox = if (lock_line) |line| FileTab.SrcBox{
-        .min = .{ .line = line, .column = 0 },
-        .max = .{ .line = line, .column = 0 },
-    } else null;
-    if (highlight_box) |box| blk: {
-        if (box.min.line == 0 and box.max.line == 0) break :blk;
-
-        const text_y_start = parent.rect.size()[1] - y_off.*;
-        const line_y_start = std.math.max(0, box.min.line - 1) * line_size;
-        const box_y_top = text_y_start - line_y_start - UiContext.text_padd[1];
-        const box_y_size = std.math.max(1, box.max.line - box.min.line) * line_size;
-
-        const box_node = ui.addNode(.{
-            .no_id = true,
-            .draw_border = true,
-            .floating_y = true,
-        }, "", .{});
-        box_node.pref_size = [2]Size{ Size.percent(1, 1), Size.pixels(box_y_size, 1) };
-        box_node.rel_pos[1] = box_y_top - box_y_size;
-    }
-
-    ui.endScrollRegion(parent, 0, -max_offset[1]);
-
-    return parent_sig;
 }
 
 fn strCmpScore(str_a: []const u8, str_b: []const u8) f32 {

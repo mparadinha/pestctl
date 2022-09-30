@@ -604,7 +604,7 @@ pub fn endBuild(self: *UiContext, dt: f32) void {
 }
 
 fn computeSignalsForTree(self: *UiContext, root: *Node) void {
-    var node_iterator = ReverseOrderBreadthFirstNodeIterator.init(root);
+    var node_iterator = ReverseRenderOrderNodeIterator.init(root);
     while (node_iterator.next()) |node| {
         node.signal = self.computeNodeSignal(node);
     }
@@ -1452,7 +1452,13 @@ pub const DepthFirstNodeIterator = struct {
     }
 };
 
-pub const ReverseOrderBreadthFirstNodeIterator = struct {
+// render order:  // event consumption order:
+//      0         //      6
+//   ┌──┴──┐      //   ┌──┴──┐
+//   1     4      //   5     2
+//  ┌┴┐   ┌┴┐     //  ┌┴┐   ┌┴┐
+//  2 3   5 6     //  4 3   1 0
+pub const ReverseRenderOrderNodeIterator = struct {
     cur_node: *Node,
     reached_top: bool,
 
@@ -1468,26 +1474,12 @@ pub const ReverseOrderBreadthFirstNodeIterator = struct {
         if (self.reached_top) return null;
 
         var cur_node = self.cur_node;
-
         var next_node = @as(?*Node, cur_node);
-        if (self.cur_node.prev) |prev| {
-            next_node = prev;
-        } else if (self.cur_node.parent) |parent| {
-            // find first sibling of parent with children
-            var aunt = parent.prev;
-            while (aunt != null and aunt.?.child_count == 0) aunt = aunt.?.prev;
 
-            if (aunt) |aunt_node| {
-                next_node = aunt_node.last.?;
-                while (next_node.?.last) |last| next_node = last;
-            } else if (parent.parent) |gparent_node| {
-                next_node = gparent_node.last.?;
-            } else {
-                next_node = null;
-            }
-        } else {
-            next_node = null;
-        }
+        if (cur_node.prev) |prev| {
+            next_node = prev;
+            while (next_node.?.last) |last| next_node = last;
+        } else next_node = cur_node.parent;
 
         if (next_node) |node| {
             self.cur_node = node;
@@ -1711,6 +1703,9 @@ pub fn dumpNodeTreeGraph(self: *UiContext, root: *Node, save_path: []const u8) !
         try writer.print("{any}\n", .{node.pref_size});
         try writer.print("{d}\n", .{node.rect});
         if (node.child_count > 0) try writer.print("child_layout={}\n", .{node.child_layout_axis});
+        inline for (@typeInfo(Flags).Struct.fields) |field| {
+            if (@field(node.flags, field.name)) _ = try writer.write(field.name ++ ",");
+        }
         try writer.print("\"];\n", .{});
         if (node.parent) |other| try writer.print("    Node_0x{x} -> Node_0x{x} [label=\"parent\"];\n", .{ @ptrToInt(node), @ptrToInt(other) });
         if (node.first) |other| try writer.print("    Node_0x{x} -> Node_0x{x} [label=\"first\"];\n", .{ @ptrToInt(node), @ptrToInt(other) });

@@ -205,44 +205,47 @@ pub fn endScrollRegion(self: *UiContext, parent: *Node, start_scroll: f32, end_s
         self.pushParent(bar_node);
         defer std.debug.assert(self.popParent() == bar_node);
 
-        if (self.subtleIconButtonF("{s}###{s}:up_scroll_btn", .{ Icons.up_open, hash_string }).clicked) std.debug.print("SCROLL UP! :D\n", .{});
+        const up_btn = self.subtleIconButtonF("{s}###{s}:up_scroll_btn", .{ Icons.up_open, hash_string });
+        if (up_btn.held_down) parent.scroll_offset[1] += 50;
 
-        const scroll_bar_region = self.addNodeF(.{}, "###{s}:scroll_bar_region", .{hash_string}, .{});
+        const scroll_bar_region = self.addNodeF(.{
+            .clickable = true,
+        }, "###{s}:scroll_bar_region", .{hash_string}, .{});
         scroll_bar_region.pref_size = [2]Size{ Size.percent(1, 0), Size.percent(1, 0) };
         {
             self.pushParent(scroll_bar_region);
             defer std.debug.assert(self.popParent() == scroll_bar_region);
 
             const scroll_size = end_scroll - start_scroll;
-            const scroll_pct = std.math.clamp(
-                abs((parent.scroll_offset[1] - start_scroll) / scroll_size),
-                0,
-                1,
-            );
+            const bar_region_size = scroll_bar_region.rect.size()[1];
+            const mouse_bar_pct = (scroll_bar_region.rect.max[1] - self.mouse_pos[1]) / bar_region_size;
+            const bar_pct = std.math.clamp(mouse_bar_pct, 0, 1);
 
-            if (scroll_pct > 0) self.spacer(.y, Size.percent(scroll_pct, 0));
-
-            const bar_sig = self.addNodeF(.{
-                .clickable = true,
-                .draw_text = true,
-            }, "{s}###{s}:bar_btn", .{ Icons.circle, hash_string }, .{
-                .font_type = .icon,
-            }).signal;
-            std.debug.print("bar_sig={}\n", .{bar_sig});
-            if (bar_sig.held_down and parent.rect.size()[1] > 0) {
-                const bar_pct = abs((parent.rect.max[1] - self.mouse_pos[1]) / parent.rect.size()[1]);
-                std.debug.print("bar_pct={d}\n", .{bar_pct});
+            if (scroll_bar_region.signal.held_down) {
                 parent.scroll_offset[1] = (scroll_size * bar_pct) + start_scroll;
             }
-            //const bar_box = self.addNode(.{ .draw_background = true, .no_id = true, .floating_x = true }, "", .{});
-            //const bar_box_x_pct = 0.85;
-            //const bar_box_y_pct = std.math.min(1, parent.rect.size()[1] / max_scroll);
-            //bar_box.pref_size = [2]Size{ Size.percent(bar_box_x_pct, 1), Size.percent(bar_box_y_pct, 1) };
-            //bar_box.bg_color = vec4{ 0.5, 0.5, 0.5, 1 };
-            //bar_box.rel_pos[0] = bar_node.rect.size()[0] * (1 - bar_box_x_pct) / 2;
+
+            const bar_icon_node = self.addNodeF(.{
+                .draw_text = true,
+                .floating_y = true,
+            }, "{s}###{s}:bar_btn", .{ Icons.circle, hash_string }, .{
+                .font_type = .icon,
+            });
+            const icon_size = bar_icon_node.text_rect.size()[1];
+            bar_icon_node.rel_pos_placement = .top_left;
+            bar_icon_node.rel_pos_placement_parent = .top_left;
+            bar_icon_node.rel_pos[1] = if (bar_region_size > 0) blk: {
+                const scroll_pct = std.math.clamp((parent.scroll_offset[1] - start_scroll) / scroll_size, 0, 1);
+                break :blk -std.math.clamp(
+                    (bar_region_size * scroll_pct) - (icon_size / 2),
+                    0,
+                    bar_region_size - icon_size,
+                );
+            } else 0;
         }
 
-        if (self.subtleIconButtonF("{s}###{s}:down_scroll_btn", .{ Icons.down_open, hash_string }).clicked) std.debug.print("SCROLL DOWN! :D\n", .{});
+        const down_btn = self.subtleIconButtonF("{s}###{s}:down_scroll_btn", .{ Icons.down_open, hash_string });
+        if (down_btn.held_down) parent.scroll_offset[1] -= 50;
     }
 
     std.debug.assert(self.popParent() == parent);
