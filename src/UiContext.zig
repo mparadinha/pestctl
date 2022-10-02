@@ -36,6 +36,7 @@ auto_pop_style: bool,
 root_node: ?*Node,
 ctx_menu_root_node: ?*Node,
 tooltip_root_node: ?*Node,
+window_roots: std.ArrayList(*Node),
 screen_size: vec2,
 mouse_pos: vec2, // in pixels
 events: *window.EventQueue,
@@ -74,6 +75,7 @@ pub fn init(allocator: Allocator, font_path: []const u8, icon_font_path: []const
         .root_node = null,
         .tooltip_root_node = null,
         .ctx_menu_root_node = null,
+        .window_roots = std.ArrayList(*Node).init(allocator),
         .screen_size = undefined,
         .mouse_pos = undefined,
         .events = undefined,
@@ -471,6 +473,20 @@ pub fn addNodeRawStrings(self: *UiContext, flags: Flags, display_string_in: []co
     return node;
 }
 
+pub fn addNodeAsRoot(self: *UiContext, flags: Flags, string: []const u8, init_args: anytype) *Node {
+    // the `addNode` function is gonna use whatever parent is at the top of the stack by default
+    // so we have to trick it into thinking this is the root node
+    const saved_stack_len = self.parent_stack.len();
+    self.parent_stack.array_list.items.len = 0;
+
+    const node = self.addNode(flags, string, init_args);
+
+    self.parent_stack.array_list.items.len = saved_stack_len;
+    self.pushParent(node);
+
+    return node;
+}
+
 pub fn pushParent(self: *UiContext, node: *Node) void {
     self.parent_stack.push(node) catch |e|
         self.setErrorInfo(@errorReturnTrace(), @errorName(e));
@@ -518,6 +534,7 @@ pub fn startBuild(self: *UiContext, screen_w: u32, screen_h: u32, mouse_pos: vec
     // of another, the top one should get the inputs, no the bottom one)
     if (self.tooltip_root_node) |node| self.computeSignalsForTree(node);
     if (self.ctx_menu_root_node) |node| self.computeSignalsForTree(node);
+    for (self.window_roots.items) |node| self.computeSignalsForTree(node);
     if (self.root_node) |node| self.computeSignalsForTree(node);
 
     // clear out the whole string arena
@@ -550,6 +567,7 @@ pub fn startBuild(self: *UiContext, screen_w: u32, screen_h: u32, mouse_pos: vec
     });
     try self.parent_stack.push(self.root_node.?);
 
+    self.window_roots.clearRetainingCapacity();
     self.ctx_menu_root_node = null;
     self.tooltip_root_node = null;
 
@@ -736,6 +754,7 @@ pub fn render(self: *UiContext) !void {
     defer shader_inputs.deinit();
 
     try self.setupTreeForRender(&shader_inputs, self.root_node.?);
+    for (self.window_roots.items) |node| try self.setupTreeForRender(&shader_inputs, node);
     if (self.ctx_menu_root_node) |node| try self.setupTreeForRender(&shader_inputs, node);
     if (self.tooltip_root_node) |node| try self.setupTreeForRender(&shader_inputs, node);
 
@@ -1452,12 +1471,12 @@ pub const DepthFirstNodeIterator = struct {
     }
 };
 
-// render order:  // event consumption order:
-//      0         //      6
-//   ┌──┴──┐      //   ┌──┴──┐
-//   1     4      //   5     2
-//  ┌┴┐   ┌┴┐     //  ┌┴┐   ┌┴┐
-//  2 3   5 6     //  4 3   1 0
+//  render order:  |  event consumption order:
+//       0         |       6
+//    ┌──┴──┐      |    ┌──┴──┐
+//    1     4      |    5     2
+//   ┌┴┐   ┌┴┐     |   ┌┴┐   ┌┴┐
+//   2 3   5 6     |   4 3   1 0
 pub const ReverseRenderOrderNodeIterator = struct {
     cur_node: *Node,
     reached_top: bool,

@@ -124,13 +124,8 @@ pub fn pushLayoutParent(self: *UiContext, hash_string: []const u8, size: [2]Size
 // don't forget to call `endCtxMenu`
 // TODO: maybe turn this into a generic window function and ctx menu would simply be a special case of a window
 pub fn startCtxMenu(self: *UiContext, placement: Placement) void {
-    // the `addNode` function is gonna use whatever parent is at the top of the stack by default
-    // so we have to trick it into thinking this is the root node
-    const saved_stack_len = self.parent_stack.len();
-    self.parent_stack.array_list.items.len = 0;
-
     const ctx_menu_size = [2]Size{ Size.by_children(1), Size.by_children(1) };
-    const ctx_menu_root = self.addNode(.{
+    const ctx_menu_root = self.addNodeAsRoot(.{
         .clip_children = true,
         .floating_x = true,
         .floating_y = true,
@@ -140,11 +135,7 @@ pub fn startCtxMenu(self: *UiContext, placement: Placement) void {
         .rel_pos = placement.value(),
         .rel_pos_placement = std.meta.activeTag(placement),
     });
-
     self.ctx_menu_root_node = ctx_menu_root;
-
-    self.parent_stack.array_list.items.len = saved_stack_len;
-    self.pushParent(ctx_menu_root);
 }
 
 pub fn endCtxMenu(self: *UiContext) void {
@@ -153,13 +144,8 @@ pub fn endCtxMenu(self: *UiContext) void {
 }
 
 pub fn startTooltip(self: *UiContext, placement: Placement) void {
-    // the `addNode` function is gonna use whatever parent is at the top of the stack by default
-    // so we have to trick it into thinking this is the root node
-    const saved_stack_len = self.parent_stack.len();
-    self.parent_stack.array_list.items.len = 0;
-
     const tooltip_size = [2]Size{ Size.by_children(1), Size.by_children(1) };
-    const tooltip_root = self.addNode(.{
+    const tooltip_root = self.addNodeAsRoot(.{
         .clip_children = true,
         .floating_x = true,
         .floating_y = true,
@@ -169,16 +155,32 @@ pub fn startTooltip(self: *UiContext, placement: Placement) void {
         .rel_pos = placement.value(),
         .rel_pos_placement = std.meta.activeTag(placement),
     });
-
     self.tooltip_root_node = tooltip_root;
-
-    self.parent_stack.array_list.items.len = saved_stack_len;
-    self.pushParent(tooltip_root);
 }
 
 pub fn endTooltip(self: *UiContext) void {
     const parent = self.popParent();
     std.debug.assert(parent == self.tooltip_root_node);
+}
+
+pub fn startWindow(self: *UiContext, hash_string: []const u8) *Node {
+    const whole_screen_size = [2]Size{ Size.pixels(self.screen_size[0], 1), Size.pixels(self.screen_size[1], 1) };
+    const node = self.addNodeAsRoot(.{
+        .clip_children = true,
+        .no_id = true,
+    }, hash_string, .{
+        .pref_size = whole_screen_size,
+    });
+
+    self.window_roots.append(node) catch |e| {
+        self.setErrorInfo(@errorReturnTrace(), @errorName(e));
+    };
+
+    return node;
+}
+
+pub fn endWindow(self: *UiContext, window_root: *Node) void {
+    std.debug.assert(self.popParent() == window_root);
 }
 
 /// returns the new parent (which gets pushed on the parent stack) for this region
@@ -251,10 +253,35 @@ pub fn endScrollRegion(self: *UiContext, parent: *Node, start_scroll: f32, end_s
     std.debug.assert(self.popParent() == parent);
 }
 
-pub fn dropDownList(self: *UiContext, hash_string: []const u8, choices: []const []const u8, cur_choice: *usize) void {
+// TODO
+pub fn dropDownList(self: *UiContext, hash_string: []const u8, options: []const []const u8, chosen_idx: *usize, is_open: *bool) void {
     _ = hash_string;
-    // TODO
-    self.label(choices[cur_choice.*]);
+    _ = is_open;
+
+    const Icons = @import("main.zig").Icons;
+
+    const choice_parent_size = [2]Size{ Size.by_children(1), Size.text_dim(1) };
+    const choice_parent = self.addNode(.{ .no_id = true }, "", .{ .pref_size = choice_parent_size, .child_layout_axis = .x });
+    self.pushParent(choice_parent);
+    {
+        self.label(options[chosen_idx.*]);
+        const open_btn_sig = self.iconButton(if (is_open.*) Icons.up_open else Icons.down_open);
+        if (open_btn_sig.clicked) is_open.* = !is_open.*;
+    }
+    std.debug.assert(self.popParent() == choice_parent);
+
+    if (is_open.*) {
+        const opts_window = self.startWindow("tmp_opts_window");
+        defer self.endWindow(opts_window);
+
+        const opts_parent = self.addNode(.{
+            .draw_background = true,
+        }, "tmp_opts_window_parent", .{});
+        self.pushParent(opts_parent);
+        defer std.debug.assert(self.popParent() == opts_parent);
+
+        for (options) |option| self.label(option);
+    }
 }
 
 pub fn textInput(self: *UiContext, hash_string: []const u8, buffer: []u8, buf_len: *usize) Signal {

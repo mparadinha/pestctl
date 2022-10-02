@@ -150,6 +150,7 @@ pub fn main() !void {
     defer session_cmds.deinit();
 
     var test_list_idx: usize = 2;
+    var test_open = true;
 
     var frame_idx: u64 = 0;
 
@@ -184,6 +185,28 @@ pub fn main() !void {
         const tabs_parent = ui.addNode(.{}, "###tabs_parent", .{ .child_layout_axis = .x });
         tabs_parent.pref_size = [2]Size{ Size.percent(1, 0), Size.percent(1, 0) };
         ui.pushParent(tabs_parent);
+
+        {
+            const test_window = ui.startWindow("test window");
+            defer ui.endWindow(test_window);
+
+            const test_size = [2]Size{ Size.by_children(1), Size.by_children(1) };
+            const test_paren = ui.pushLayoutParent("test window first paren", test_size, .x);
+            test_paren.flags.draw_background = true;
+            test_paren.flags.floating_x = true;
+            test_paren.flags.floating_y = true;
+            test_paren.bg_color = vec4{ 0, 0, 0, 1 };
+            test_paren.rel_pos = vec2{ 900, 50 };
+            defer std.debug.assert(ui.popParent() == test_paren);
+
+            ui.label("TESTING...");
+            if (ui.button("btn test").clicked) std.debug.print("btn test!\n", .{});
+            ui.label("TESTING...");
+            ui.label("TESTING...");
+        }
+
+        const test_list_choices = [_][]const u8{ "zero", "one", "two", "three" };
+        ui.dropDownList("test_list", &test_list_choices, &test_list_idx, &test_open);
 
         const left_side_parent = ui.addNode(.{
             .draw_border = true,
@@ -351,9 +374,6 @@ pub fn main() !void {
                 _ = ui.textBoxF("src_loc: {s}:{}", .{ loc.file, loc.line });
             } else _ = ui.textBox("src_loc: null");
             ui.topParent().last.?.pref_size[0] = Size.percent(1, 1);
-
-            const test_list_choices = [_][]const u8{ "zero", "one", "two", "three" };
-            ui.dropDownList("test_list", &test_list_choices, &test_list_idx);
 
             if (ui.button("Wait for Signal").clicked) {
                 std.debug.print("wait status: {}\n", .{Session.getWaitStatus(session.pid)});
@@ -786,6 +806,8 @@ const FileTab = struct {
     }
 
     pub fn display(self: *FileTab, ui: *UiContext, session_cmds: *std.ArrayList(SessionCmd)) !void {
+        const trace = tracy.Zone(@src());
+        defer trace.End();
         const file_tab_size = [2]Size{ Size.percent(1, 1), Size.percent(1, 0) };
         const file_tab_node = ui.addNode(.{
             .draw_border = true,
@@ -877,6 +899,8 @@ const FileTab = struct {
                 ctx_menu_top_left = ui.mouse_pos;
             }
             if (show_ctx_menu) {
+                const ctx_menu_trace = tracy.ZoneN(@src(), "file ctx_menu");
+                defer ctx_menu_trace.End();
                 ui.startCtxMenu(.{ .top_left = ctx_menu_top_left });
                 const ctx_menu_node = ui.topParent();
 
@@ -886,12 +910,15 @@ const FileTab = struct {
                 const mouse_line = @floor(line_offset / line_size);
                 const src_line = @floatToInt(u32, mouse_line) + 1;
 
-                try session_cmds.append(.{ .set_break_at_src = .{
-                    .dir = std.fs.path.dirname(file.path).?,
-                    .file = std.fs.path.basename(file.path),
-                    .line = src_line,
-                    .column = 0,
-                } });
+                if (ui.buttonF("Set Breakpoint At Line {}\n", .{src_line}).clicked) {
+                    try session_cmds.append(.{ .set_break_at_src = .{
+                        .dir = std.fs.path.dirname(file.path).?,
+                        .file = std.fs.path.basename(file.path),
+                        .line = src_line,
+                        .column = 0,
+                    } });
+                    show_ctx_menu = false;
+                }
 
                 if (ui.events.match(.MouseDown, {})) |_| {
                     if (!ctx_menu_node.rect.contains(ui.mouse_pos)) show_ctx_menu = false;
