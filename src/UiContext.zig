@@ -95,6 +95,7 @@ pub fn deinit(self: *UiContext) void {
     self.font.deinit();
     self.icon_font.deinit();
     self.generic_shader.deinit();
+    self.window_roots.deinit();
 }
 
 pub const Flags = packed struct {
@@ -493,6 +494,9 @@ pub fn pushParent(self: *UiContext, node: *Node) void {
 }
 pub fn popParent(self: *UiContext) *Node {
     return self.parent_stack.pop().?;
+}
+pub fn popParentAssert(self: *UiContext, expected: *Node) void {
+    std.debug.assert(self.popParent() == expected);
 }
 pub fn topParent(self: *UiContext) *Node {
     return self.parent_stack.top().?;

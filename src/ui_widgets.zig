@@ -111,6 +111,15 @@ pub fn subtleIconButtonF(self: *UiContext, comptime fmt: []const u8, args: anyty
     return node.signal;
 }
 
+pub fn pushLayoutParentF(self: *UiContext, comptime fmt: []const u8, args: anytype, size: [2]Size, layout_axis: Axis) *Node {
+    const node = self.addNodeStringsF(.{}, "", .{}, fmt, args, .{
+        .pref_size = size,
+        .child_layout_axis = layout_axis,
+    });
+    self.pushParent(node);
+    return node;
+}
+
 /// pushes a new node as parent that is meant only for layout purposes
 pub fn pushLayoutParent(self: *UiContext, hash_string: []const u8, size: [2]Size, layout_axis: Axis) *Node {
     const node = self.addNodeStrings(.{}, "", hash_string, .{
@@ -261,7 +270,7 @@ pub fn dropDownList(self: *UiContext, hash_string: []const u8, options: []const 
     const Icons = @import("main.zig").Icons;
 
     const choice_parent_size = [2]Size{ Size.by_children(1), Size.text_dim(1) };
-    const choice_parent = self.addNode(.{ .no_id = true }, "", .{ .pref_size = choice_parent_size, .child_layout_axis = .x });
+    const choice_parent = self.addNodeF(.{}, "###{s}:choice_parent", .{hash_string}, .{ .pref_size = choice_parent_size, .child_layout_axis = .x });
     self.pushParent(choice_parent);
     {
         self.label(options[chosen_idx.*]);
@@ -274,13 +283,31 @@ pub fn dropDownList(self: *UiContext, hash_string: []const u8, options: []const 
         const opts_window = self.startWindow("tmp_opts_window");
         defer self.endWindow(opts_window);
 
+        const opts_parent_size = [2]Size{ Size.pixels(choice_parent.rect.size()[0], 1), Size.by_children(1) };
         const opts_parent = self.addNode(.{
+            .clip_children = true,
             .draw_background = true,
-        }, "tmp_opts_window_parent", .{});
+            .floating_x = true,
+            .floating_y = true,
+        }, "tmp_opts_window_parent", .{
+            .pref_size = opts_parent_size,
+            .rel_pos = choice_parent.rect.min,
+            .rel_pos_placement = .top_left,
+        });
         self.pushParent(opts_parent);
         defer std.debug.assert(self.popParent() == opts_parent);
 
-        for (options) |option| self.label(option);
+        for (options) |option, idx| {
+            const opt_node = self.addNodeStringsF(.{
+                .clickable = true,
+                .draw_border = true,
+                .draw_text = true,
+                .draw_hot_effects = true,
+                .draw_active_effects = true,
+            }, "{s}", .{option}, "{s}:opt_node_#{}", .{ hash_string, idx }, .{});
+            opt_node.pref_size = [2]Size{ Size.percent(1, 0), Size.text_dim(1) };
+            if (opt_node.signal.clicked) chosen_idx.* = idx;
+        }
     }
 }
 

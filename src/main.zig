@@ -89,8 +89,8 @@ pub fn main() !void {
         .enable_memory_limit = true,
     }){};
     defer _ = general_purpose_allocator.detectLeaks();
-    //const allocator = general_purpose_allocator.allocator();
-    const allocator = std.heap.c_allocator;
+    const allocator = general_purpose_allocator.allocator();
+    //const allocator = std.heap.c_allocator;
 
     var cwd_buf: [0x4000]u8 = undefined;
     const cwd = try std.os.getcwd(&cwd_buf);
@@ -146,11 +146,13 @@ pub fn main() !void {
 
     var last_src_loc = @as(?SrcLoc, null);
 
+    const widget_tabs = [_][]const u8{ "Registers", "Call Stack", "Memory Maps" };
+    var widget_tab_active_idx: usize = 1;
+    var call_stack_viewer = CallStackViewer.init(allocator);
+    defer call_stack_viewer.deinit();
+
     var session_cmds = std.ArrayList(SessionCmd).init(allocator);
     defer session_cmds.deinit();
-
-    var test_list_idx: usize = 2;
-    var test_open = true;
 
     var frame_idx: u64 = 0;
 
@@ -186,28 +188,6 @@ pub fn main() !void {
         tabs_parent.pref_size = [2]Size{ Size.percent(1, 0), Size.percent(1, 0) };
         ui.pushParent(tabs_parent);
 
-        {
-            const test_window = ui.startWindow("test window");
-            defer ui.endWindow(test_window);
-
-            const test_size = [2]Size{ Size.by_children(1), Size.by_children(1) };
-            const test_paren = ui.pushLayoutParent("test window first paren", test_size, .x);
-            test_paren.flags.draw_background = true;
-            test_paren.flags.floating_x = true;
-            test_paren.flags.floating_y = true;
-            test_paren.bg_color = vec4{ 0, 0, 0, 1 };
-            test_paren.rel_pos = vec2{ 900, 50 };
-            defer std.debug.assert(ui.popParent() == test_paren);
-
-            ui.label("TESTING...");
-            if (ui.button("btn test").clicked) std.debug.print("btn test!\n", .{});
-            ui.label("TESTING...");
-            ui.label("TESTING...");
-        }
-
-        const test_list_choices = [_][]const u8{ "zero", "one", "two", "three" };
-        ui.dropDownList("test_list", &test_list_choices, &test_list_idx, &test_open);
-
         const left_side_parent = ui.addNode(.{
             .draw_border = true,
             .draw_background = true,
@@ -238,7 +218,7 @@ pub fn main() !void {
                             .pref_size = children_size,
                         });
                         ui.pushParent(tooltip_bg);
-                        defer std.debug.assert(ui.popParent() == tooltip_bg);
+                        defer ui.popParentAssert(tooltip_bg);
 
                         const input = src_file_buf.slice();
                         // TODO: don't crash if user writes "tmp/dir////"
@@ -272,14 +252,13 @@ pub fn main() !void {
                             });
                         }
 
-                        ui.pushStyle(.{ .pref_size = fill_x_size });
+                        ui.pushStyle(.{ .pref_size = fill_x_size, .border_color = math.zeroes(vec4) });
                         for (scored_files.slice()) |entry| {
                             const button_sig = if (entry.kind == .Directory)
                                 ui.buttonF("{s}{s}/", .{ inner_dir, entry.name })
                             else
                                 ui.buttonF("{s}{s}", .{ inner_dir, entry.name });
                             ui.topParent().last.?.flags.draw_background = false;
-                            ui.topParent().last.?.border_color = vec4{ 0, 0, 0, 0 };
                             if (button_sig.clicked) {
                                 std.debug.print("TODO: switch input buffer to {s}\n", .{entry.name});
                             }
@@ -289,7 +268,7 @@ pub fn main() !void {
                     ui.endCtxMenu();
                 }
             }
-            std.debug.assert(ui.popParent() == open_file_parent);
+            ui.popParentAssert(open_file_parent);
 
             try file_tab.display(&ui, &session_cmds);
 
@@ -355,7 +334,7 @@ pub fn main() !void {
                 _ = try showDisassemblyWindow(&ui, "main_disasm_window", disasm_text, @intToFloat(f32, line_idx + 1));
             }
         }
-        std.debug.assert(ui.popParent() == left_side_parent);
+        ui.popParentAssert(left_side_parent);
 
         const right_side_parent = ui.pushLayoutParent("right_side_parent", [2]Size{ Size.percent(0.5, 1), Size.percent(1, 0) }, .y);
         right_side_parent.flags.draw_background = true;
@@ -383,24 +362,34 @@ pub fn main() !void {
                 try Session.ptrace(.CONT, session.pid, 0);
             }
 
-            const table_regs = .{ "rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp", "rsp", "rip" };
-            const regs = session.regs;
-            inline for (table_regs) |reg_name| {
-                _ = ui.textBoxF(reg_name ++ ": 0x{x:0>16}", .{@field(regs, reg_name)});
-            }
-
             if (session.addr_range) |range| {
                 _ = ui.textBoxF("addr_range[0] = 0x{x:0>12}", .{range[0]});
                 _ = ui.textBoxF("addr_range[1] = 0x{x:0>12}", .{range[1]});
             }
 
-            _ = ui.textBox("call stack:");
-            for (session.call_stack) |call_frame| {
-                const function = call_frame.fn_name orelse "???";
-                if (call_frame.src) |src| {
-                    _ = ui.textBoxF("0x{x:0>12}: {s} @ {s}/{s}:{}", .{ call_frame.addr, function, src.dir, src.file, src.line });
+            {
+                const right_side_tabs_parent = ui.pushLayoutParent("right_side_tabs_parent", [2]Size{ Size.percent(1, 0), Size.by_children(1) }, .y);
+                defer ui.popParentAssert(right_side_tabs_parent);
+
+                const widget_buttons_parent = ui.pushLayoutParent("widget_buttons_parent", [2]Size{ Size.percent(1, 0), Size.by_children(1) }, .x);
+                for (widget_tabs) |widget_name, idx| {
+                    const is_active = widget_tab_active_idx == idx;
+                    if (is_active) ui.pushTmpStyle(.{ .bg_color = app_style.highlight_color });
+                    const btn_sig = ui.button(widget_name);
+                    //std.debug.print("{s}: .hovering={}, .pressed={}, .clicked={}, .released={}\n", .{
+                    //    widget_name, btn_sig.hovering, btn_sig.pressed, btn_sig.clicked, btn_sig.released,
+                    //});
+                    if (btn_sig.clicked) widget_tab_active_idx = idx;
+                }
+                ui.popParentAssert(widget_buttons_parent);
+
+                const tab_choice = widget_tabs[widget_tab_active_idx];
+                if (std.mem.eql(u8, tab_choice, "Registers")) {
+                    showRegisters(&ui, session.regs);
+                } else if (std.mem.eql(u8, tab_choice, "Call Stack")) {
+                    try call_stack_viewer.display(&ui, session.call_stack, session.*);
                 } else {
-                    _ = ui.textBoxF("0x{x:0>12}: {s} @ ???", .{ call_frame.addr, function });
+                    ui.labelF("TODO: <{s}> here", .{tab_choice});
                 }
             }
 
@@ -442,7 +431,7 @@ pub fn main() !void {
                     _ = ui.textBox("Value");
                     _ = ui.popStyle();
                 }
-                std.debug.assert(ui.popParent() == table_header_row_parent);
+                ui.popParentAssert(table_header_row_parent);
 
                 for (session.watched_vars.items) |var_info| {
                     const var_name = var_info.name;
@@ -469,10 +458,10 @@ pub fn main() !void {
                         //}
                         _ = ui.popStyle();
                     }
-                    std.debug.assert(ui.popParent() == row_parent);
+                    ui.popParentAssert(row_parent);
                 }
             }
-            std.debug.assert(ui.popParent() == vars_parent);
+            ui.popParentAssert(vars_parent);
 
             const add_var_parent = ui.pushLayoutParent("add_var_parent", [2]Size{ Size.percent(1, 1), Size.by_children(1) }, .x);
             {
@@ -498,7 +487,7 @@ pub fn main() !void {
                             .pref_size = children_size,
                         });
                         ui.pushParent(tooltip_bg);
-                        defer std.debug.assert(ui.popParent() == tooltip_bg);
+                        defer ui.popParentAssert(tooltip_bg);
 
                         const search_str = var_buf.slice();
 
@@ -540,7 +529,7 @@ pub fn main() !void {
                     ui.endCtxMenu();
                 }
             }
-            std.debug.assert(ui.popParent() == add_var_parent);
+            ui.popParentAssert(add_var_parent);
 
             ui.spacer(.y, Size.percent(1, 0));
 
@@ -593,11 +582,11 @@ pub fn main() !void {
                     } });
                 }
             }
-            std.debug.assert(ui.popParent() == set_break_parent);
+            ui.popParentAssert(set_break_parent);
         }
-        std.debug.assert(ui.popParent() == right_side_parent);
+        ui.popParentAssert(right_side_parent);
 
-        std.debug.assert(ui.popParent() == tabs_parent);
+        ui.popParentAssert(tabs_parent);
 
         ui.endBuild(dt);
 
@@ -605,6 +594,22 @@ pub fn main() !void {
         try ui.render();
 
         if (window.event_queue.searchAndRemove(.KeyUp, .{ .key = c.GLFW_KEY_D, .mods = .{ .shift = true } })) {
+            try session_cmds.append(.{ .dump_ui_tree = "ui_main_tree.dot" });
+        }
+
+        if (window.event_queue.searchAndRemove(.KeyUp, .{
+            .key = c.GLFW_KEY_ESCAPE,
+            .mods = .{ .shift = true, .control = true },
+        })) {
+            std.debug.print("all nodes that contain the mouse @ {d}\n", .{mouse_pos});
+            var node_iter = ui.node_table.valueIterator();
+            while (node_iter.next()) |node| {
+                if (!node.rect.contains(mouse_pos)) continue;
+                std.debug.print("{*}: {s}\n", .{ node, node.hash_string });
+            }
+            if (ui.hot_node_key) |key| std.debug.print("hot node: {s}\n", .{ui.node_table.getFromHash(key).?.hash_string});
+            if (ui.active_node_key) |key| std.debug.print("active node: {s}\n", .{ui.node_table.getFromHash(key).?.hash_string});
+            if (ui.focused_node_key) |key| std.debug.print("focused node: {s}\n", .{ui.node_table.getFromHash(key).?.hash_string});
             try session_cmds.append(.{ .dump_ui_tree = "ui_main_tree.dot" });
         }
 
@@ -815,22 +820,16 @@ const FileTab = struct {
         ui.pushParent(file_tab_node);
 
         const buttons_parent_size = [2]Size{ Size.percent(1, 0), Size.by_children(1) };
-        const buttons_parent = ui.addNode(.{}, "FileTab:buttons_parent", .{
-            .pref_size = buttons_parent_size,
-            .child_layout_axis = .x,
-        });
-        ui.pushParent(buttons_parent);
+        const buttons_parent = ui.pushLayoutParent("FileTab:buttons_parent", buttons_parent_size, .x);
         for (self.files.items) |file_info, i| {
             const filename = std.fs.path.basename(file_info.path);
             const highlight_color = if (file_info.focus_box) |_| app_style.highlight_color else vec4{ 1, 0, 0, 1 };
             const is_active = self.active_file != null and self.active_file.? == i;
             if (is_active) ui.pushTmpStyle(.{ .bg_color = highlight_color });
-            const sig = ui.button(filename);
-            buttons_parent.last.?.pref_size[0] = Size.text_dim(0);
-            if (sig.clicked) self.active_file = i;
+            if (ui.button(filename).clicked) self.active_file = i;
         }
         if (ui.subtleIconButton(Icons.plus).clicked) std.debug.print("TODO: open file menu\n", .{});
-        std.debug.assert(ui.popParent() == buttons_parent);
+        ui.popParentAssert(buttons_parent);
 
         if (self.active_file) |file_idx| {
             const file = &self.files.items[file_idx];
@@ -839,6 +838,7 @@ const FileTab = struct {
             const file_box_parent_size = [2]Size{ Size.percent(1, 1), Size.percent(1, 0) };
             const file_box_parent = ui.addNode(.{
                 .clip_children = true,
+                .draw_border = true,
             }, "FileTab:text_box_parent", .{});
             file_box_parent.pref_size = file_box_parent_size;
             file_box_parent.child_layout_axis = .x;
@@ -874,7 +874,7 @@ const FileTab = struct {
 
                 break :blk line_text_node;
             };
-            std.debug.assert(ui.popParent() == line_scroll_parent);
+            ui.popParentAssert(line_scroll_parent);
 
             const text_sig = try textDisplay(
                 ui,
@@ -931,10 +931,10 @@ const FileTab = struct {
             line_scroll_parent.scroll_offset[1] = text_scroll_node.scroll_offset[1];
             line_text_node.rel_pos[1] = -line_scroll_parent.scroll_offset[1];
 
-            std.debug.assert(ui.popParent() == file_box_parent);
+            ui.popParentAssert(file_box_parent);
         }
 
-        std.debug.assert(ui.popParent() == file_tab_node);
+        ui.popParentAssert(file_tab_node);
     }
 
     pub fn updateAnimations(self: *FileTab, dt: f32) void {
@@ -1139,6 +1139,71 @@ fn generateTextInfoForDisassembly(allocator: Allocator, data: []const u8, data_s
         .line_addrs = line_addrs.toOwnedSlice(),
     };
 }
+
+fn showRegisters(ui: *UiContext, regs: Session.Registers) void {
+    const table_regs = .{ "rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp", "rsp", "rip" };
+    inline for (table_regs) |reg_name| {
+        //_ = ui.textBoxF(reg_name ++ ": 0x{x:0>16}", .{@field(regs, reg_name)});
+        ui.labelF(reg_name ++ ": 0x{x:0>16}", .{@field(regs, reg_name)});
+    }
+}
+
+const CallStackViewer = struct {
+    show_vars: Map,
+
+    const Map = std.HashMap(Session.CallFrame, bool, struct {
+        pub fn hash(self: @This(), key: Session.CallFrame) u64 {
+            _ = self;
+            var buf: [0x4000]u8 = undefined;
+            const str = std.fmt.bufPrint(&buf, "{x}:{any}:{any}", key) catch unreachable;
+            return std.hash_map.hashString(str);
+        }
+        pub fn eql(self: @This(), key_a: Session.CallFrame, key_b: Session.CallFrame) bool {
+            _ = self;
+            if (!std.meta.eql(key_a.src, key_b.src)) return false;
+            if (!std.meta.eql(key_a.fn_name, key_b.fn_name)) return false;
+            return true;
+        }
+    }, std.hash_map.default_max_load_percentage);
+
+    pub fn init(allocator: Allocator) CallStackViewer {
+        return .{ .show_vars = Map.init(allocator) };
+    }
+
+    pub fn deinit(self: *CallStackViewer) void {
+        self.show_vars.deinit();
+    }
+
+    pub fn display(self: *CallStackViewer, ui: *UiContext, call_stack: []Session.CallFrame, session: Session) !void {
+        _ = session;
+        for (call_stack) |frame, idx| {
+            const result = try self.show_vars.getOrPut(frame);
+            if (!result.found_existing) result.value_ptr.* = false;
+            const is_open_ptr = result.value_ptr;
+
+            const fn_parent = ui.pushLayoutParentF("call_stack_parent_#{}", .{idx}, [2]Size{ Size.by_children(1), Size.by_children(1) }, .x);
+            {
+                const function = frame.fn_name orelse "???";
+                const icon = if (is_open_ptr.*) Icons.up_open else Icons.down_open;
+
+                ui.labelF("0x{x:0>12}:", .{frame.addr});
+                if (ui.subtleIconButtonF("{s}###call_stack_viewer_entry_#{}", .{ icon, idx }).clicked) {
+                    is_open_ptr.* = !is_open_ptr.*;
+                }
+                if (frame.src) |src| {
+                    ui.labelF("{s} @ {s}/{s}:{}", .{ function, src.dir, src.file, src.line });
+                } else {
+                    ui.labelF("{s} @ ???", .{function});
+                }
+            }
+            ui.popParentAssert(fn_parent);
+
+            if (is_open_ptr.*) {
+                ui.label("TODO: show variable values for this call");
+            }
+        }
+    }
+};
 
 fn strCmpScore(str_a: []const u8, str_b: []const u8) f32 {
     var score = @as(f32, 0);

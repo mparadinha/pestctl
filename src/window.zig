@@ -159,6 +159,17 @@ pub const EventQueue = struct {
         return null;
     }
 
+    pub fn matchAndRemove(
+        self: *EventQueue,
+        comptime ev_type: EventTag,
+        match_content: anytype,
+    ) ?EventPayload(ev_type) {
+        const match_idx = self.match(ev_type, match_content);
+        if (match_idx) |idx| {
+            return self.removeAt(idx).payload(ev_type);
+        } else return null;
+    }
+
     pub fn match(self: *EventQueue, comptime ev_type: EventTag, match_content: anytype) ?usize {
         const T = @TypeOf(match_content);
         const Payload = EventPayload(ev_type);

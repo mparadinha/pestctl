@@ -640,6 +640,15 @@ pub const LANG = struct {
     pub const Fortran08 = 0x0023;
     pub const RenderScript = 0x0024;
     pub const BLISS = 0x0025;
+    pub const Kotlin = 0x0026;
+    pub const Zig = 0x0027;
+    pub const Crystal = 0x0028;
+    pub const C_plus_plus_17 = 0x002a;
+    pub const C_plus_plus_20 = 0x002b;
+    pub const C17 = 0x002c;
+    pub const Fortran18 = 0x002d;
+    pub const Ada2005 = 0x002e;
+    pub const Ada2012 = 0x002f;
 
     pub const lo_user = 0x8000;
     pub const hi_user = 0xffff;

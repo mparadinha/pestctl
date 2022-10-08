@@ -21,7 +21,7 @@ pub const ReadInfo = struct {
     str_offsets_table_is_64_opt: ?bool = null,
 };
 
-const ReaderType = std.io.FixedBufferStream([]const u8).Reader;
+pub const ReaderType = std.io.FixedBufferStream([]const u8).Reader;
 
 pub fn readAddress(read_info: ReadInfo, reader: ReaderType, form: u16) !usize {
     switch (form) {
