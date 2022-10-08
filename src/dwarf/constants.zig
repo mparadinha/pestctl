@@ -1028,6 +1028,15 @@ pub fn dwarfString(comptime T: type, value: u16) []const u8 {
     std.debug.panic("no value 0x{x} in {s}\n", .{ value, "DW_" ++ @typeName(T) });
 }
 
+pub fn dwarfShortString(comptime T: type, value: u16) []const u8 {
+    inline for (@typeInfo(T).Struct.decls) |decl| {
+        const field = @field(T, decl.name);
+        if (@TypeOf(field) != comptime_int) continue;
+        if (field == value) return decl.name;
+    }
+    std.debug.panic("no value 0x{x} in {s}\n", .{ value, "DW_" ++ @typeName(T) });
+}
+
 pub fn dwarfIsValid(comptime T: type, value: u16) bool {
     inline for (@typeInfo(T).Struct.decls) |decl| {
         const field = @field(T, decl.name);
