@@ -441,7 +441,7 @@ pub fn main() !void {
                     {
                         ui.pushStyle(.{ .pref_size = column_box_size });
                         _ = ui.textBoxF("{s}###{s}_name", .{ var_name, var_name });
-                        _ = ui.textBoxF("{s}###{s}_type", .{ if (var_info.@"type") |ty| ty.name else "???", var_name });
+                        _ = ui.textBoxF("{s}###{s}_type", .{ if (var_info.@"type") |ty| @tagName(std.meta.activeTag(ty.*)) else "???", var_name });
                         if (session.getVariableValue(var_info)) |value| switch (value) {
                             .Float32 => |f| _ = ui.textBoxF("{d}\n", .{f}),
                             .Uint32 => |uint| _ = ui.textBoxF("{}\n", .{uint}),

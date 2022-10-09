@@ -262,7 +262,7 @@ pub fn getVariableValue(self: *Session, variable: Dwarf.Variable) !Value {
 
     if (variable.@"type") |ty| {
         //std.debug.print("ty for {s} is {s}\n", .{ variable.name, ty.name });
-        switch (ty.data) {
+        switch (ty.*) {
             .Base => |base| {
                 std.debug.assert(base.endianess == .little);
                 std.debug.assert(base.data_bit_offset == 0);
