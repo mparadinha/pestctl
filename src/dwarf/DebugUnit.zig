@@ -95,16 +95,21 @@ pub const Type = union(enum) {
     },
     Const: TypeModifier,
     Pointer: TypeModifier,
-    Typedef: struct {
-        name: ?[]const u8,
-        child_type: ?*Type,
-    },
+    Reference: TypeModifier,
+    Typedef: NameAndType,
     Struct: struct {
         name: ?[]const u8,
         // when a struct is only declared but never fully specified this is null
         size: ?usize,
         members: []StructMember,
     },
+    Enum: NameAndType, // TODO: better than this lol
+    Array: NameAndType,
+
+    pub const NameAndType = struct {
+        name: ?[]const u8,
+        child_type: ?*Type,
+    };
 
     pub const Endianess = enum { little, big };
 
@@ -481,6 +486,7 @@ fn loadAllTypes(self: *DebugUnit, debug_str: []const u8) ![]usize {
             },
             DW.TAG.const_type,
             DW.TAG.pointer_type,
+            DW.TAG.reference_type,
             => {
                 const attribs = try genericReadAttribs(&read_ctx, abbrev, &[_]FieldInfo{
                     .{ .attrib = DW.AT.name, .@"type" = []const u8, .class = .string },
@@ -503,7 +509,6 @@ fn loadAllTypes(self: *DebugUnit, debug_str: []const u8) ![]usize {
             //DW.TAG.atomic_type,
             //DW.TAG.immutable_type,
             //DW.TAG.packed_type,
-            //DW.TAG.reference_type,
             //DW.TAG.restrict_type,
             //DW.TAG.rvalue_reference_type,
             //DW.TAG.shared_type,
@@ -525,8 +530,6 @@ fn loadAllTypes(self: *DebugUnit, debug_str: []const u8) ![]usize {
                     .child_type = null,
                 } });
             },
-
-            //DW.TAG.array_type,
 
             DW.TAG.structure_type => {
                 const attribs = try genericReadAttribs(&read_ctx, abbrev, &[_]FieldInfo{
@@ -573,8 +576,34 @@ fn loadAllTypes(self: *DebugUnit, debug_str: []const u8) ![]usize {
                 });
                 ty.members = try reallocAndAppend(Type.StructMember, self.allocator, ty.members, member);
             },
-
-            //DW.TAG.enumeration_type,
+            DW.TAG.enumeration_type => {
+                const attribs = try genericReadAttribs(&read_ctx, abbrev, &[_]FieldInfo{
+                    .{ .attrib = DW.AT.name, .@"type" = []const u8, .class = .string },
+                    .{ .attrib = DW.AT.@"type", .@"type" = usize, .class = .reference },
+                });
+                if (attribs.@"type") |offset| {
+                    try offset_fixups.append(.{
+                        .idx = type_offset_list.items.len,
+                        .offset = offset,
+                    });
+                }
+            },
+            DW.TAG.array_type => {
+                const attribs = try genericReadAttribs(&read_ctx, abbrev, &[_]FieldInfo{
+                    .{ .attrib = DW.AT.name, .@"type" = []const u8, .class = .string },
+                    .{ .attrib = DW.AT.@"type", .@"type" = usize, .class = .reference },
+                });
+                if (attribs.@"type") |offset| {
+                    try offset_fixups.append(.{
+                        .idx = type_offset_list.items.len,
+                        .offset = offset,
+                    });
+                }
+                try types.append(.{ .Array = .{
+                    .name = attribs.name,
+                    .child_type = null,
+                } });
+            },
 
             else => {
                 added_type = false;
@@ -596,13 +625,16 @@ fn loadAllTypes(self: *DebugUnit, debug_str: []const u8) ![]usize {
         if (fixup.member_idx) |_| std.debug.assert(std.meta.activeTag(type_info.*) == .Struct);
         switch (type_info.*) {
             .Base => unreachable,
-            .Const => |*info| info.child_type = referenced_type,
-            .Pointer => |*info| info.child_type = referenced_type,
+            .Const, .Pointer, .Reference => |*info| {
+                info.child_type = referenced_type;
+            },
             .Typedef => |*info| info.child_type = referenced_type,
             .Struct => |*info| {
                 const member_idx = fixup.member_idx orelse unreachable;
                 info.members[member_idx].@"type" = referenced_type;
             },
+            .Enum => |*info| info.child_type = referenced_type,
+            .Array => |*info| info.child_type = referenced_type,
         }
     }
 
