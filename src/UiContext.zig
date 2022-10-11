@@ -23,6 +23,11 @@ prng: PRNG,
 
 window_ptr: *window.Window, // only used for setting the cursor
 
+// if we accidentally create two nodes with the same hash in the one frame this
+// might lead to the node tree having cycles (which hangs whenever we traverse it)
+// this is cleared every frame
+node_keys_this_frame: std.ArrayList(NodeKey),
+
 // to prevent having error return in all the functions, we ignore the errors during the
 // ui building phase, and return one only at the end of the building phase.
 // so we store the stack trace of the first error that occurred here
@@ -66,6 +71,8 @@ pub fn init(allocator: Allocator, font_path: []const u8, icon_font_path: []const
 
         .window_ptr = window_ptr,
 
+        .node_keys_this_frame = std.ArrayList(NodeKey).init(allocator),
+
         .first_error_trace = null,
         .first_error_name = "",
 
@@ -96,6 +103,7 @@ pub fn deinit(self: *UiContext) void {
     self.icon_font.deinit();
     self.generic_shader.deinit();
     self.window_roots.deinit();
+    self.node_keys_this_frame.deinit();
 }
 
 pub const Flags = packed struct {
@@ -404,6 +412,11 @@ pub fn addNodeRawStrings(self: *UiContext, flags: Flags, display_string_in: []co
     const display_string = try allocator.dupe(u8, display_string_in);
     const hash_string = try allocator.dupe(u8, hash_string_in);
 
+    const node_key = self.node_table.ctx.hash(hash_string);
+    if (std.mem.indexOfScalar(NodeKey, self.node_keys_this_frame.items, node_key)) |_| {
+        std.debug.panic("hash_string='{s}' has collision\n", .{hash_string});
+    } else try self.node_keys_this_frame.append(node_key);
+
     // if a node already exists that matches this one we just use that one
     // this way the persistant cross-frame data is possible
     const lookup_result = try self.node_table.getOrPut(hash_string);
@@ -544,6 +557,8 @@ pub fn startBuild(self: *UiContext, screen_w: u32, screen_h: u32, mouse_pos: vec
     // clear out the whole string arena
     self.string_arena.deinit();
     self.string_arena = std.heap.ArenaAllocator.init(self.allocator);
+
+    self.node_keys_this_frame.clearRetainingCapacity();
 
     // remove the `no_id` nodes from the hash table before starting this new frame
     var node_iter = self.node_table.valueIterator();

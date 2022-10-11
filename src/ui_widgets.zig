@@ -43,6 +43,24 @@ pub fn labelF(self: *UiContext, comptime fmt: []const u8, args: anytype) void {
     self.label(str);
 }
 
+pub fn labelBox(self: *UiContext, string: []const u8) void {
+    _ = self.addNode(.{
+        .no_id = true,
+        .ignore_hash_sep = true,
+        .draw_text = true,
+        .draw_background = true,
+        .draw_border = true,
+    }, string, .{});
+}
+
+pub fn labelBoxF(self: *UiContext, comptime fmt: []const u8, args: anytype) void {
+    const str = std.fmt.allocPrint(self.string_arena.allocator(), fmt, args) catch |e| blk: {
+        self.setErrorInfo(@errorReturnTrace(), @errorName(e));
+        break :blk "";
+    };
+    self.labelBox(str);
+}
+
 pub fn textBox(self: *UiContext, string: []const u8) Signal {
     const node = self.addNode(.{
         .draw_text = true,

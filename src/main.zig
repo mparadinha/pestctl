@@ -174,15 +174,12 @@ pub fn main() !void {
 
         const mouse_pos = window.get_mouse_pos();
 
-        // should I move this to the end of the frame next to the session_cmd execution?
-        if (session_opt) |*session| try session.fullUpdate();
-
         try ui.startBuild(width, height, mouse_pos, &window.event_queue);
 
         const fill_x_size = [2]Size{ Size.percent(1, 1), Size.text_dim(1) };
 
         ui.pushTmpStyle(.{ .pref_size = fill_x_size });
-        _ = ui.textBoxF("#nodes={}, frame_time={d:2.4}ms ###info_text_box", .{ ui.node_table.key_mappings.items.len, dt * 1000 });
+        ui.labelBoxF("#nodes={}, frame_time={d:2.4}ms ###info_text_box", .{ ui.node_table.key_mappings.items.len, dt * 1000 });
 
         const tabs_parent = ui.addNode(.{}, "###tabs_parent", .{ .child_layout_axis = .x });
         tabs_parent.pref_size = [2]Size{ Size.percent(1, 0), Size.percent(1, 0) };
@@ -339,19 +336,19 @@ pub fn main() !void {
         const right_side_parent = ui.pushLayoutParent("right_side_parent", [2]Size{ Size.percent(0.5, 1), Size.percent(1, 0) }, .y);
         right_side_parent.flags.draw_background = true;
         if (session_opt) |*session| {
-            _ = ui.textBoxF("Child pid: {}", .{session.pid});
+            ui.labelBoxF("Child pid: {}", .{session.pid});
             ui.topParent().last.?.pref_size[0] = Size.percent(1, 1);
             switch (session.status) {
                 .Stopped => {
-                    _ = ui.textBox("Child Status: Stopped");
+                    ui.labelBox("Child Status: Stopped");
                     ui.topParent().last.?.text_color = vec4{ 1, 0.5, 0, 1 };
                 },
-                .Running => _ = ui.textBox("Child Status: Running"),
+                .Running => ui.labelBox("Child Status: Running"),
             }
             ui.topParent().last.?.pref_size[0] = Size.percent(1, 1);
             if (session.src_loc) |loc| {
-                _ = ui.textBoxF("src_loc: {s}:{}", .{ loc.file, loc.line });
-            } else _ = ui.textBox("src_loc: null");
+                ui.labelBoxF("src_loc: {s}:{}", .{ loc.file, loc.line });
+            } else ui.labelBox("src_loc: null");
             ui.topParent().last.?.pref_size[0] = Size.percent(1, 1);
 
             if (ui.button("Wait for Signal").clicked) {
@@ -363,8 +360,8 @@ pub fn main() !void {
             }
 
             if (session.addr_range) |range| {
-                _ = ui.textBoxF("addr_range[0] = 0x{x:0>12}", .{range[0]});
-                _ = ui.textBoxF("addr_range[1] = 0x{x:0>12}", .{range[1]});
+                ui.labelBoxF("addr_range[0] = 0x{x:0>12}", .{range[0]});
+                ui.labelBoxF("addr_range[1] = 0x{x:0>12}", .{range[1]});
             }
 
             {
@@ -426,9 +423,9 @@ pub fn main() !void {
                 const table_header_row_parent = ui.pushLayoutParent("table_header_row_parent", row_size, .x);
                 {
                     ui.pushStyle(.{ .pref_size = column_box_size });
-                    _ = ui.textBox("Variable Name");
-                    _ = ui.textBox("Type");
-                    _ = ui.textBox("Value");
+                    ui.labelBox("Variable Name");
+                    ui.labelBox("Type");
+                    ui.labelBox("Value");
                     _ = ui.popStyle();
                 }
                 ui.popParentAssert(table_header_row_parent);
@@ -440,22 +437,18 @@ pub fn main() !void {
                     ui.pushParent(row_parent);
                     {
                         ui.pushStyle(.{ .pref_size = column_box_size });
-                        _ = ui.textBoxF("{s}###{s}_name", .{ var_name, var_name });
-                        _ = ui.textBoxF("{s}###{s}_type", .{ if (var_info.@"type") |ty| @tagName(std.meta.activeTag(ty.*)) else "???", var_name });
+                        ui.labelBoxF("{s}", .{var_name});
+                        ui.labelBoxF("{s}", .{if (var_info.@"type") |ty| @tagName(std.meta.activeTag(ty.*)) else "???"});
                         if (session.getVariableValue(var_info)) |value| switch (value) {
-                            .Float32 => |f| _ = ui.textBoxF("{d}\n", .{f}),
-                            .Uint32 => |uint| _ = ui.textBoxF("{}\n", .{uint}),
-                            .Int32 => |int| _ = ui.textBoxF("{}\n", .{int}),
+                            .Float32 => |f| ui.labelBoxF("{d}\n", .{f}),
+                            .Uint32 => |uint| ui.labelBoxF("{}\n", .{uint}),
+                            .Int32 => |int| ui.labelBoxF("{}\n", .{int}),
                         } else |err| switch (err) {
-                            Session.Error.VarNotAvailable => _ = ui.textBox("<not available>"),
-                            Session.Error.NoVarLocation => _ = ui.textBox("<no location>"),
-                            Session.Error.NotStopped => _ = ui.textBox("<not stopped>"),
+                            Session.Error.VarNotAvailable => ui.labelBox("<not available>"),
+                            Session.Error.NoVarLocation => ui.labelBox("<no location>"),
+                            Session.Error.NotStopped => ui.labelBox("<not stopped>"),
                             else => return err,
                         }
-                        _ = ui.textBox("TODO: value");
-                        //switch (var_info.value) {
-                        //    .Float => |value| _ = ui.textBoxF("{d}###{s}_value", .{ value, var_info.name }),
-                        //}
                         _ = ui.popStyle();
                     }
                     ui.popParentAssert(row_parent);
@@ -467,7 +460,7 @@ pub fn main() !void {
             {
                 const var_input_size = [2]Size{ Size.percent(1, 0), Size.text_dim(1) };
                 //const button_sig = ui.button("Add Variable");
-                _ = ui.textBox("Add Variable");
+                ui.labelBox("Add Variable");
                 ui.pushStyle(.{ .bg_color = vec4{ 0.75, 0.75, 0.75, 1 } });
                 ui.pushStyle(.{ .pref_size = var_input_size });
                 const text_input_sig = ui.textInput("add_var_textinput", &var_buf.buffer, &var_buf.len);
@@ -520,7 +513,6 @@ pub fn main() !void {
                             var_button_node.flags.draw_background = false;
                             var_button_node.border_color = vec4{ 0, 0, 0, 0 };
                             if (var_button_sig.clicked) {
-                                std.debug.print("TODO: use '{s}' variable\n", .{variable.name});
                                 try session_cmds.append(.{ .add_watched_variable = variable });
                             }
                         }
@@ -554,7 +546,7 @@ pub fn main() !void {
                 const button_sig = ui.button("Set Breakpoint");
 
                 const line_input_size = [2]Size{ Size.percent(1, 0), Size.text_dim(1) };
-                _ = ui.textBox("Line Number");
+                ui.labelBox("Line Number");
                 ui.pushStyle(.{ .bg_color = vec4{ 0.75, 0.75, 0.75, 1 } });
                 ui.pushStyle(.{ .pref_size = line_input_size });
                 const line_sig = ui.textInput("src_linenum_textinput", &num_buf.buffer, &num_buf.len);
@@ -562,7 +554,7 @@ pub fn main() !void {
                 _ = ui.popStyle();
 
                 const file_input_size = [2]Size{ Size.percent(1, 0), Size.text_dim(1) };
-                _ = ui.textBox("File Name");
+                ui.labelBox("File Name");
                 ui.pushStyle(.{ .bg_color = vec4{ 0.75, 0.75, 0.75, 1 } });
                 ui.pushStyle(.{ .pref_size = file_input_size });
                 const file_sig = ui.textInput("src_filename_textinput", &file_buf.buffer, &file_buf.len);
@@ -628,8 +620,7 @@ pub fn main() !void {
         // do all the state changes in one place
         if (session_cmds.items.len > 0) std.debug.print("commands in buffer @ frame idx {}\n", .{frame_idx});
         for (session_cmds.items) |cmd| {
-            //std.debug.print("  - cmd: {s}\n", .{@tagName(std.meta.activeTag(cmd))});
-            std.debug.print("  - {}\n", .{cmd});
+            std.debug.print("  - cmd: {s}\n", .{@tagName(std.meta.activeTag(cmd))});
 
             switch (cmd) {
                 .open_src_file => |file| case_blk: {
@@ -1143,7 +1134,7 @@ fn generateTextInfoForDisassembly(allocator: Allocator, data: []const u8, data_s
 fn showRegisters(ui: *UiContext, regs: Session.Registers) void {
     const table_regs = .{ "rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp", "rsp", "rip" };
     inline for (table_regs) |reg_name| {
-        //_ = ui.textBoxF(reg_name ++ ": 0x{x:0>16}", .{@field(regs, reg_name)});
+        //ui.labelBoxF(reg_name ++ ": 0x{x:0>16}", .{@field(regs, reg_name)});
         ui.labelF(reg_name ++ ": 0x{x:0>16}", .{@field(regs, reg_name)});
     }
 }
