@@ -249,14 +249,11 @@ pub const Value = union(enum) {
 pub fn getVariableValue(self: *Session, variable: Dwarf.Variable) !Value {
     if (self.status == .Running) return Error.NotStopped;
 
-    switch (variable.scope orelse return Error.NoVarLocation) {
-        .function => |function| {
-            const low_pc = function.low_pc orelse return Error.NoVarLocation;
-            const high_pc = function.high_pc orelse return Error.NoVarLocation;
-            if (!(low_pc <= self.regs.rip and self.regs.rip < high_pc)) return Error.VarNotAvailable;
-        },
-        else => @panic("TODO"),
-    }
+    if (variable.function) |function| {
+        const low_pc = function.low_pc orelse return Error.NoVarLocation;
+        const high_pc = function.high_pc orelse return Error.NoVarLocation;
+        if (!(low_pc <= self.regs.rip and self.regs.rip < high_pc)) return Error.VarNotAvailable;
+    } else return Error.NoVarLocation;
 
     // TODO: if we don't have type information assume u64
 

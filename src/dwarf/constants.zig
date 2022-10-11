@@ -1269,4 +1269,24 @@ pub const Class = enum {
             else => std.debug.panic("unknown FORM=0x{x}\n", .{form}),
         };
     }
+
+    pub fn Type(class: DW.Class) type {
+        return switch (class) {
+            .address => usize,
+            .addrptr => @panic("TODO"),
+            .block => []const u8,
+            .constant => @compileError("depends on caller"),
+            .exprloc => []const u8,
+            .flag => bool,
+            .lineptr => usize,
+            .loclist => []const u8,
+            .loclistsptr => @panic("TODO"),
+            .macptr => @panic("TODO"),
+            .rnglist => @panic("TODO"),
+            .rnglistsptr => @panic("TODO"),
+            .reference => usize,
+            .string => []const u8,
+            .stroffsetsptr => @panic("TODO"),
+        };
+    }
 };

@@ -496,7 +496,7 @@ pub fn main() !void {
                         const ScoreCtx = struct {
                             target: []const u8,
                             pub fn score(ctx: @This(), entry: VarEntry) f32 {
-                                return strCmpScore(ctx.target, entry.variable.name);
+                                return if (entry.variable.name) |name| strCmpScore(ctx.target, name) else 0;
                             }
                         };
                         var scored_vars = ScoredList(VarEntry, 10, ScoreCtx).init(.{ .target = search_str });

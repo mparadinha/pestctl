@@ -69,6 +69,8 @@ const Sections = struct {
 };
 
 pub fn initTables(self: *Dwarf) !void {
+    const timer_start = std.time.nanoTimestamp();
+
     const sections = Sections{
         .info = if (self.debug_info.len > 0) self.debug_info else null,
         .abbrev = if (self.debug_abbrev.len > 0) self.debug_abbrev else null,
@@ -86,7 +88,6 @@ pub fn initTables(self: *Dwarf) !void {
     var debug_units = std.ArrayList(DebugUnit).init(self.allocator);
     var debug_unit_offset: usize = 0;
     while (debug_unit_offset < self.debug_info.len) {
-        std.debug.print("initing DebugUnit at offset=0x{x}\n", .{debug_unit_offset});
         try debug_units.append(try DebugUnit.init(
             self.allocator,
             self.debug_info,
@@ -125,6 +126,9 @@ pub fn initTables(self: *Dwarf) !void {
     //for (self.frames) |frame| {
     //    std.debug.print("pc_begin=0x{x:0>12}, pc_end=0x{x:0>12}\n", .{ frame.pc_begin, frame.pc_end });
     //}
+
+    const timer_elapsed = std.time.nanoTimestamp() - timer_start;
+    std.debug.print("Dwarf.initTables took {d:.2}ms\n", .{@intToFloat(f32, timer_elapsed) / std.time.ns_per_ms});
 }
 
 pub const SrcLoc = struct {
