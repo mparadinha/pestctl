@@ -30,7 +30,7 @@ pub const Status = enum {
 pub const CallFrame = struct {
     addr: usize,
     src: ?SrcLoc,
-    fn_name: ?[]const u8,
+    function: ?Dwarf.Function,
 };
 
 const BreakPoint = struct {
@@ -112,16 +112,16 @@ pub fn unpause(self: *Session) !void {
     self.addr_range = null;
 
     // if we're resuming from a breakpoint we have to reset it
-    for (self.breakpoints.items) |*breakpt| {
-        if (breakpt.addr == self.regs.rip) {
-            std.debug.print("rip is at a breakpoint addr: byte at rip: 0x{x}\n", .{(try self.getBytesAtAddr(self.regs.rip, 4))[0]});
-            // first run the instruction we're on, so we can modify it with `int3` for the breakpoint
-            try self.stepInstructions(1);
+    //for (self.breakpoints.items) |*breakpt| {
+    //    if (breakpt.addr == self.regs.rip) {
+    //        std.debug.print("rip is at a breakpoint addr: byte at rip: 0x{x}\n", .{(try self.getBytesAtAddr(self.regs.rip, 4))[0]});
+    //        // first run the instruction we're on, so we can modify it with `int3` for the breakpoint
+    //        try self.stepInstructions(1);
 
-            const saved = try self.insertByteAtAddr(breakpt.addr, 0xcc);
-            if (saved != 0xcc) breakpt.saved_byte = saved;
-        }
-    }
+    //        const saved = try self.insertByteAtAddr(breakpt.addr, 0xcc);
+    //        if (saved != 0xcc) breakpt.saved_byte = saved;
+    //    }
+    //}
 
     // TODO: when we send a SIGSTOP to stop the tracee and later do .CONT with
     // the 0 signal argument on it, we must check that we're not erasing any other
@@ -140,6 +140,8 @@ pub fn kill(self: *Session) void {
 /// checks if the child is stopped at a breakpoint (which we need to restore)
 /// some breakpoints need to be re-setup (in case we want to hit them again)
 pub fn fullUpdate(self: *Session) !void {
+    std.debug.print("fullUpdate, cur status: {}\n", .{self.status});
+
     while (try getWaitStatusNoHang(self.pid)) |status| {
         std.debug.print("[fullUpdate] {}\n", .{status});
         self.status = .Stopped;
@@ -180,11 +182,11 @@ pub fn fullUpdate(self: *Session) !void {
     self.regs = try self.getRegisters();
 
     // reset all the breakpoints (except the one we just hit)
-    for (self.breakpoints.items) |*breakpt| {
-        if (breakpt.addr == self.regs.rip) continue;
-        const saved = try self.insertByteAtAddr(breakpt.addr, 0xcc);
-        if (saved != 0xcc) breakpt.saved_byte = saved;
-    }
+    //for (self.breakpoints.items) |*breakpt| {
+    //    if (breakpt.addr == self.regs.rip) continue;
+    //    const saved = try self.insertByteAtAddr(breakpt.addr, 0xcc);
+    //    if (saved != 0xcc) breakpt.saved_byte = saved;
+    //}
 
     // update watched vars
     // TODO
@@ -210,9 +212,9 @@ pub fn fullUpdate(self: *Session) !void {
         if (self.call_stack.len > 0) self.allocator.free(self.call_stack);
         self.call_stack = try self.allocator.alloc(CallFrame, call_stack.len);
         for (call_stack) |addr, i| {
-            var frame = CallFrame{ .addr = addr, .src = null, .fn_name = null };
+            var frame = CallFrame{ .addr = addr, .src = null, .function = null };
             frame.src = try self.elf.translateAddrToSrcSpecial(addr);
-            frame.fn_name = if (self.elf.findFunctionAtAddr(addr)) |func| func.name else null;
+            frame.function = self.elf.findFunctionAtAddr(addr);
             self.call_stack[i] = frame;
         }
     }
@@ -221,14 +223,13 @@ pub fn fullUpdate(self: *Session) !void {
 pub fn setBreakpointAtAddr(self: *Session, addr: usize) !void {
     const was_running = (self.status == .Running);
     if (was_running) try self.pause();
-    //defer if (was_running) self.unpause();
 
     std.debug.print("status={}\n", .{self.status});
     std.debug.print("rip=0x{x} when setting breakpoint\n", .{(try self.getRegisters()).rip});
 
-    for (self.breakpoints.items) |breakpt| {
-        if (breakpt.addr == addr) return;
-    }
+    //for (self.breakpoints.items) |breakpt| {
+    //    if (breakpt.addr == addr) return;
+    //}
 
     const saved_byte = try self.insertByteAtAddr(addr, 0xcc);
     std.debug.print("setting breakpoint @ addr=0x{x}, saved_byte=0x{x}\n", .{ addr, saved_byte });
@@ -236,6 +237,15 @@ pub fn setBreakpointAtAddr(self: *Session, addr: usize) !void {
         .addr = addr,
         .saved_byte = saved_byte,
     });
+
+    std.debug.print("bytes @ addr=0x{x}: {}\n", .{ addr, std.fmt.fmtSliceHexLower(&(try self.getBytesAtAddr(addr, 4))) });
+
+    //if (was_running) try self.unpause();
+}
+
+pub fn setBreakpointAtSrc(self: *Session, src: SrcLoc) !void {
+    const addr = (try self.findAddrForThisLineOrNextOne(src)) orelse return Error.NoAddrForSrc;
+    try self.setBreakpointAtAddr(addr);
 }
 
 pub const Error = error{ NoAddrForSrc, VarNotAvailable, NoVarLocation, NotStopped };
@@ -320,11 +330,6 @@ pub fn getVariableValue(self: *Session, variable: Dwarf.Variable) !Value {
     }
 
     return Value{ .Float32 = 1234567890.2 };
-}
-
-pub fn setBreakpointAtSrc(self: *Session, src: SrcLoc) !void {
-    const addr = (try self.findAddrForThisLineOrNextOne(src)) orelse return Error.NoAddrForSrc;
-    try self.setBreakpointAtAddr(addr);
 }
 
 pub fn stepInstructions(self: *Session, num_instrs: usize) !void {

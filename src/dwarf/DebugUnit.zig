@@ -20,7 +20,7 @@ address_size: u8,
 is_64: bool,
 abbrev_offset: usize,
 
-entries_buf: []const u8, // not owned by this struct
+entries_buf: []const u8,
 header_size: usize,
 
 abbrevs: []Abbrev,

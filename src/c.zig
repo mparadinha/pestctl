@@ -6,6 +6,7 @@ pub usingnamespace @cImport({
 
     @cInclude("xed/xed-interface.h");
 
+    @cInclude("unistd.h");
     @cInclude("sys/user.h");
     @cInclude("sys/wait.h");
     @cInclude("sys/types.h");

@@ -178,8 +178,16 @@ pub fn main() !void {
 
         const fill_x_size = [2]Size{ Size.percent(1, 1), Size.text_dim(1) };
 
+        const mem_stats = try getMemoryStats(allocator);
         ui.pushTmpStyle(.{ .pref_size = fill_x_size });
-        ui.labelBoxF("#nodes={}, frame_time={d:2.4}ms ###info_text_box", .{ ui.node_table.key_mappings.items.len, dt * 1000 });
+        ui.labelBoxF("#nodes={}, frame_time={d:2.4}ms, mem(ram/virtual/shared): {d:.2}/{d:.2}/{d:.2}, gpa requested bytes: {d:.2}", .{
+            ui.node_table.key_mappings.items.len,
+            dt * 1000,
+            std.fmt.fmtIntSizeBin(mem_stats.in_ram_size),
+            std.fmt.fmtIntSizeBin(mem_stats.virtual_size),
+            std.fmt.fmtIntSizeBin(mem_stats.shared_size),
+            std.fmt.fmtIntSizeBin(general_purpose_allocator.total_requested_bytes),
+        });
 
         const tabs_parent = ui.addNode(.{}, "###tabs_parent", .{ .child_layout_axis = .x });
         tabs_parent.pref_size = [2]Size{ Size.percent(1, 0), Size.percent(1, 0) };
@@ -314,12 +322,12 @@ pub fn main() !void {
                     defer allocator.free(mem_block);
                     std.debug.assert((try proc_mem.read(mem_block)) == mem_block.len);
 
-                    std.debug.print("generating diasm (@ rip=0x{x}) for addr_range: 0x{x}-0x{x} (~{} instructions)...", .{
-                        rip, block_addr_range[0], block_addr_range[1], @intToFloat(f32, block_addr_range[1] - block_addr_range[0]) / 4.5,
-                    });
-                    const start_time = c.glfwGetTime();
+                    //std.debug.print("generating disasm (@ rip=0x{x}) for addr_range: 0x{x}-0x{x} (~{} instructions)...", .{
+                    //    rip, block_addr_range[0], block_addr_range[1], @intToFloat(f32, block_addr_range[1] - block_addr_range[0]) / 4.5,
+                    //});
+                    //const start_time = c.glfwGetTime();
                     const text_info = try generateTextInfoForDisassembly(allocator, mem_block, block_addr_range[0]);
-                    std.debug.print("done. (took {d}s)\n", .{c.glfwGetTime() - start_time});
+                    //std.debug.print("done. (took {d}s)\n", .{c.glfwGetTime() - start_time});
                     try disasm_texts.append(text_info);
                     break :text_blk text_info;
                 };
@@ -1152,7 +1160,11 @@ const CallStackViewer = struct {
         pub fn eql(self: @This(), key_a: Session.CallFrame, key_b: Session.CallFrame) bool {
             _ = self;
             if (!std.meta.eql(key_a.src, key_b.src)) return false;
-            if (!std.meta.eql(key_a.fn_name, key_b.fn_name)) return false;
+            if (key_a.function != null and key_b.function != null) {
+                if (key_a.function.?.name != null and key_b.function.?.name != null) {
+                    if (!std.mem.eql(u8, key_a.function.?.name.?, key_b.function.?.name.?)) return false;
+                }
+            }
             return true;
         }
     }, std.hash_map.default_max_load_percentage);
@@ -1174,7 +1186,7 @@ const CallStackViewer = struct {
 
             const fn_parent = ui.pushLayoutParentF("call_stack_parent_#{}", .{idx}, [2]Size{ Size.by_children(1), Size.by_children(1) }, .x);
             {
-                const function = frame.fn_name orelse "???";
+                const fn_name = if (frame.function) |func| func.name orelse "???" else "???";
                 const icon = if (is_open_ptr.*) Icons.up_open else Icons.down_open;
 
                 ui.labelF("0x{x:0>12}:", .{frame.addr});
@@ -1182,15 +1194,17 @@ const CallStackViewer = struct {
                     is_open_ptr.* = !is_open_ptr.*;
                 }
                 if (frame.src) |src| {
-                    ui.labelF("{s} @ {s}/{s}:{}", .{ function, src.dir, src.file, src.line });
+                    ui.labelF("{s} @ {s}/{s}:{}", .{ fn_name, src.dir, src.file, src.line });
                 } else {
-                    ui.labelF("{s} @ ???", .{function});
+                    ui.labelF("{s} @ ???", .{fn_name});
                 }
             }
             ui.popParentAssert(fn_parent);
 
             if (is_open_ptr.*) {
-                ui.label("TODO: show variable values for this call");
+                if (frame.function) |func| {
+                    for (func.params) |param| ui.label(param.name orelse "???");
+                } else ui.label("<no debug information on this function>");
             }
         }
     }
@@ -1294,4 +1308,32 @@ pub fn getStackTrace(ret_addr: usize) std.builtin.StackTrace {
 
 pub fn reachedHere(src: std.builtin.SourceLocation) void {
     std.debug.print("reached {s}:{s}:{}:{}\n", src);
+}
+
+const MemoryStats = struct {
+    virtual_size: usize,
+    in_ram_size: usize,
+    shared_size: usize,
+};
+pub fn getMemoryStats(allocator: Allocator) !MemoryStats {
+    // note: we can use /proc/self/status for a more granular look at memory sizes
+    const file = try std.fs.openFileAbsolute("/proc/self/statm", .{});
+    defer file.close();
+    const data = try file.readToEndAlloc(allocator, std.math.maxInt(usize));
+    defer allocator.free(data);
+
+    var tokenizer = std.mem.tokenize(u8, data, " ");
+    var values: [3]u64 = undefined;
+    for (values) |*value| {
+        value.* = try std.fmt.parseInt(u64, tokenizer.next().?, 0);
+    }
+
+    // the values we just parsed are measured in pages, not bytes
+    const page_size = @intCast(u64, c.sysconf(c._SC_PAGESIZE));
+
+    return MemoryStats{
+        .virtual_size = values[0] * page_size,
+        .in_ram_size = values[1] * page_size,
+        .shared_size = values[2] * page_size,
+    };
 }

@@ -128,7 +128,8 @@ pub fn initTables(self: *Dwarf) !void {
     //}
 
     const timer_elapsed = std.time.nanoTimestamp() - timer_start;
-    std.debug.print("Dwarf.initTables took {d:.2}ms\n", .{@intToFloat(f32, timer_elapsed) / std.time.ns_per_ms});
+    _ = timer_elapsed;
+    //std.debug.print("Dwarf.initTables took {d:.2}ms\n", .{@intToFloat(f32, timer_elapsed) / std.time.ns_per_ms});
 }
 
 pub const SrcLoc = struct {
