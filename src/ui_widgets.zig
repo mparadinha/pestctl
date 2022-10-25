@@ -390,13 +390,15 @@ pub fn textInputRaw(self: *UiContext, hash_string: []const u8, buffer: []u8, buf
     cursor_node.rel_pos = text_node.rel_pos + vec2{ partial_text_rect.max[0], 0 } + UiContext.text_padd;
 
     // scroll text if it doesn't fit
-    if (cursor_node.rel_pos[0] > widget_node.rect.size()[0] - UiContext.text_hpadding) {
-        const overflow = cursor_node.rel_pos[0] - (widget_node.rect.size()[0] - UiContext.text_hpadding);
-        text_node.rel_pos[0] -= overflow;
-    }
-    if (cursor_node.rel_pos[0] < UiContext.text_hpadding) {
-        const overflow = UiContext.text_hpadding - cursor_node.rel_pos[0];
-        text_node.rel_pos[0] += overflow;
+    if (!first_time) {
+        if (cursor_node.rel_pos[0] > widget_node.rect.size()[0] - UiContext.text_hpadding) {
+            const overflow = cursor_node.rel_pos[0] - (widget_node.rect.size()[0] - UiContext.text_hpadding);
+            text_node.rel_pos[0] -= overflow;
+        }
+        if (cursor_node.rel_pos[0] < UiContext.text_hpadding) {
+            const overflow = UiContext.text_hpadding - cursor_node.rel_pos[0];
+            text_node.rel_pos[0] += overflow;
+        }
     }
 
     const selection_node = self.addNode(.{
