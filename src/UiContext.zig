@@ -187,7 +187,7 @@ pub const Node = struct {
     toggle: bool,
 };
 
-pub const CustomDrawFn = fn (
+pub const CustomDrawFn = *const fn (
     ui: *UiContext,
     shader_inputs: *std.ArrayList(ShaderInput),
     node: *Node,
@@ -234,10 +234,10 @@ pub const Size = union(enum) {
 
     pub fn getStrictness(self: Size) f32 {
         return switch (self) {
-            .pixels => |pixels| pixels.strictness,
-            .text_dim => |text_dim| text_dim.strictness,
-            .percent => |percent| percent.strictness,
-            .by_children => |by_children| by_children.strictness,
+            .pixels => |v| v.strictness,
+            .text_dim => |v| v.strictness,
+            .percent => |v| v.strictness,
+            .by_children => |v| v.strictness,
         };
     }
 
@@ -810,14 +810,14 @@ pub fn render(self: *UiContext) !void {
     gl.bufferData(gl.ARRAY_BUFFER, @intCast(isize, shader_inputs.items.len * stride), shader_inputs.items.ptr, gl.STATIC_DRAW);
     var field_offset: usize = 0;
     inline for (@typeInfo(ShaderInput).Struct.fields) |field, i| {
-        const elems = switch (@typeInfo(field.field_type)) {
+        const elems = switch (@typeInfo(field.type)) {
             .Float, .Int => 1,
             .Array => |array| array.len,
-            else => @compileError("new type in ShaderInput struct: " ++ @typeName(field.field_type)),
+            else => @compileError("new type in ShaderInput struct: " ++ @typeName(field.type)),
         };
-        const child_type = switch (@typeInfo(field.field_type)) {
+        const child_type = switch (@typeInfo(field.type)) {
             .Array => |array| array.child,
-            else => field.field_type,
+            else => field.type,
         };
 
         const offset_ptr = if (field_offset == 0) null else @intToPtr(*const anyopaque, field_offset);
@@ -836,7 +836,7 @@ pub fn render(self: *UiContext) !void {
             else => @compileError("new type in ShaderInput struct: " ++ @typeName(child_type)),
         }
         gl.enableVertexAttribArray(i);
-        field_offset += @sizeOf(field.field_type);
+        field_offset += @sizeOf(field.type);
     }
 
     // always draw on top of whatever was on screen, no matter what
@@ -875,7 +875,10 @@ fn setupTreeForRender(self: *UiContext, shader_inputs: *std.ArrayList(ShaderInpu
 fn addShaderInputsForNode(self: *UiContext, shader_inputs: *std.ArrayList(ShaderInput), node: *Node) !void {
     if (node.custom_draw_fn) |draw_fn| return draw_fn(self, shader_inputs, node);
 
-    const base_rect = ShaderInput{
+    // note: the `align(32)` is to side step a zig bug (prob this one https://github.com/ziglang/zig/issues/11154)
+    // where llvm emits a `vmovaps` on something that *isn't* 32 byte aligned
+    // which triggers a segfault when initing the vec4's
+    const base_rect align(32) = ShaderInput{
         .bottom_left_pos = node.rect.min,
         .top_right_pos = node.rect.max,
         .bottom_left_uv = vec2{ 0, 0 },
@@ -1462,7 +1465,7 @@ fn solveFinalPosWorkFn(self: *UiContext, node: *Node, axis: Axis) void {
 const LayoutWorkFn = fn (*UiContext, *Node, Axis) void;
 const LayoutWorkFnArgs = struct { self: *UiContext, node: *Node, axis: Axis };
 /// do the work before recursing
-fn layoutRecurseHelperPre(work_fn: LayoutWorkFn, args: LayoutWorkFnArgs) void {
+fn layoutRecurseHelperPre(comptime work_fn: LayoutWorkFn, args: LayoutWorkFnArgs) void {
     work_fn(args.self, args.node, args.axis);
     var child = args.node.first;
     while (child) |child_node| : (child = child_node.next) {
@@ -1470,7 +1473,7 @@ fn layoutRecurseHelperPre(work_fn: LayoutWorkFn, args: LayoutWorkFnArgs) void {
     }
 }
 /// do the work after recursing
-fn layoutRecurseHelperPost(work_fn: LayoutWorkFn, args: LayoutWorkFnArgs) void {
+fn layoutRecurseHelperPost(comptime work_fn: LayoutWorkFn, args: LayoutWorkFnArgs) void {
     var child = args.node.first;
     while (child) |child_node| : (child = child_node.next) {
         layoutRecurseHelperPost(work_fn, .{ .self = args.self, .node = child_node, .axis = args.axis });

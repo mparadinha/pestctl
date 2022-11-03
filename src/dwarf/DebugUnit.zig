@@ -76,7 +76,7 @@ pub const Variable = struct {
     name: ?[]const u8,
     decl_coords: ?DeclCoords,
     loc: ?LocationDesc,
-    @"type": ?*Type,
+    type: ?*Type,
     function: ?*Function,
 };
 
@@ -115,13 +115,13 @@ pub const Type = union(enum) {
     Array: NameAndType,
     PtrToMember: struct {
         name: ?[]const u8,
-        @"type": ?*Type,
+        type: ?*Type,
         parent_type: ?*Type,
     },
 
     pub const NameAndType = struct {
         name: ?[]const u8,
-        @"type": ?*Type,
+        type: ?*Type,
     };
 
     pub const Container = struct {
@@ -133,7 +133,7 @@ pub const Type = union(enum) {
 
     pub const ContainerMember = struct {
         name: ?[]const u8,
-        @"type": *Type,
+        type: *Type,
         offset: usize,
     };
 
@@ -228,14 +228,14 @@ pub fn init(
     for (fn_type_fixups) |fixup| {
         const func = &self.functions[fixup.idx];
         const type_idx = searchForOffset(fixup.offset, type_offsets) orelse
-            std.debug.panic("type (@ 0x{x}) for func #{} ({s}) not parsed\n", .{ fixup.offset + offset, fixup.idx, func.name });
+            std.debug.panic("type (@ 0x{x}) for func #{} ({?s}) not parsed\n", .{ fixup.offset + offset, fixup.idx, func.name });
         func.ret_type = &self.types[type_idx];
     }
     for (var_type_fixups) |fixup| {
         const v = &self.variables[fixup.idx];
         const type_idx = searchForOffset(fixup.offset, type_offsets) orelse
-            std.debug.panic("type (@ 0x{x}) for var #{} ({s}) not parsed\n", .{ fixup.offset + offset, fixup.idx, v.name });
-        v.@"type" = &self.types[type_idx];
+            std.debug.panic("type (@ 0x{x}) for var #{} ({?s}) not parsed\n", .{ fixup.offset + offset, fixup.idx, v.name });
+        v.type = &self.types[type_idx];
     }
     for (var_fn_fixups) |fixup| {
         const func_ptr = &self.functions[fixup.func_idx];
@@ -308,12 +308,12 @@ fn readAbbrevTable(self: *DebugUnit, debug_abbrev: []const u8) !void {
         abbrevs.items[code] = .{
             .tag = tag,
             .has_children = has_children,
-            .attribs = attribs.toOwnedSlice(),
+            .attribs = try attribs.toOwnedSlice(),
         };
         try valid_codes.append(code);
     }
 
-    self.abbrevs = abbrevs.toOwnedSlice();
+    self.abbrevs = try abbrevs.toOwnedSlice();
 
     // because we're placing the abbrevs into the array using their code (and because
     // these codes have no obligations as to size or order of declaration) some items
@@ -417,12 +417,12 @@ fn loadAllTypes(self: *DebugUnit, debug_str: []const u8) ![]usize {
         switch (abbrev.tag) {
             DW.TAG.base_type => {
                 const attribs = try genericReadAttribs(&read_ctx, abbrev, &[_]FieldInfo{
-                    .{ .attrib = DW.AT.name, .@"type" = []const u8 },
-                    .{ .attrib = DW.AT.encoding, .@"type" = u16 },
-                    .{ .attrib = DW.AT.endianity, .@"type" = u16 },
-                    .{ .attrib = DW.AT.byte_size, .@"type" = usize },
-                    .{ .attrib = DW.AT.bit_size, .@"type" = usize },
-                    .{ .attrib = DW.AT.data_bit_offset, .@"type" = u16 },
+                    .{ .attrib = DW.AT.name, .type = []const u8 },
+                    .{ .attrib = DW.AT.encoding, .type = u16 },
+                    .{ .attrib = DW.AT.endianity, .type = u16 },
+                    .{ .attrib = DW.AT.byte_size, .type = usize },
+                    .{ .attrib = DW.AT.bit_size, .type = usize },
+                    .{ .attrib = DW.AT.data_bit_offset, .type = u16 },
                 });
                 try types.append(.{ .Base = .{
                     .name = attribs.name,
@@ -445,7 +445,7 @@ fn loadAllTypes(self: *DebugUnit, debug_str: []const u8) ![]usize {
             },
             DW.TAG.unspecified_type => {
                 const attribs = try genericReadAttribs(&read_ctx, abbrev, &[_]FieldInfo{
-                    .{ .attrib = DW.AT.name, .@"type" = []const u8 },
+                    .{ .attrib = DW.AT.name, .type = []const u8 },
                 });
                 try types.append(.{ .Unspecified = .{
                     .name = attribs.name,
@@ -463,10 +463,10 @@ fn loadAllTypes(self: *DebugUnit, debug_str: []const u8) ![]usize {
             DW.TAG.volatile_type,
             => {
                 const attribs = try genericReadAttribs(&read_ctx, abbrev, &[_]FieldInfo{
-                    .{ .attrib = DW.AT.name, .@"type" = []const u8 },
-                    .{ .attrib = DW.AT.@"type", .@"type" = usize },
+                    .{ .attrib = DW.AT.name, .type = []const u8 },
+                    .{ .attrib = DW.AT.type, .type = usize },
                 });
-                if (attribs.@"type") |offset| {
+                if (attribs.type) |offset| {
                     try offset_fixups.append(.{
                         .idx = type_offset_list.items.len,
                         .offset = offset,
@@ -489,10 +489,10 @@ fn loadAllTypes(self: *DebugUnit, debug_str: []const u8) ![]usize {
             },
             DW.TAG.typedef => {
                 const attribs = try genericReadAttribs(&read_ctx, abbrev, &[_]FieldInfo{
-                    .{ .attrib = DW.AT.name, .@"type" = []const u8 },
-                    .{ .attrib = DW.AT.@"type", .@"type" = usize },
+                    .{ .attrib = DW.AT.name, .type = []const u8 },
+                    .{ .attrib = DW.AT.type, .type = usize },
                 });
-                if (attribs.@"type") |offset| {
+                if (attribs.type) |offset| {
                     try offset_fixups.append(.{
                         .idx = type_offset_list.items.len,
                         .offset = offset,
@@ -500,7 +500,7 @@ fn loadAllTypes(self: *DebugUnit, debug_str: []const u8) ![]usize {
                 }
                 try types.append(.{ .Typedef = .{
                     .name = attribs.name,
-                    .@"type" = null,
+                    .type = null,
                 } });
             },
             DW.TAG.structure_type,
@@ -508,9 +508,9 @@ fn loadAllTypes(self: *DebugUnit, debug_str: []const u8) ![]usize {
             DW.TAG.union_type,
             => {
                 const attribs = try genericReadAttribs(&read_ctx, abbrev, &[_]FieldInfo{
-                    .{ .attrib = DW.AT.name, .@"type" = []const u8 },
-                    .{ .attrib = DW.AT.byte_size, .@"type" = usize },
-                    .{ .attrib = DW.AT.specification, .@"type" = usize },
+                    .{ .attrib = DW.AT.name, .type = []const u8 },
+                    .{ .attrib = DW.AT.byte_size, .type = usize },
+                    .{ .attrib = DW.AT.specification, .type = usize },
                 });
                 if (attribs.specification) |_| std.debug.panic("TODO: DW_AT_specification\n", .{});
                 if (abbrev.has_children) try container_stack.append(types.items.len);
@@ -530,14 +530,14 @@ fn loadAllTypes(self: *DebugUnit, debug_str: []const u8) ![]usize {
                 added_type = false;
 
                 const attribs = try genericReadAttribs(&read_ctx, abbrev, &[_]FieldInfo{
-                    .{ .attrib = DW.AT.name, .@"type" = []const u8 },
-                    .{ .attrib = DW.AT.@"type", .@"type" = usize },
-                    .{ .attrib = DW.AT.data_member_location, .@"type" = usize },
+                    .{ .attrib = DW.AT.name, .type = []const u8 },
+                    .{ .attrib = DW.AT.type, .type = usize },
+                    .{ .attrib = DW.AT.data_member_location, .type = usize },
                     // TODO: DW_AT_byte_size for struct members (for packed structs maybe?)
                 });
                 const member = Type.ContainerMember{
                     .name = attribs.name,
-                    .@"type" = undefined,
+                    .type = undefined,
                     .offset = attribs.data_member_location orelse 0,
                 };
 
@@ -558,19 +558,19 @@ fn loadAllTypes(self: *DebugUnit, debug_str: []const u8) ![]usize {
                 try offset_fixups.append(.{
                     .idx = ty_idx,
                     .member_idx = member_list_ptr.len,
-                    .offset = attribs.@"type" orelse
+                    .offset = attribs.type orelse
                         std.debug.panic("struct_member @ 0x{x} doesn't have a type", .{tag_offset}),
                 });
                 member_list_ptr.* = try reallocAndAppend(Type.ContainerMember, self.allocator, member_list_ptr.*, member);
             },
             DW.TAG.ptr_to_member_type => {
                 const attribs = try genericReadAttribs(&read_ctx, abbrev, &[_]FieldInfo{
-                    .{ .attrib = DW.AT.name, .@"type" = []const u8 },
-                    .{ .attrib = DW.AT.@"type", .@"type" = usize },
-                    .{ .attrib = DW.AT.containing_type, .@"type" = usize },
-                    .{ .attrib = DW.AT.use_location, .@"type" = LocationDesc },
+                    .{ .attrib = DW.AT.name, .type = []const u8 },
+                    .{ .attrib = DW.AT.type, .type = usize },
+                    .{ .attrib = DW.AT.containing_type, .type = usize },
+                    .{ .attrib = DW.AT.use_location, .type = LocationDesc },
                 });
-                if (attribs.@"type") |offset| {
+                if (attribs.type) |offset| {
                     try offset_fixups.append(.{
                         .idx = type_offset_list.items.len,
                         .offset = offset,
@@ -585,16 +585,16 @@ fn loadAllTypes(self: *DebugUnit, debug_str: []const u8) ![]usize {
                 }
                 try types.append(.{ .PtrToMember = .{
                     .name = attribs.name,
-                    .@"type" = null,
+                    .type = null,
                     .parent_type = null,
                 } });
             },
             DW.TAG.enumeration_type => {
                 const attribs = try genericReadAttribs(&read_ctx, abbrev, &[_]FieldInfo{
-                    .{ .attrib = DW.AT.name, .@"type" = []const u8 },
-                    .{ .attrib = DW.AT.@"type", .@"type" = usize },
+                    .{ .attrib = DW.AT.name, .type = []const u8 },
+                    .{ .attrib = DW.AT.type, .type = usize },
                 });
-                if (attribs.@"type") |offset| {
+                if (attribs.type) |offset| {
                     try offset_fixups.append(.{
                         .idx = type_offset_list.items.len,
                         .offset = offset,
@@ -602,15 +602,15 @@ fn loadAllTypes(self: *DebugUnit, debug_str: []const u8) ![]usize {
                 }
                 try types.append(.{ .Enum = .{
                     .name = attribs.name,
-                    .@"type" = null,
+                    .type = null,
                 } });
             },
             DW.TAG.array_type => {
                 const attribs = try genericReadAttribs(&read_ctx, abbrev, &[_]FieldInfo{
-                    .{ .attrib = DW.AT.name, .@"type" = []const u8 },
-                    .{ .attrib = DW.AT.@"type", .@"type" = usize },
+                    .{ .attrib = DW.AT.name, .type = []const u8 },
+                    .{ .attrib = DW.AT.type, .type = usize },
                 });
-                if (attribs.@"type") |offset| {
+                if (attribs.type) |offset| {
                     try offset_fixups.append(.{
                         .idx = type_offset_list.items.len,
                         .offset = offset,
@@ -618,7 +618,7 @@ fn loadAllTypes(self: *DebugUnit, debug_str: []const u8) ![]usize {
                 }
                 try types.append(.{ .Array = .{
                     .name = attribs.name,
-                    .@"type" = null,
+                    .type = null,
                 } });
             },
             else => {
@@ -630,8 +630,8 @@ fn loadAllTypes(self: *DebugUnit, debug_str: []const u8) ![]usize {
     }
 
     // fixup all the inter-type references before returning
-    const type_offsets = type_offset_list.toOwnedSlice();
-    self.types = types.toOwnedSlice();
+    const type_offsets = try type_offset_list.toOwnedSlice();
+    self.types = try types.toOwnedSlice();
     for (offset_fixups.items) |fixup| {
         const type_idx = searchForOffset(fixup.offset, type_offsets) orelse {
             //std.debug.panic("fixup={{.idx={}, .offset=0x{x}}}\n", .{fixup.idx, fixup.offset});
@@ -663,14 +663,14 @@ fn loadAllTypes(self: *DebugUnit, debug_str: []const u8) ![]usize {
                 info.child_type = referenced_type;
             },
             .Typedef, .Enum, .Array => |*info| {
-                info.@"type" = referenced_type;
+                info.type = referenced_type;
             },
             .Struct, .Class, .Union => |*info| {
                 const member_idx = fixup.member_idx orelse unreachable;
-                info.members[member_idx].@"type" = referenced_type;
+                info.members[member_idx].type = referenced_type;
             },
             .PtrToMember => |*info| {
-                const type_ptr = if (fixup.is_parent_type) &info.parent_type else &info.@"type";
+                const type_ptr = if (fixup.is_parent_type) &info.parent_type else &info.type;
                 type_ptr.* = referenced_type;
             },
         }
@@ -700,16 +700,16 @@ fn loadAllFunctions(self: *DebugUnit, debug_str: []const u8) ![]TypePtrFixup {
         switch (abbrev.tag) {
             DW.TAG.subprogram => {
                 const attribs = try genericReadAttribs(&read_ctx, abbrev, &[_]FieldInfo{
-                    .{ .attrib = DW.AT.name, .@"type" = []const u8 },
-                    .{ .attrib = DW.AT.decl_file, .@"type" = u32 },
-                    .{ .attrib = DW.AT.decl_line, .@"type" = u32 },
-                    .{ .attrib = DW.AT.decl_column, .@"type" = u32 },
-                    .{ .attrib = DW.AT.external, .@"type" = bool },
-                    .{ .attrib = DW.AT.low_pc, .@"type" = usize },
-                    .{ .attrib = DW.AT.high_pc, .@"type" = usize },
-                    .{ .attrib = DW.AT.@"type", .@"type" = usize },
+                    .{ .attrib = DW.AT.name, .type = []const u8 },
+                    .{ .attrib = DW.AT.decl_file, .type = u32 },
+                    .{ .attrib = DW.AT.decl_line, .type = u32 },
+                    .{ .attrib = DW.AT.decl_column, .type = u32 },
+                    .{ .attrib = DW.AT.external, .type = bool },
+                    .{ .attrib = DW.AT.low_pc, .type = usize },
+                    .{ .attrib = DW.AT.high_pc, .type = usize },
+                    .{ .attrib = DW.AT.type, .type = usize },
                 });
-                if (attribs.@"type") |offset| {
+                if (attribs.type) |offset| {
                     try fixups.append(.{ .idx = funcs.items.len, .offset = offset });
                 }
                 try funcs.append(.{
@@ -722,7 +722,7 @@ fn loadAllFunctions(self: *DebugUnit, debug_str: []const u8) ![]TypePtrFixup {
                         .constant => attribs.low_pc.? + high_pc,
                         else => unreachable,
                     } else null,
-                    .ret_type = if (attribs.@"type") |_| undefined else null,
+                    .ret_type = if (attribs.type) |_| undefined else null,
                     .params = &[0]*Variable{},
                 });
             },
@@ -730,8 +730,8 @@ fn loadAllFunctions(self: *DebugUnit, debug_str: []const u8) ![]TypePtrFixup {
         }
     }
 
-    self.functions = funcs.toOwnedSlice();
-    return fixups.toOwnedSlice();
+    self.functions = try funcs.toOwnedSlice();
+    return try fixups.toOwnedSlice();
 }
 
 const VarPtrFixup = struct { func_idx: usize, var_idx: usize };
@@ -784,14 +784,14 @@ fn loadAllVariables(self: *DebugUnit, debug_str: []const u8) !VarFixups {
             },
             DW.TAG.variable => {
                 const attribs = try genericReadAttribs(&read_ctx, abbrev, &[_]FieldInfo{
-                    .{ .attrib = DW.AT.name, .@"type" = []const u8 },
-                    .{ .attrib = DW.AT.decl_file, .@"type" = u32 },
-                    .{ .attrib = DW.AT.decl_line, .@"type" = u32 },
-                    .{ .attrib = DW.AT.decl_column, .@"type" = u32 },
-                    .{ .attrib = DW.AT.@"type", .@"type" = usize },
-                    .{ .attrib = DW.AT.location, .@"type" = LocationDesc },
+                    .{ .attrib = DW.AT.name, .type = []const u8 },
+                    .{ .attrib = DW.AT.decl_file, .type = u32 },
+                    .{ .attrib = DW.AT.decl_line, .type = u32 },
+                    .{ .attrib = DW.AT.decl_column, .type = u32 },
+                    .{ .attrib = DW.AT.type, .type = usize },
+                    .{ .attrib = DW.AT.location, .type = LocationDesc },
                 });
-                if (attribs.@"type") |offset| {
+                if (attribs.type) |offset| {
                     try type_fixups.append(.{ .idx = vars.items.len, .offset = offset });
                 }
                 if (std.mem.lastIndexOfScalar(u16, func_stack.items, DW.TAG.subprogram)) |_| {
@@ -809,7 +809,7 @@ fn loadAllVariables(self: *DebugUnit, debug_str: []const u8) !VarFixups {
                     .name = attribs.name,
                     .decl_coords = maybeDeclCoords(attribs.decl_file, attribs.decl_line, attribs.decl_column),
                     .loc = attribs.location,
-                    .@"type" = null,
+                    .type = null,
                     .function = null,
                 });
             },
@@ -824,14 +824,14 @@ fn loadAllVariables(self: *DebugUnit, debug_str: []const u8) !VarFixups {
                     continue;
                 }
                 const attribs = try genericReadAttribs(&read_ctx, abbrev, &[_]FieldInfo{
-                    .{ .attrib = DW.AT.name, .@"type" = []const u8 },
-                    .{ .attrib = DW.AT.decl_file, .@"type" = u32 },
-                    .{ .attrib = DW.AT.decl_line, .@"type" = u32 },
-                    .{ .attrib = DW.AT.decl_column, .@"type" = u32 },
-                    .{ .attrib = DW.AT.@"type", .@"type" = usize },
-                    .{ .attrib = DW.AT.location, .@"type" = LocationDesc },
+                    .{ .attrib = DW.AT.name, .type = []const u8 },
+                    .{ .attrib = DW.AT.decl_file, .type = u32 },
+                    .{ .attrib = DW.AT.decl_line, .type = u32 },
+                    .{ .attrib = DW.AT.decl_column, .type = u32 },
+                    .{ .attrib = DW.AT.type, .type = usize },
+                    .{ .attrib = DW.AT.location, .type = LocationDesc },
                 });
-                if (attribs.@"type") |offset| {
+                if (attribs.type) |offset| {
                     try type_fixups.append(.{ .idx = vars.items.len, .offset = offset });
                 }
                 try param_fixups.append(.{
@@ -845,7 +845,7 @@ fn loadAllVariables(self: *DebugUnit, debug_str: []const u8) !VarFixups {
                     .name = attribs.name,
                     .decl_coords = maybeDeclCoords(attribs.decl_file, attribs.decl_line, attribs.decl_column),
                     .loc = attribs.location,
-                    .@"type" = null,
+                    .type = null,
                     .function = null,
                 });
             },
@@ -857,12 +857,12 @@ fn loadAllVariables(self: *DebugUnit, debug_str: []const u8) !VarFixups {
         }
     }
 
-    self.variables = vars.toOwnedSlice();
-    self.global_vars = global_vars.toOwnedSlice();
+    self.variables = try vars.toOwnedSlice();
+    self.global_vars = try global_vars.toOwnedSlice();
     return VarFixups{
-        .type_fixups = type_fixups.toOwnedSlice(),
-        .var_fn_fixups = var_fn_fixups.toOwnedSlice(),
-        .param_fixups = param_fixups.toOwnedSlice(),
+        .type_fixups = try type_fixups.toOwnedSlice(),
+        .var_fn_fixups = try var_fn_fixups.toOwnedSlice(),
+        .param_fixups = try param_fixups.toOwnedSlice(),
     };
 }
 
@@ -959,7 +959,7 @@ fn loadFunctions(self: *DebugUnit, debug_str: []const u8) !FixUpInfo {
                             if (function.decl_coords == null) function.decl_coords = .{ .file = 0, .line = 0, .column = 0 };
                             function.decl_coords.?.column = try forms.readConstant(u32, read_info, reader, pair);
                         },
-                        DW.AT.@"type" => {
+                        DW.AT.type => {
                             const type_offset = try forms.readReference(read_info, reader, pair.form);
                             try function_fixups.append(.{ .fn_idx = functions.items.len, .type_offset = type_offset });
                         },
@@ -1001,14 +1001,14 @@ fn loadFunctions(self: *DebugUnit, debug_str: []const u8) !FixUpInfo {
                     .name = &[0]u8{},
                     .decl_coords = null,
                     .loc = null,
-                    .@"type" = null,
+                    .type = null,
                     .scope = null,
                 };
                 var type_offset = @as(?usize, null);
                 for (abbrev.attribs) |pair| {
                     switch (pair.attrib) {
                         DW.AT.name => variable.name = try forms.readString(read_info, reader, pair.form),
-                        DW.AT.@"type" => type_offset = try forms.readReference(read_info, reader, pair.form),
+                        DW.AT.type => type_offset = try forms.readReference(read_info, reader, pair.form),
                         DW.AT.decl_file => {
                             if (variable.decl_coords == null) variable.decl_coords = .{ .file = 0, .line = 0, .column = 0 };
                             variable.decl_coords.?.file = try forms.readConstant(u32, read_info, reader, pair);
@@ -1044,11 +1044,11 @@ fn loadFunctions(self: *DebugUnit, debug_str: []const u8) !FixUpInfo {
         }
     }
 
-    self.variables = variables.toOwnedSlice();
-    self.functions = functions.toOwnedSlice();
+    self.variables = try variables.toOwnedSlice();
+    self.functions = try functions.toOwnedSlice();
     return FixUpInfo{
-        .variable_fixups = variable_fixups.toOwnedSlice(),
-        .function_fixups = function_fixups.toOwnedSlice(),
+        .variable_fixups = try variable_fixups.toOwnedSlice(),
+        .function_fixups = try function_fixups.toOwnedSlice(),
     };
 }
 
@@ -1195,7 +1195,7 @@ const EntryReadCtx = struct {
     }
 };
 
-const FieldInfo = struct { attrib: u16, @"type": type };
+const FieldInfo = struct { attrib: u16, type: type };
 
 fn genericReadAttribs(
     read_ctx: *EntryReadCtx,
@@ -1209,40 +1209,65 @@ fn genericReadAttribs(
             const field_name = comptime DW.dwarfShortString(DW.AT, info.attrib);
             const possible_classes = comptime DW.Class.fromAttribute(info.attrib);
             if (attrib.attrib == info.attrib) {
-                inline for (possible_classes) |class| {
-                    if (attrib.form == DW.FORM.exprloc or attrib.form == DW.FORM.sec_offset) {
-                        if (class == .exprloc and info.@"type" == LocationDesc) {
-                            @field(read, field_name) = switch (attrib.form) {
-                                DW.FORM.exprloc => .{ .expr = try read_ctx.readAttrib(.exprloc, attrib) },
-                                DW.FORM.sec_offset => .{ .loclist_offset = try read_ctx.readSecOffset() },
-                                else => unreachable,
-                            };
-                            @field(read.forms_used, field_name) = attrib.form;
-                            break;
-                        }
-                    }
-
-                    const form_class = DW.Class.fromForm(attrib.form);
-                    if (class == form_class) {
-                        if (class == .constant) {
-                            @field(read, field_name) = try read_ctx.readConstant(info.@"type", attrib);
-                            @field(read.forms_used, field_name) = attrib.form;
-                            break;
-                        } else if (DW.Class.Type(class) == info.@"type") {
-                            @field(read, field_name) = try read_ctx.readAttrib(class, attrib);
-                            @field(read.forms_used, field_name) = attrib.form;
-                            break;
-                        }
-                    }
-                } else std.debug.panic("stream.pos=0x{x}: {s} doesn't support {} (from {s})\n", .{
-                    read_ctx.stream.pos, DW.AT.asStr(info.attrib), DW.Class.fromForm(attrib.form), DW.FORM.asStr(attrib.form),
-                });
-                break;
+                const should_break = try genericReadAttribsHelperSingleRead(
+                    StructFromFieldInfos(field_infos),
+                    &read,
+                    read_ctx,
+                    attrib,
+                    info,
+                    field_name,
+                    possible_classes,
+                );
+                if (should_break) break;
             }
         } else try read_ctx.skipAttrib(attrib);
     }
 
     return read;
+}
+// note: this is a workaround for https://github.com/ziglang/zig/issues/13428
+// the bug occurs when trying to do a runtime-break out of a 2-level nesting
+// of comptime loop. therefore by putting this inner loop in it's own function
+// we can sidestep this bug.
+fn genericReadAttribsHelperSingleRead(
+    comptime ReadStruct: type,
+    read: *ReadStruct,
+    read_ctx: *EntryReadCtx,
+    attrib: Attrib,
+    comptime info: FieldInfo,
+    comptime field_name: []const u8,
+    comptime possible_classes: []const DW.Class,
+) !bool {
+    inline for (possible_classes) |class| {
+        if (attrib.form == DW.FORM.exprloc or attrib.form == DW.FORM.sec_offset) {
+            if (class == .exprloc and info.type == LocationDesc) {
+                @field(read, field_name) = switch (attrib.form) {
+                    DW.FORM.exprloc => .{ .expr = try read_ctx.readAttrib(.exprloc, attrib) },
+                    DW.FORM.sec_offset => .{ .loclist_offset = try read_ctx.readSecOffset() },
+                    else => unreachable,
+                };
+                @field(read.forms_used, field_name) = attrib.form;
+                break;
+            }
+        }
+
+        const form_class = DW.Class.fromForm(attrib.form);
+        if (class == form_class) {
+            if (class == .constant) {
+                @field(read, field_name) = try read_ctx.readConstant(info.type, attrib);
+                @field(read.forms_used, field_name) = attrib.form;
+                break;
+            } else if (DW.Class.Type(class) == info.type) {
+                @field(read, field_name) = try read_ctx.readAttrib(class, attrib);
+                @field(read.forms_used, field_name) = attrib.form;
+                break;
+            }
+        }
+    } else std.debug.panic("stream.pos=0x{x}: {s} doesn't support {} (from {s})\n", .{
+        read_ctx.stream.pos, DW.AT.asStr(info.attrib), DW.Class.fromForm(attrib.form), DW.FORM.asStr(attrib.form),
+    });
+    // break;
+    return true;
 }
 
 /// construct a new Struct type with one member for each of the attribs in `field_infos`
@@ -1257,47 +1282,47 @@ fn genericReadAttribs(
 ///     },
 /// };
 fn StructFromFieldInfos(comptime field_infos: []const FieldInfo) type {
-    var inner_fields: [field_infos.len]std.builtin.TypeInfo.StructField = undefined;
+    var inner_fields: [field_infos.len]std.builtin.Type.StructField = undefined;
     inline for (field_infos) |info, idx| {
         const field_name = DW.dwarfShortString(DW.AT, info.attrib);
         inner_fields[idx] = .{
             .name = field_name,
-            .field_type = ?u16,
-            .default_value = @as(?u16, null),
+            .type = ?u16,
+            .default_value = @as(?*const anyopaque, null),
             .is_comptime = false,
             .alignment = 0,
         };
     }
-    const inner_constructed_type = @Type(std.builtin.TypeInfo{ .Struct = .{
+    const inner_constructed_type = @Type(std.builtin.Type{ .Struct = .{
         .layout = .Auto,
         .fields = &inner_fields,
-        .decls = &[0]std.builtin.TypeInfo.Declaration{},
+        .decls = &[0]std.builtin.Type.Declaration{},
         .is_tuple = false,
     } });
 
-    var fields: [field_infos.len + 1]std.builtin.TypeInfo.StructField = undefined;
+    var fields: [field_infos.len + 1]std.builtin.Type.StructField = undefined;
     inline for (field_infos) |info, idx| {
         const field_name = DW.dwarfShortString(DW.AT, info.attrib);
         fields[idx] = .{
             .name = field_name,
-            .field_type = ?info.@"type",
-            .default_value = @as(?info.@"type", null),
+            .type = ?info.type,
+            .default_value = @as(?*const anyopaque, null),
             .is_comptime = false,
             .alignment = 0,
         };
     }
     fields[fields.len - 1] = .{
         .name = "forms_used",
-        .field_type = inner_constructed_type,
-        .default_value = @as(??inner_constructed_type, null),
+        .type = inner_constructed_type,
+        .default_value = @as(?*const anyopaque, null),
         .is_comptime = false,
         .alignment = 0,
     };
 
-    const constructed = std.builtin.TypeInfo{ .Struct = .{
+    const constructed = std.builtin.Type{ .Struct = .{
         .layout = .Auto,
         .fields = &fields,
-        .decls = &[0]std.builtin.TypeInfo.Declaration{},
+        .decls = &[0]std.builtin.Type.Declaration{},
         .is_tuple = false,
     } };
     return @Type(constructed);

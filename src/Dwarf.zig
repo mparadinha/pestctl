@@ -100,7 +100,7 @@ pub fn initTables(self: *Dwarf) !void {
         ));
         debug_unit_offset += try DebugUnit.getSectionSize(self.debug_info, debug_unit_offset);
     }
-    self.units = debug_units.toOwnedSlice();
+    self.units = try debug_units.toOwnedSlice();
 
     // NOTE/TODO: each type in a compilation unit there could also be a separate
     // debug unit (type unit in this case) so our `units` array should really only
@@ -119,7 +119,7 @@ pub fn initTables(self: *Dwarf) !void {
         ));
         debug_line_offset += try LineProg.getSectionSize(self.debug_line, debug_line_offset);
     }
-    self.line_progs = line_progs.toOwnedSlice();
+    self.line_progs = try line_progs.toOwnedSlice();
 
     self.frames = try loadAllFrames(self.allocator, self.debug_frame, self.eh_frame);
 
@@ -196,7 +196,7 @@ pub fn callStackAddrs(
         const rules = try frame.rulesForAddr(addr);
 
         const cfa = switch (rules.cfa) {
-            .@"undefined" => unreachable,
+            .undefined => unreachable,
             .register => |rule| blk: {
                 const reg_value = regs.getPtr(@intToEnum(Register, rule.reg)).*;
                 break :blk @intCast(usize, @intCast(isize, reg_value) + rule.offset);
@@ -205,32 +205,32 @@ pub fn callStackAddrs(
         };
 
         const ret_addr = switch (rules.regs[frame.return_address_register]) {
-            .@"undefined" => break :frame_loop,
+            .undefined => break :frame_loop,
             .offset => |offset| blk: {
                 const reg_saved_addr = @intCast(usize, @intCast(isize, cfa) + offset);
                 try proc_mem.seekTo(reg_saved_addr);
                 break :blk try proc_mem.reader().readIntLittle(usize);
             },
-            else => std.debug.panic("TODO: {s}\n", .{std.meta.activeTag(rules.regs[frame.return_address_register])}),
+            else => std.debug.panic("TODO: {}\n", .{std.meta.activeTag(rules.regs[frame.return_address_register])}),
         };
 
         addr = ret_addr;
         for (rules.regs) |reg, i| {
             if (i == frame.return_address_register) continue;
             switch (reg) {
-                .@"undefined" => {},
+                .undefined => {},
                 .offset => |offset| {
                     const reg_saved_addr = @intCast(usize, @intCast(isize, cfa) + offset);
                     try proc_mem.seekTo(reg_saved_addr);
                     const reg_value = try proc_mem.reader().readIntLittle(usize);
                     regs.getPtr(@intToEnum(Register, i)).* = reg_value;
                 },
-                else => std.debug.panic("TODO: {s}\n", .{std.meta.activeTag(reg)}),
+                else => std.debug.panic("TODO: {}\n", .{std.meta.activeTag(reg)}),
             }
         }
     }
 
-    return call_stack.toOwnedSlice();
+    return try call_stack.toOwnedSlice();
 }
 
 pub fn findFrameForAddr(self: Dwarf, addr: usize) ?Frame {
@@ -336,7 +336,7 @@ fn loadAllFrames(allocator: Allocator, debug_frame: []const u8, eh_frame: []cons
         std.debug.assert(frame.pc_begin >= last_frame.pc_end);
     }
 
-    return frames.toOwnedSlice();
+    return try frames.toOwnedSlice();
 }
 
 const LengthField = struct {

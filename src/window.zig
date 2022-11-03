@@ -275,8 +275,8 @@ pub const Window = struct {
                 .hresize = c.glfwCreateStandardCursor(c.GLFW_HRESIZE_CURSOR).?,
                 .vresize = c.glfwCreateStandardCursor(c.GLFW_VRESIZE_CURSOR).?,
             },
-            .mouse_pos = undefined,
-            .framebuffer_size = undefined,
+            .mouse_pos = null,
+            .framebuffer_size = null,
         };
 
         // setup callbacks
@@ -415,7 +415,7 @@ pub const Window = struct {
     }
 
     fn glfw_error_callback(error_code: c_int, error_msg: [*c]const u8) callconv(.C) void {
-        std.log.info("glfw error (code={}): {s}", .{ error_code, error_msg });
+        std.debug.print("glfw error (code={}): {s}", .{ error_code, error_msg });
     }
 
     fn glfw_key_callback(glfw_window: ?*c.GLFWwindow, key: i32, scancode: i32, action: i32, mods: i32) callconv(.C) void {

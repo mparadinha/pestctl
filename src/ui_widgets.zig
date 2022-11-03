@@ -297,9 +297,6 @@ pub fn endScrollRegion(self: *UiContext, parent: *Node, start_scroll: f32, end_s
 
 // TODO
 pub fn dropDownList(self: *UiContext, hash_string: []const u8, options: []const []const u8, chosen_idx: *usize, is_open: *bool) void {
-    _ = hash_string;
-    _ = is_open;
-
     const Icons = @import("main.zig").Icons;
 
     const choice_parent_size = [2]Size{ Size.by_children(1), Size.text_dim(1) };
@@ -600,7 +597,7 @@ fn textOpFromAction(action: TextAction, cursor: usize, mark: usize, unicode_buf:
 
     // translate high level char/word delta into a buffer specific byte delta
     if (action.delta == 0) {
-        _ = byte_delta; // nothing to do;
+        // nothing to do;
     } else if (action.delta == std.math.minInt(isize) or action.delta == std.math.maxInt(isize)) {
         byte_delta = delta_sign * @intCast(isize, buf.len);
     } else if (action.flags.word_scan) {

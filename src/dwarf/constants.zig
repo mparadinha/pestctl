@@ -1299,7 +1299,7 @@ pub const Class = enum {
         };
     }
 
-    pub fn Type(class: DW.Class) type {
+    pub fn Type(comptime class: DW.Class) type {
         return switch (class) {
             .address => usize,
             .addrptr => @panic("TODO"),
