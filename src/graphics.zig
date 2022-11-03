@@ -150,9 +150,9 @@ pub const Shader = struct {
         shader.frag_id = shader.compile_src(srcs.fragment, .fragment);
 
         if (shader.geom_id) |geom_id| {
-            shader.link(&.{ shader.vert_id, geom_id, shader.frag_id });
+            shader.link(&[_]u32{ shader.vert_id, geom_id, shader.frag_id });
         } else {
-            shader.link(&.{ shader.vert_id, shader.frag_id });
+            shader.link(&[_]u32{ shader.vert_id, shader.frag_id });
         }
 
         return shader;

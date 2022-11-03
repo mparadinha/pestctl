@@ -9,8 +9,7 @@ pub fn link(b: *Builder, step: *LibExeObjStep, opt_path: ?[]const u8) void {
     step_options.addOption(bool, "tracy_enabled", opt_path != null);
 
     if (opt_path) |path| {
-        //step.addIncludePath(path);
-        step.addIncludeDir(path);
+        step.addIncludePath(path);
         const tracy_client_source_path = std.fs.path.join(step.builder.allocator, &.{ path, "TracyClient.cpp" }) catch unreachable;
         step.addCSourceFile(tracy_client_source_path, &[_][]const u8{
             "-DTRACY_ENABLE",

@@ -62,7 +62,6 @@ pub fn getSectionSize(debug_line: []const u8, offset: usize) !usize {
 
 /// `debug_line` and `debug_line_str` must remain valid memory while this LineProg is used
 pub fn init(allocator: Allocator, debug_line: []const u8, offset: usize, debug_line_str: []const u8, comp_dir: []const u8) !LineProg {
-    _ = debug_line_str;
     var self = @as(LineProg, undefined);
     self.allocator = allocator;
 
@@ -115,7 +114,7 @@ pub fn init(allocator: Allocator, debug_line: []const u8, offset: usize, debug_l
             const str_end = (try stream.getPos()) - 1;
             try include_dirs.append(self.raw_data[str_start..str_end]);
         }
-        self.include_dirs = include_dirs.toOwnedSlice();
+        self.include_dirs = try include_dirs.toOwnedSlice();
 
         // TODO
         // from Dwarf v4 spec, chapter 6.2.4, pg.115:
@@ -136,7 +135,7 @@ pub fn init(allocator: Allocator, debug_line: []const u8, offset: usize, debug_l
                 .len = try std.leb.readULEB128(usize, reader),
             });
         }
-        self.files = files.toOwnedSlice();
+        self.files = try files.toOwnedSlice();
     } else if (self.version == 5) {
         const EntryFormat = struct { content_type: u16, form: u16 };
 

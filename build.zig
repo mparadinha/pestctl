@@ -22,11 +22,11 @@ pub fn build(b: *std.build.Builder) void {
     exe.linkSystemLibrary("glfw");
     // intelXED
     exe.addObjectFile("xed/obj/libxed.a");
-    exe.addIncludeDir("xed/obj");
-    exe.addIncludeDir("xed/include/public");
-    exe.addIncludeDir("xed/include/public/xed");
+    exe.addIncludePath("xed/obj");
+    exe.addIncludePath("xed/include/public");
+    exe.addIncludePath("xed/include/public/xed");
     // stb libs
-    exe.addIncludeDir("src");
+    exe.addIncludePath("src");
     exe.addCSourceFile("src/stb_impls.c", &[_][]u8{""});
     exe.install();
     _ = tracy.link(b, exe, if (use_tracy) "tracy-0.8.2" else null);

@@ -250,7 +250,7 @@ pub fn main() !void {
                         } else "";
                         const full_dir_path = try std.fs.path.join(frame_arena.allocator(), &.{ cwd, inner_dir });
 
-                        var dir = try std.fs.openDirAbsolute(full_dir_path, .{ .iterate = true });
+                        var dir = try std.fs.openIterableDirAbsolute(full_dir_path, .{ .access_sub_paths = true });
                         defer dir.close();
                         var dir_iter = dir.iterate();
                         while (try dir_iter.next()) |entry| {
@@ -364,7 +364,7 @@ pub fn main() !void {
             ui.topParent().last.?.pref_size[0] = Size.percent(1, 1);
 
             if (ui.button("Wait for Signal").clicked) {
-                std.debug.print("wait status: {}\n", .{Session.getWaitStatus(session.pid)});
+                std.debug.print("wait status: {any}\n", .{Session.getWaitStatus(session.pid)});
             }
 
             if (ui.button("Force Send `ptrace(.CONT)`").clicked) {
@@ -444,13 +444,13 @@ pub fn main() !void {
 
                 for (session.watched_vars.items) |var_info| {
                     const var_name = var_info.name;
-                    const row_parent = ui.addNodeF(.{ .no_id = true }, "###row_parent_{s}", .{var_name}, .{ .child_layout_axis = .x });
+                    const row_parent = ui.addNodeF(.{ .no_id = true }, "###row_parent_{?s}", .{var_name}, .{ .child_layout_axis = .x });
                     row_parent.pref_size = row_size;
                     ui.pushParent(row_parent);
                     {
                         ui.pushStyle(.{ .pref_size = column_box_size });
-                        ui.labelBoxF("{s}", .{var_name});
-                        ui.labelBoxF("{s}", .{if (var_info.@"type") |ty| @tagName(std.meta.activeTag(ty.*)) else "???"});
+                        ui.labelBoxF("{?s}", .{var_name});
+                        ui.labelBoxF("{s}", .{if (var_info.type) |ty| @tagName(std.meta.activeTag(ty.*)) else "???"});
                         if (session.getVariableValue(var_info)) |value| switch (value) {
                             .Float32 => |f| ui.labelBoxF("{d}\n", .{f}),
                             .Uint32 => |uint| ui.labelBoxF("{}\n", .{uint}),
@@ -987,7 +987,7 @@ const FileTab = struct {
         try self.files.append(.{
             .path = dupe_path,
             .content = content,
-            .line_offsets = line_offsets.toOwnedSlice(),
+            .line_offsets = try line_offsets.toOwnedSlice(),
             .lock_line = null,
             .target_lock_line = null,
             .focus_box = null,
@@ -1357,9 +1357,9 @@ fn generateTextInfoForDisassembly(allocator: Allocator, data: []const u8, data_s
 
     return AsmTextInfo{
         .addr_range = [2]usize{ data_start_addr, data_start_addr + data_idx },
-        .data = text_bytes.toOwnedSlice(),
-        .line_offsets = line_offsets.toOwnedSlice(),
-        .line_addrs = line_addrs.toOwnedSlice(),
+        .data = try text_bytes.toOwnedSlice(),
+        .line_offsets = try line_offsets.toOwnedSlice(),
+        .line_addrs = try line_addrs.toOwnedSlice(),
     };
 }
 
