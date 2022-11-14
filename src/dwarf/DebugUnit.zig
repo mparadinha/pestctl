@@ -649,7 +649,7 @@ fn loadAllFunctions(self: *DebugUnit, debug_str: []const u8) ![]TypePtrFixup {
                         .constant => attribs.low_pc.? + high_pc,
                         else => unreachable,
                     } else null,
-                    .ret_type = undefined,
+                    .ret_type = if (attribs.@"type") |_| undefined else null,
                     .params = &[0]*Variable{},
                 });
             },

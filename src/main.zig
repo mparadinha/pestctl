@@ -1154,7 +1154,10 @@ const CallStackViewer = struct {
         pub fn hash(self: @This(), key: Session.CallFrame) u64 {
             _ = self;
             var buf: [0x4000]u8 = undefined;
-            const str = std.fmt.bufPrint(&buf, "{x}:{?}:{?}", key) catch unreachable;
+            const str = std.fmt.bufPrint(&buf, "0x{x}:{d}", .{
+                key.addr,
+                if (key.src) |src| src.line else 0,
+            }) catch unreachable;
             return std.hash_map.hashString(str);
         }
         pub fn eql(self: @This(), key_a: Session.CallFrame, key_b: Session.CallFrame) bool {
