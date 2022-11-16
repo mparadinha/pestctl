@@ -122,14 +122,10 @@ pub fn initTables(self: *Dwarf) !void {
     self.line_progs = line_progs.toOwnedSlice();
 
     self.frames = try loadAllFrames(self.allocator, self.debug_frame, self.eh_frame);
-    //std.debug.print("all frames:\n", .{});
-    //for (self.frames) |frame| {
-    //    std.debug.print("pc_begin=0x{x:0>12}, pc_end=0x{x:0>12}\n", .{ frame.pc_begin, frame.pc_end });
-    //}
 
+    //_ = timer_start;
     const timer_elapsed = std.time.nanoTimestamp() - timer_start;
-    _ = timer_elapsed;
-    //std.debug.print("Dwarf.initTables took {d:.2}ms\n", .{@intToFloat(f32, timer_elapsed) / std.time.ns_per_ms});
+    std.debug.print("Dwarf.initTables took {d:.2}ms\n", .{@intToFloat(f32, timer_elapsed) / std.time.ns_per_ms});
 }
 
 pub const SrcLoc = struct {
@@ -263,7 +259,11 @@ pub fn findFrameForAddr(self: Dwarf, addr: usize) ?Frame {
 fn loadAllFrames(allocator: Allocator, debug_frame: []const u8, eh_frame: []const u8) ![]Frame {
     // https://refspecs.linuxfoundation.org/LSB_5.0.0/LSB-Core-generic/LSB-Core-generic/ehframechpt.html
     _ = eh_frame;
-    if (debug_frame.len == 0) @panic("TODO: use `.eh_frame` when `.debug_frame` is not available\n");
+    if (debug_frame.len == 0) {
+        //@panic("TODO: use `.eh_frame` when `.debug_frame` is not available\n");
+        std.debug.print("TODO: use `.eh_frame` when `.debug_frame` is not available\n", .{});
+        return &[0]Frame{};
+    }
 
     var frames = std.ArrayList(Frame).init(allocator);
 

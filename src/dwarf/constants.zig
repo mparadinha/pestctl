@@ -1019,6 +1019,32 @@ pub const END = struct {
     pub const hi_user = 0xff;
 };
 
+// DWARF extension for .eh_frame. see:
+// https://refspecs.linuxfoundation.org/LSB_5.0.0/LSB-Core-generic/LSB-Core-generic/dwarfext.html#DWARFEHENCODING
+pub const EH = struct {
+    pub const PE = struct {
+        // exception header value format
+        pub const absptr = 0x00;
+        pub const uleb128 = 0x01;
+        pub const udata2 = 0x02;
+        pub const udata4 = 0x03;
+        pub const udata8 = 0x04;
+        pub const sleb128 = 0x09;
+        pub const sdata2 = 0x0a;
+        pub const sdata4 = 0x0b;
+        pub const sdata8 = 0x0c;
+
+        // exception header application
+        pub const pcrel = 0x10;
+        pub const textrel = 0x20;
+        pub const datarel = 0x30;
+        pub const funcrel = 0x40;
+        pub const aligned = 0x50;
+
+        pub const omit = 0xff;
+    };
+};
+
 pub fn dwarfString(comptime T: type, value: u16) []const u8 {
     @setEvalBranchQuota(10_000);
     inline for (@typeInfo(T).Struct.decls) |decl| {
