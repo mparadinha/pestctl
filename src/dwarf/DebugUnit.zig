@@ -84,6 +84,7 @@ pub const LocationDesc = union(enum) {
     loclist_offset: usize,
     // TODO: DWARF loclistx
 };
+
 pub const Type = union(enum) {
     Base: struct {
         name: ?[]const u8,
@@ -92,22 +93,47 @@ pub const Type = union(enum) {
         byte_size: usize,
         data_bit_offset: u16,
     },
+    Unspecified: struct {
+        name: ?[]const u8,
+    },
+    Atomic: TypeModifier,
     Const: TypeModifier,
+    Immutable: TypeModifier,
+    Packed: TypeModifier,
     Pointer: TypeModifier,
     Reference: TypeModifier,
+    Restrict: TypeModifier,
+    RValueRef: TypeModifier,
+    Shared: TypeModifier,
+    Volatile: TypeModifier,
     Typedef: NameAndType,
-    Struct: struct {
-        name: ?[]const u8,
-        // when a struct is only declared but never fully specified this is null
-        size: ?usize,
-        members: []StructMember,
-    },
+    Struct: Container,
+    Class: Container,
+    Union: Container,
     Enum: NameAndType, // TODO: better than this lol
     Array: NameAndType,
+    PtrToMember: struct {
+        name: ?[]const u8,
+        @"type": ?*Type,
+        parent_type: ?*Type,
+    },
 
     pub const NameAndType = struct {
         name: ?[]const u8,
-        child_type: ?*Type,
+        @"type": ?*Type,
+    };
+
+    pub const Container = struct {
+        name: ?[]const u8,
+        // when a struct/class is only declared but never fully specified this is null
+        size: ?usize,
+        members: []ContainerMember,
+    };
+
+    pub const ContainerMember = struct {
+        name: ?[]const u8,
+        @"type": *Type,
+        offset: usize,
     };
 
     pub const Endianess = enum { little, big };
@@ -118,25 +144,6 @@ pub const Type = union(enum) {
         // emit an entry with no child type
         child_type: ?*Type,
     };
-
-    pub const StructMember = struct {
-        name: ?[]const u8,
-        @"type": *Type,
-        offset: usize,
-    };
-
-    pub fn name(self: Type) ?[]const u8 {
-        return switch (self) {
-            .Base => |ty| ty.name,
-            .Const => |ty| ty.name,
-            .Pointer => |ty| ty.name,
-            .Reference => |ty| ty.name,
-            .Typedef => |ty| ty.name,
-            .Struct => |ty| ty.name,
-            .Enum => |ty| ty.name,
-            .Array => |ty| ty.name,
-        };
-    }
 };
 
 /// this returns the amount of bytes we need to skip (starting from `offset`) to reach the
@@ -218,14 +225,16 @@ pub fn init(
     defer self.allocator.free(param_fixups);
 
     for (fn_type_fixups) |fixup| {
+        const func = &self.functions[fixup.idx];
         const type_idx = searchForOffset(fixup.offset, type_offsets) orelse
-            std.debug.panic("type (@ 0x{x}) for func #{} not parsed\n", .{ fixup.offset, fixup.idx });
-        self.functions[fixup.idx].ret_type = &self.types[type_idx];
+            std.debug.panic("type (@ 0x{x}) for func #{} ({s}) not parsed\n", .{ fixup.offset + offset, fixup.idx, func.name });
+        func.ret_type = &self.types[type_idx];
     }
     for (var_type_fixups) |fixup| {
+        const v = &self.variables[fixup.idx];
         const type_idx = searchForOffset(fixup.offset, type_offsets) orelse
-            std.debug.panic("type (@ 0x{x}) for var #{} not parsed\n", .{ fixup.offset, fixup.idx });
-        self.variables[fixup.idx].@"type" = &self.types[type_idx];
+            std.debug.panic("type (@ 0x{x}) for var #{} ({s}) not parsed\n", .{ fixup.offset + offset, fixup.idx, v.name });
+        v.@"type" = &self.types[type_idx];
     }
     for (var_fn_fixups) |fixup| {
         const func_ptr = &self.functions[fixup.func_idx];
@@ -245,29 +254,6 @@ pub fn init(
             self.arena.allocator(),
         );
     }
-
-    // @debug
-    //for (self.functions) |*func| {
-    //    std.debug.print("func '{s}' ({} params): ", .{ func.name, func.params.len });
-    //    for (func.params) |param| {
-    //        if (param.@"type") |ty| {
-    //            std.debug.print("'{s}': <{s}>'{s}', ", .{ param.name, @tagName(std.meta.activeTag(ty.*)), ty.name() });
-    //        } else {
-    //            std.debug.print("'{s}': <no type>, ", .{param.name});
-    //        }
-    //    }
-    //    std.debug.print("\n", .{});
-    //    for (self.variables) |*var_ptr| {
-    //        if (var_ptr.function == null) continue;
-    //        if (var_ptr.function.? != func) continue;
-    //        if (std.mem.indexOfScalar(*Variable, func.params, var_ptr)) |_| continue;
-    //        if (var_ptr.@"type") |ty| {
-    //            std.debug.print("  '{s}': <{s}>'{s}'\n", .{ var_ptr.name, @tagName(std.meta.activeTag(ty.*)), ty.name() });
-    //        } else {
-    //            std.debug.print("  '{s}': <no type>\n", .{var_ptr.name});
-    //        }
-    //    }
-    //}
 
     return self;
 }
@@ -378,6 +364,7 @@ fn loadAllTypes(self: *DebugUnit, debug_str: []const u8) ![]usize {
         idx: usize,
         member_idx: ?usize = null,
         offset: usize,
+        is_parent_type: bool = false, // used for PtrToMember fixups
     }).init(self.allocator);
     defer offset_fixups.deinit();
 
@@ -397,13 +384,22 @@ fn loadAllTypes(self: *DebugUnit, debug_str: []const u8) ![]usize {
     );
     defer read_ctx.deinit();
     while (try read_ctx.nextEntry()) |entry| {
-        if (std.meta.activeTag(entry) == .close_tag) {
+        if (entry == .close_tag) {
             switch (entry.close_tag) {
-                DW.TAG.structure_type => {
-                    const ty = &types.items[container_stack.pop()].Struct;
-                    ty.members = try transferToNewAllocator(
-                        Type.StructMember,
-                        ty.members,
+                DW.TAG.structure_type,
+                DW.TAG.class_type,
+                DW.TAG.union_type,
+                => {
+                    const ty_idx = container_stack.pop();
+                    const member_list_ptr = switch (types.items[ty_idx]) {
+                        .Struct => |*info| &info.members,
+                        .Class => |*info| &info.members,
+                        .Union => |*info| &info.members,
+                        else => unreachable,
+                    };
+                    member_list_ptr.* = try transferToNewAllocator(
+                        Type.ContainerMember,
+                        member_list_ptr.*,
                         self.allocator,
                         self.arena.allocator(),
                     );
@@ -445,9 +441,24 @@ fn loadAllTypes(self: *DebugUnit, debug_str: []const u8) ![]usize {
                     .data_bit_offset = attribs.data_bit_offset orelse 0,
                 } });
             },
+            DW.TAG.unspecified_type => {
+                const attribs = try genericReadAttribs(&read_ctx, abbrev, &[_]FieldInfo{
+                    .{ .attrib = DW.AT.name, .@"type" = []const u8 },
+                });
+                try types.append(.{ .Unspecified = .{
+                    .name = attribs.name,
+                } });
+            },
+            DW.TAG.atomic_type,
             DW.TAG.const_type,
+            DW.TAG.immutable_type,
+            DW.TAG.packed_type,
             DW.TAG.pointer_type,
             DW.TAG.reference_type,
+            DW.TAG.restrict_type,
+            DW.TAG.rvalue_reference_type,
+            DW.TAG.shared_type,
+            DW.TAG.volatile_type,
             => {
                 const attribs = try genericReadAttribs(&read_ctx, abbrev, &[_]FieldInfo{
                     .{ .attrib = DW.AT.name, .@"type" = []const u8 },
@@ -461,21 +472,19 @@ fn loadAllTypes(self: *DebugUnit, debug_str: []const u8) ![]usize {
                 }
                 const type_mod = Type.TypeModifier{ .name = attribs.name, .child_type = null };
                 try types.append(switch (abbrev.tag) {
+                    DW.TAG.atomic_type => .{ .Atomic = type_mod },
                     DW.TAG.const_type => .{ .Const = type_mod },
+                    DW.TAG.immutable_type => .{ .Immutable = type_mod },
+                    DW.TAG.packed_type => .{ .Packed = type_mod },
                     DW.TAG.pointer_type => .{ .Pointer = type_mod },
                     DW.TAG.reference_type => .{ .Reference = type_mod },
+                    DW.TAG.restrict_type => .{ .Restrict = type_mod },
+                    DW.TAG.rvalue_reference_type => .{ .RValueRef = type_mod },
+                    DW.TAG.shared_type => .{ .Shared = type_mod },
+                    DW.TAG.volatile_type => .{ .Volatile = type_mod },
                     else => unreachable,
                 });
             },
-            // TODO: these other type modifiers
-            //DW.TAG.atomic_type,
-            //DW.TAG.immutable_type,
-            //DW.TAG.packed_type,
-            //DW.TAG.restrict_type,
-            //DW.TAG.rvalue_reference_type,
-            //DW.TAG.shared_type,
-            //DW.TAG.volatile_type,
-
             DW.TAG.typedef => {
                 const attribs = try genericReadAttribs(&read_ctx, abbrev, &[_]FieldInfo{
                     .{ .attrib = DW.AT.name, .@"type" = []const u8 },
@@ -489,11 +498,13 @@ fn loadAllTypes(self: *DebugUnit, debug_str: []const u8) ![]usize {
                 }
                 try types.append(.{ .Typedef = .{
                     .name = attribs.name,
-                    .child_type = null,
+                    .@"type" = null,
                 } });
             },
-
-            DW.TAG.structure_type => {
+            DW.TAG.structure_type,
+            DW.TAG.class_type,
+            DW.TAG.union_type,
+            => {
                 const attribs = try genericReadAttribs(&read_ctx, abbrev, &[_]FieldInfo{
                     .{ .attrib = DW.AT.name, .@"type" = []const u8 },
                     .{ .attrib = DW.AT.byte_size, .@"type" = usize },
@@ -501,13 +512,19 @@ fn loadAllTypes(self: *DebugUnit, debug_str: []const u8) ![]usize {
                 });
                 if (attribs.specification) |_| std.debug.panic("TODO: DW_AT_specification\n", .{});
                 if (abbrev.has_children) try container_stack.append(types.items.len);
-                try types.append(.{ .Struct = .{
+                const container = Type.Container{
                     .name = attribs.name,
                     .size = attribs.byte_size,
-                    .members = &[0]Type.StructMember{},
-                } });
+                    .members = &[0]Type.ContainerMember{},
+                };
+                switch (abbrev.tag) {
+                    DW.TAG.structure_type => try types.append(.{ .Struct = container }),
+                    DW.TAG.class_type => try types.append(.{ .Class = container }),
+                    DW.TAG.union_type => try types.append(.{ .Union = container }),
+                    else => unreachable,
+                }
             },
-            DW.TAG.member => tag_blk: {
+            DW.TAG.member => {
                 added_type = false;
 
                 const attribs = try genericReadAttribs(&read_ctx, abbrev, &[_]FieldInfo{
@@ -516,7 +533,7 @@ fn loadAllTypes(self: *DebugUnit, debug_str: []const u8) ![]usize {
                     .{ .attrib = DW.AT.data_member_location, .@"type" = usize },
                     // TODO: DW_AT_byte_size for struct members (for packed structs maybe?)
                 });
-                const member = Type.StructMember{
+                const member = Type.ContainerMember{
                     .name = attribs.name,
                     .@"type" = undefined,
                     .offset = attribs.data_member_location orelse 0,
@@ -524,18 +541,51 @@ fn loadAllTypes(self: *DebugUnit, debug_str: []const u8) ![]usize {
 
                 const ty_idx = if (container_stack.items.len > 0) blk: {
                     const idx = container_stack.items[container_stack.items.len - 1];
-                    // TODO: unions and classes
-                    if (std.meta.activeTag(types.items[idx]) != .Struct) break :tag_blk;
+                    if (types.items[idx] != .Struct and types.items[idx] != .Class and types.items[idx] != .Union)
+                        std.debug.panic("member @ 0x{x} with invalid parent container\n", .{tag_offset});
                     break :blk idx;
-                } else break :tag_blk;
-                const ty = &types.items[ty_idx].Struct;
+                } else std.debug.panic("member @ 0x{x} with no parent container\n", .{tag_offset});
+
+                const member_list_ptr = switch (types.items[ty_idx]) {
+                    .Struct => |*info| &info.members,
+                    .Class => |*info| &info.members,
+                    .Union => |*info| &info.members,
+                    else => unreachable,
+                };
+
                 try offset_fixups.append(.{
                     .idx = ty_idx,
-                    .member_idx = ty.members.len,
+                    .member_idx = member_list_ptr.len,
                     .offset = attribs.@"type" orelse
                         std.debug.panic("struct_member @ 0x{x} doesn't have a type", .{tag_offset}),
                 });
-                ty.members = try reallocAndAppend(Type.StructMember, self.allocator, ty.members, member);
+                member_list_ptr.* = try reallocAndAppend(Type.ContainerMember, self.allocator, member_list_ptr.*, member);
+            },
+            DW.TAG.ptr_to_member_type => {
+                const attribs = try genericReadAttribs(&read_ctx, abbrev, &[_]FieldInfo{
+                    .{ .attrib = DW.AT.name, .@"type" = []const u8 },
+                    .{ .attrib = DW.AT.@"type", .@"type" = usize },
+                    .{ .attrib = DW.AT.containing_type, .@"type" = usize },
+                    .{ .attrib = DW.AT.use_location, .@"type" = LocationDesc },
+                });
+                if (attribs.@"type") |offset| {
+                    try offset_fixups.append(.{
+                        .idx = type_offset_list.items.len,
+                        .offset = offset,
+                    });
+                }
+                if (attribs.containing_type) |offset| {
+                    try offset_fixups.append(.{
+                        .idx = type_offset_list.items.len,
+                        .offset = offset,
+                        .is_parent_type = true,
+                    });
+                }
+                try types.append(.{ .PtrToMember = .{
+                    .name = attribs.name,
+                    .@"type" = null,
+                    .parent_type = null,
+                } });
             },
             DW.TAG.enumeration_type => {
                 const attribs = try genericReadAttribs(&read_ctx, abbrev, &[_]FieldInfo{
@@ -550,7 +600,7 @@ fn loadAllTypes(self: *DebugUnit, debug_str: []const u8) ![]usize {
                 }
                 try types.append(.{ .Enum = .{
                     .name = attribs.name,
-                    .child_type = null,
+                    .@"type" = null,
                 } });
             },
             DW.TAG.array_type => {
@@ -566,10 +616,9 @@ fn loadAllTypes(self: *DebugUnit, debug_str: []const u8) ![]usize {
                 }
                 try types.append(.{ .Array = .{
                     .name = attribs.name,
-                    .child_type = null,
+                    .@"type" = null,
                 } });
             },
-
             else => {
                 added_type = false;
                 try read_ctx.skipTag(abbrev);
@@ -578,28 +627,50 @@ fn loadAllTypes(self: *DebugUnit, debug_str: []const u8) ![]usize {
         if (added_type) try type_offset_list.append(tag_offset);
     }
 
+    // fixup all the inter-type references before returning
     const type_offsets = type_offset_list.toOwnedSlice();
     self.types = types.toOwnedSlice();
     for (offset_fixups.items) |fixup| {
-        const type_idx = searchForOffset(fixup.offset, type_offsets) orelse
-            //std.debug.panic("fixup={{.idx={}, .offset=0x{x}}}\n", fixup);
+        const type_idx = searchForOffset(fixup.offset, type_offsets) orelse {
+            //std.debug.panic("fixup={{.idx={}, .offset=0x{x}}}\n", .{fixup.idx, fixup.offset});
+            //@debug
+            std.debug.print("ignoring fixup={{.idx={}, .offset=0x{x}}}\n", .{ fixup.idx, fixup.offset });
             continue;
+        };
         const referenced_type = &self.types[type_idx];
 
         const type_info = &self.types[fixup.idx];
-        if (fixup.member_idx) |_| std.debug.assert(std.meta.activeTag(type_info.*) == .Struct);
+        if (fixup.member_idx) |_|
+            std.debug.assert(type_info.* == .Struct or type_info.* == .Class or type_info.* == .Union);
+
         switch (type_info.*) {
-            .Base => std.debug.panic("idx={}, offset=0x{x}\n", .{ fixup.idx, fixup.offset }),
-            .Const, .Pointer, .Reference => |*info| {
+            .Base, .Unspecified => {
+                std.debug.panic("idx={}, offset=0x{x}\n", .{ fixup.idx, fixup.offset });
+            },
+            .Atomic,
+            .Const,
+            .Immutable,
+            .Packed,
+            .Pointer,
+            .Reference,
+            .Restrict,
+            .RValueRef,
+            .Shared,
+            .Volatile,
+            => |*info| {
                 info.child_type = referenced_type;
             },
-            .Typedef => |*info| info.child_type = referenced_type,
-            .Struct => |*info| {
+            .Typedef, .Enum, .Array => |*info| {
+                info.@"type" = referenced_type;
+            },
+            .Struct, .Class, .Union => |*info| {
                 const member_idx = fixup.member_idx orelse unreachable;
                 info.members[member_idx].@"type" = referenced_type;
             },
-            .Enum => |*info| info.child_type = referenced_type,
-            .Array => |*info| info.child_type = referenced_type,
+            .PtrToMember => |*info| {
+                const type_ptr = if (fixup.is_parent_type) &info.parent_type else &info.@"type";
+                type_ptr.* = referenced_type;
+            },
         }
     }
 

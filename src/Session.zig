@@ -127,7 +127,7 @@ pub fn unpause(self: *Session) !void {
     // the 0 signal argument on it, we must check that we're not erasing any other
     // SIGSTOP that might have been sent to the tracee by some other process
 
-    // note: doing a ptrace(.CONT) does produce a notification from waitpid
+    // note: doing a ptrace(.CONT) does not produce a notification from waitpid
     try ptrace(.CONT, self.pid, 0);
 
     self.status = .Running;
@@ -391,7 +391,7 @@ pub const MemMapInfo = struct {
     }
 };
 
-/// call `MemMapInfo.deinit` to cleanup resources 
+/// call `MemMapInfo.deinit` to cleanup resources
 pub fn getMemMapAtAddr(self: Session, allocator: Allocator, addr: usize) !?MemMapInfo {
     const maps = try self.getMemMaps(allocator);
     defer {

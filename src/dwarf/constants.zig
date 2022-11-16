@@ -1020,6 +1020,7 @@ pub const END = struct {
 };
 
 pub fn dwarfString(comptime T: type, value: u16) []const u8 {
+    @setEvalBranchQuota(10_000);
     inline for (@typeInfo(T).Struct.decls) |decl| {
         const field = @field(T, decl.name);
         if (@TypeOf(field) != comptime_int) continue;
@@ -1029,6 +1030,7 @@ pub fn dwarfString(comptime T: type, value: u16) []const u8 {
 }
 
 pub fn dwarfShortString(comptime T: type, value: u16) []const u8 {
+    @setEvalBranchQuota(10_000);
     inline for (@typeInfo(T).Struct.decls) |decl| {
         const field = @field(T, decl.name);
         if (@TypeOf(field) != comptime_int) continue;
@@ -1038,6 +1040,7 @@ pub fn dwarfShortString(comptime T: type, value: u16) []const u8 {
 }
 
 pub fn dwarfIsValid(comptime T: type, value: u16) bool {
+    @setEvalBranchQuota(10_000);
     inline for (@typeInfo(T).Struct.decls) |decl| {
         const field = @field(T, decl.name);
         if (@TypeOf(field) != comptime_int) continue;
