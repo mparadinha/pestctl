@@ -1330,29 +1330,46 @@ fn FuzzySearchOptions(comptime Ctx: type, comptime max_slots: usize) type {
             ui.pushParent(bg_node);
             defer ui.popParentAssert(bg_node);
 
-            const fill_x_size = [2]Size{ Size.percent(1, 1), Size.text_dim(1) };
-            ui.pushStyle(.{ .pref_size = fill_x_size });
             for (self.slots[0..self.slots_filled]) |entry, idx| {
-                const name = try entry.ctx.fmtName(allocator);
-                const extra = try entry.ctx.fmtExtra(allocator);
-
                 const button_node = ui.addNodeStringsF(.{
                     .clickable = true,
                     .draw_text = true,
                     .draw_border = true,
                     .draw_hot_effects = true,
                     .draw_active_effects = true,
-                }, "{s} {s}", .{ name, extra }, "{s}_option_button_{d}", .{ label, idx }, .{
+                }, "", .{}, "{s}_opt_btn_{d}", .{ label, idx }, .{
                     .border_color = vec4{ 0, 0, 0, 0 },
                     .cursor_type = .hand,
                     .child_layout_axis = .x,
                 });
+                button_node.pref_size = [2]Size{ Size.percent(1, 1), Size.by_children(1) };
                 ui.pushParent(button_node);
                 defer ui.popParentAssert(button_node);
 
+                const name = try entry.ctx.fmtName(allocator);
+                const extra = try entry.ctx.fmtExtra(allocator);
+
+                _ = ui.textF("{s}###{s}_opt_btn_name_{d}", .{ name, label, idx });
+                const name_node = ui.topParent().last.?;
+                const name_size = name_node.rect.size();
+                const name_color = name_node.text_color;
+                name_node.flags.draw_active_effects = true;
+                name_node.active_trans = button_node.active_trans;
+                ui.labelF("{s}", .{extra});
+                const extra_node = ui.topParent().last.?;
+                extra_node.pref_size = [2]Size{ Size.text_dim(1), Size.pixels(name_size[1], 1) };
+                extra_node.font_size = name_node.font_size * 0.8;
+                extra_node.text_color = vec4{
+                    name_color[0] * 0.75,
+                    name_color[1] * 0.75,
+                    name_color[2] * 0.75,
+                    name_color[3],
+                };
+                extra_node.flags.draw_active_effects = true;
+                extra_node.active_trans = button_node.active_trans;
+
                 if (button_node.signal.clicked) clicked_option = idx;
             }
-            _ = ui.popStyle();
 
             if (clicked_option) |idx|
                 return self.slots[idx].ctx

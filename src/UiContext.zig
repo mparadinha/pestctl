@@ -1225,18 +1225,42 @@ fn solveDownwardDependentWorkFn(self: *UiContext, node: *Node, axis: Axis) void 
     const axis_idx: usize = @enumToInt(axis);
     const is_layout_axis = (axis == node.child_layout_axis);
 
+    const child_funcs = struct {
+        pub fn sumChildrenSizes(parent: *Node, idx: usize) f32 {
+            var sum: f32 = 0;
+            var child = parent.first;
+            while (child) |child_node| : (child = child_node.next) {
+                sum += child_node.calc_size[idx];
+            }
+            return sum;
+        }
+        pub fn maxChildrenSizes(parent: *Node, idx: usize) f32 {
+            var max_so_far: f32 = 0;
+            var child = parent.first;
+            while (child) |child_node| : (child = child_node.next) {
+                const child_size = switch (child_node.pref_size[idx]) {
+                    .percent => blk: {
+                        if (@enumToInt(child_node.child_layout_axis) == idx) {
+                            break :blk sumChildrenSizes(child_node, idx);
+                        } else {
+                            break :blk sumChildrenSizes(child_node, idx);
+                        }
+                    },
+                    else => child_node.calc_size[idx],
+                };
+                max_so_far = std.math.max(max_so_far, child_size);
+            }
+            return max_so_far;
+        }
+    };
+
     switch (node.pref_size[axis_idx]) {
         .by_children => {
-            var value: f32 = 0;
-            var child = node.first;
-            while (child) |child_node| : (child = child_node.next) {
-                if (is_layout_axis) {
-                    value += child_node.calc_size[axis_idx];
-                } else {
-                    value = std.math.max(value, child_node.calc_size[axis_idx]);
-                }
+            if (is_layout_axis) {
+                node.calc_size[axis_idx] = child_funcs.sumChildrenSizes(node, axis_idx);
+            } else {
+                node.calc_size[axis_idx] = child_funcs.maxChildrenSizes(node, axis_idx);
             }
-            node.calc_size[axis_idx] = value;
         },
         else => {},
     }

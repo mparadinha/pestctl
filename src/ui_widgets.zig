@@ -61,6 +61,21 @@ pub fn labelBoxF(self: *UiContext, comptime fmt: []const u8, args: anytype) void
     self.labelBox(str);
 }
 
+pub fn text(self: *UiContext, string: []const u8) Signal {
+    const node = self.addNode(.{
+        .draw_text = true,
+    }, string, .{});
+    return node.signal;
+}
+
+pub fn textF(self: *UiContext, comptime fmt: []const u8, args: anytype) Signal {
+    const str = std.fmt.allocPrint(self.string_arena.allocator(), fmt, args) catch |e| blk: {
+        self.setErrorInfo(@errorReturnTrace(), @errorName(e));
+        break :blk "";
+    };
+    return self.text(str);
+}
+
 pub fn textBox(self: *UiContext, string: []const u8) Signal {
     const node = self.addNode(.{
         .draw_text = true,
