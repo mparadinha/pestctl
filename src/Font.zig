@@ -14,7 +14,6 @@ const Font = @This();
 allocator: Allocator,
 file_data: [:0]u8,
 
-pixel_size: f32,
 texture: gfx.Texture,
 texture_data: []u8,
 
@@ -24,10 +23,9 @@ kerning_data: KerningMap,
 packing_ctx: c.stbtt_pack_context,
 
 /// call 'deinit' when you're done with the Font
-pub fn from_ttf(allocator: Allocator, filepath: []const u8, size: f32) !Font {
+pub fn from_ttf(allocator: Allocator, filepath: []const u8) !Font {
     var self: Font = undefined;
     self.allocator = allocator;
-    self.pixel_size = size;
     self.char_data = CharMap.init(allocator);
     self.kerning_data = KerningMap.init(allocator);
 
@@ -55,7 +53,7 @@ pub fn deinit(self: *Font) void {
     self.allocator.free(self.file_data);
 }
 
-pub fn getScaledMetrics(self: Font) struct {
+pub fn getScaledMetrics(self: Font, pixel_size: f32) struct {
     ascent: f32, // how much above baseline the font reaches
     descent: f32, // how much below baseline the font reaches
     line_gap: f32, // between two lines
@@ -65,7 +63,7 @@ pub fn getScaledMetrics(self: Font) struct {
     var descent: i32 = undefined;
     var line_gap: i32 = undefined;
     c.stbtt_GetFontVMetrics(&self.font_info, &ascent, &descent, &line_gap);
-    const scale = c.stbtt_ScaleForPixelHeight(&self.font_info, self.pixel_size);
+    const scale = c.stbtt_ScaleForPixelHeight(&self.font_info, pixel_size);
     return .{
         .ascent = @intToFloat(f32, ascent) * scale,
         .descent = @intToFloat(f32, descent) * scale,
@@ -81,14 +79,14 @@ pub const Quad = extern struct {
 };
 
 /// caller owns returned memory
-pub fn buildQuads(self: *Font, allocator: Allocator, str: []const u8) ![]Quad {
-    return self.buildQuadsAt(allocator, str, vec2{ 0, 0 });
+pub fn buildQuads(self: *Font, allocator: Allocator, str: []const u8, pixel_size: f32) ![]Quad {
+    return self.buildQuadsAt(allocator, str, pixel_size, vec2{ 0, 0 });
 }
 
 /// caller owns returned memory
-pub fn buildQuadsAt(self: *Font, allocator: Allocator, str: []const u8, start_pos: vec2) ![]Quad {
+pub fn buildQuadsAt(self: *Font, allocator: Allocator, str: []const u8, pixel_size: f32, start_pos: vec2) ![]Quad {
     var quads = try std.ArrayList(Quad).initCapacity(allocator, try std.unicode.utf8CountCodepoints(str));
-    const metrics = self.getScaledMetrics();
+    const metrics = self.getScaledMetrics(pixel_size);
 
     var cursor = @as([2]f32, start_pos);
     var utf8_iter = std.unicode.Utf8View.initUnchecked(str).iterator();
@@ -101,15 +99,15 @@ pub fn buildQuadsAt(self: *Font, allocator: Allocator, str: []const u8, start_po
             continue;
         }
 
-        const quad = try self.buildQuad(codepoint, &cursor);
+        const quad = try self.buildQuad(codepoint, pixel_size, &cursor);
         quads.append(quad) catch unreachable;
     }
 
     return quads.toOwnedSlice();
 }
 
-pub fn buildQuad(self: *Font, codepoint: u21, cursor: *[2]f32) !Quad {
-    const packed_char_data = (try self.getCharData(codepoint)).packing_data;
+pub fn buildQuad(self: *Font, codepoint: u21, pixel_size: f32, cursor: *[2]f32) !Quad {
+    const packed_char_data = (try self.getCharData(codepoint, pixel_size)).packing_data;
 
     var stb_quad: c.stbtt_aligned_quad = undefined;
     c.stbtt_GetPackedQuad(
@@ -136,7 +134,7 @@ pub fn buildQuad(self: *Font, codepoint: u21, cursor: *[2]f32) !Quad {
 
 pub const Rect = struct { min: vec2, max: vec2 };
 
-pub fn textRect(self: *Font, str: []const u8) !Rect {
+pub fn textRect(self: *Font, str: []const u8, pixel_size: f32) !Rect {
     var x_advance: f32 = 0;
     var max_x: f32 = 0;
 
@@ -158,7 +156,7 @@ pub fn textRect(self: *Font, str: []const u8) !Rect {
             continue;
         }
 
-        const advance_width = (try self.getCharData(codepoint)).advance_width;
+        const advance_width = (try self.getCharData(codepoint, pixel_size)).advance_width;
         x_advance += @intToFloat(f32, advance_width);
 
         //if (next_codepoint) |n_codepoint| {
@@ -169,8 +167,8 @@ pub fn textRect(self: *Font, str: []const u8) !Rect {
 
     max_x = std.math.max(max_x, x_advance);
 
-    const metrics = self.getScaledMetrics();
-    const scale = c.stbtt_ScaleForPixelHeight(&self.font_info, self.pixel_size);
+    const metrics = self.getScaledMetrics(pixel_size);
+    const scale = c.stbtt_ScaleForPixelHeight(&self.font_info, pixel_size);
 
     return Rect{
         .min = vec2{ 0, @intToFloat(f32, newlines) * -metrics.line_advance + metrics.descent },
@@ -178,15 +176,19 @@ pub fn textRect(self: *Font, str: []const u8) !Rect {
     };
 }
 
-const CharData = struct { packing_data: c.stbtt_packedchar, advance_width: i32 };
-const CharMap = std.HashMap(u21, CharData, struct {
-    pub fn hash(self: @This(), key: u21) u64 {
+const CharKey = struct { codepoint: u21, size: f32 };
+const CharData = struct {
+    packing_data: c.stbtt_packedchar,
+    advance_width: i32,
+};
+const CharMap = std.HashMap(CharKey, CharData, struct {
+    pub fn hash(self: @This(), key: CharKey) u64 {
         _ = self;
-        return @intCast(u64, key);
+        return (@intCast(u64, key.codepoint) << 32) | @bitCast(u32, key.size);
     }
-    pub fn eql(self: @This(), key_a: u21, key_b: u21) bool {
+    pub fn eql(self: @This(), key_a: CharKey, key_b: CharKey) bool {
         _ = self;
-        return key_a == key_b;
+        return key_a.codepoint == key_b.codepoint and key_a.size == key_b.size;
     }
 }, std.hash_map.default_max_load_percentage);
 
@@ -244,8 +246,8 @@ fn increaseTextureAndRepack(self: *Font) !void {
             &self.packing_ctx,
             self.file_data.ptr,
             0,
-            self.pixel_size,
-            @intCast(i32, entry.key_ptr.*),
+            entry.key_ptr.size,
+            @intCast(i32, entry.key_ptr.codepoint),
             1,
             &entry.value_ptr.packing_data,
         );
@@ -255,15 +257,20 @@ fn increaseTextureAndRepack(self: *Font) !void {
     self.texture.updateData(self.texture_data);
 }
 
-fn getCharData(self: *Font, codepoint: u21) !CharData {
-    if (self.char_data.get(codepoint)) |value| return value;
+fn getCharData(self: *Font, codepoint: u21, pixel_size: f32) !CharData {
+    const char_key = CharKey{ .codepoint = codepoint, .size = pixel_size };
+    if (self.char_data.get(char_key)) |value| return value;
 
-    var char_data = @as(CharData, undefined);
+    var char_data = CharData{
+        .packing_data = undefined,
+        .advance_width = undefined,
+    };
+
     const pack_result = c.stbtt_PackFontRange(
         &self.packing_ctx,
         self.file_data.ptr,
         0,
-        self.pixel_size,
+        pixel_size,
         @intCast(i32, codepoint),
         1,
         &char_data.packing_data,
@@ -271,13 +278,13 @@ fn getCharData(self: *Font, codepoint: u21) !CharData {
     // we ran out of space in the texture
     if (pack_result == 0) {
         try self.increaseTextureAndRepack();
-        return self.getCharData(codepoint);
+        return self.getCharData(codepoint, pixel_size);
     }
 
     self.texture.updateData(self.texture_data);
 
     c.stbtt_GetCodepointHMetrics(&self.font_info, codepoint, &char_data.advance_width, null);
-    try self.char_data.put(codepoint, char_data);
+    try self.char_data.put(char_key, char_data);
 
     return char_data;
 }

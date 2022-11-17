@@ -920,7 +920,8 @@ const FileTab = struct {
                 ui.startCtxMenu(.{ .top_left = ctx_menu_top_left });
                 const ctx_menu_node = ui.topParent();
 
-                const line_size = ui.font.getScaledMetrics().line_advance;
+                const font_pixel_size = ui.topStyle().font_size;
+                const line_size = ui.font.getScaledMetrics(font_pixel_size).line_advance;
                 const mouse_offset = text_node_rect.max[1] - ctx_menu_top_left[1] - UiContext.text_vpadding;
                 const line_offset = mouse_offset - text_scroll_node.scroll_offset[1];
                 const mouse_line = @floor(line_offset / line_size);
@@ -1004,7 +1005,8 @@ fn textDisplay(
     const parent_sig = parent.signal;
     const parent_size = parent.rect.size();
 
-    const line_size = ui.font.getScaledMetrics().line_advance;
+    const font_pixel_size = ui.topStyle().font_size;
+    const line_size = ui.font.getScaledMetrics(font_pixel_size).line_advance;
 
     const x_off = &parent.scroll_offset[0];
     const y_off = &parent.scroll_offset[1];
@@ -1333,15 +1335,22 @@ fn FuzzySearchOptions(comptime Ctx: type, comptime max_slots: usize) type {
             for (self.slots[0..self.slots_filled]) |entry, idx| {
                 const name = try entry.ctx.fmtName(allocator);
                 const extra = try entry.ctx.fmtExtra(allocator);
-                const button_sig = if (extra.len != 0)
-                    ui.buttonF("{s} {s}###{s}_option_button_{d}", .{ name, extra, label, idx })
-                else
-                    ui.buttonF("{s}###{s}_option_button_{d}", .{ name, label, idx });
-                const button_node = ui.topParent().last.?;
-                button_node.flags.draw_background = false;
-                button_node.border_color = vec4{ 0, 0, 0, 0 };
 
-                if (button_sig.clicked) clicked_option = idx;
+                const button_node = ui.addNodeStringsF(.{
+                    .clickable = true,
+                    .draw_text = true,
+                    .draw_border = true,
+                    .draw_hot_effects = true,
+                    .draw_active_effects = true,
+                }, "{s} {s}", .{ name, extra }, "{s}_option_button_{d}", .{ label, idx }, .{
+                    .border_color = vec4{ 0, 0, 0, 0 },
+                    .cursor_type = .hand,
+                    .child_layout_axis = .x,
+                });
+                ui.pushParent(button_node);
+                defer ui.popParentAssert(button_node);
+
+                if (button_node.signal.clicked) clicked_option = idx;
             }
             _ = ui.popStyle();
 

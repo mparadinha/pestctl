@@ -63,8 +63,8 @@ pub fn init(allocator: Allocator, font_path: []const u8, icon_font_path: []const
             .geometry = geometry_shader_src,
             .fragment = fragment_shader_src,
         }),
-        .font = try Font.from_ttf(allocator, font_path, 18),
-        .icon_font = try Font.from_ttf(allocator, icon_font_path, 18),
+        .font = try Font.from_ttf(allocator, font_path),
+        .icon_font = try Font.from_ttf(allocator, icon_font_path),
         .string_arena = std.heap.ArenaAllocator.init(allocator),
         .node_table = NodeTable.init(allocator),
         .prng = PRNG.init(0),
@@ -147,6 +147,7 @@ pub const Node = struct {
     child_layout_axis: Axis,
     cursor_type: window.CursorType,
     font_type: FontType,
+    font_size: f32,
     text_align: TextAlign,
 
     // per-frame sizing information
@@ -195,6 +196,7 @@ pub const Style = struct {
     child_layout_axis: Axis = .y,
     cursor_type: window.CursorType = .arrow,
     font_type: FontType = .text,
+    font_size: f32 = 18,
     text_align: TextAlign = .left,
 };
 
@@ -476,7 +478,7 @@ pub fn addNodeRawStrings(self: *UiContext, flags: Flags, display_string_in: []co
     const font_rect = try ((switch (node.font_type) {
         .text => &self.font,
         .icon => &self.icon_font,
-    }).textRect(display_string));
+    }).textRect(display_string, node.font_size));
     node.text_rect = .{ .min = font_rect.min, .max = font_rect.max };
 
     if (self.auto_pop_style) {
@@ -907,12 +909,12 @@ fn addShaderInputsForNode(self: *UiContext, shader_inputs: *std.ArrayList(Shader
 
         var text_pos = self.textPosFromNode(node);
         if (node.flags.draw_active_effects) {
-            text_pos[1] -= 0.1 * font.pixel_size * node.active_trans;
+            text_pos[1] -= 0.1 * node.font_size * node.active_trans;
         }
 
         const display_text = node.display_string;
 
-        const quads = try font.buildQuads(self.allocator, display_text);
+        const quads = try font.buildQuads(self.allocator, display_text, node.font_size);
         defer self.allocator.free(quads);
         for (quads) |quad| {
             var quad_rect = Rect{ .min = quad.points[0].pos, .max = quad.points[2].pos };

@@ -383,10 +383,11 @@ pub fn textInputRaw(self: *UiContext, hash_string: []const u8, buffer: []u8, buf
         .floating_y = true,
     }, "", .{});
     cursor_node.bg_color = vec4{ 0, 0, 0, 1 };
-    const cursor_height = self.font.getScaledMetrics().line_advance - UiContext.text_vpadding;
+    const font_pixel_size = self.topStyle().font_size;
+    const cursor_height = self.font.getScaledMetrics(font_pixel_size).line_advance - UiContext.text_vpadding;
     cursor_node.pref_size = [2]Size{ Size.pixels(1, 1), Size.pixels(cursor_height, 1) };
     const text_before_cursor = buffer[0..widget_node.cursor];
-    const partial_text_rect = try self.font.textRect(text_before_cursor);
+    const partial_text_rect = try self.font.textRect(text_before_cursor, font_pixel_size);
     cursor_node.rel_pos = text_node.rel_pos + vec2{ partial_text_rect.max[0], 0 } + UiContext.text_padd;
 
     // scroll text if it doesn't fit
@@ -409,7 +410,7 @@ pub fn textInputRaw(self: *UiContext, hash_string: []const u8, buffer: []u8, buf
     }, "", .{});
     selection_node.bg_color = vec4{ 0, 0, 1, 0.25 };
     const text_before_mark = buffer[0..widget_node.mark];
-    const partial_text_rect_mark = try self.font.textRect(text_before_mark);
+    const partial_text_rect_mark = try self.font.textRect(text_before_mark, font_pixel_size);
     const selection_size = abs(partial_text_rect_mark.max[0] - partial_text_rect.max[0]);
     selection_node.pref_size = [2]Size{ Size.pixels(selection_size, 1), cursor_node.pref_size[1] };
     selection_node.rel_pos = vec2{
@@ -445,7 +446,7 @@ pub fn textInputRaw(self: *UiContext, hash_string: []const u8, buffer: []u8, buf
         while (idx < buf_len.*) {
             const codepoint_len = try std.unicode.utf8ByteSequenceLength(display_str[idx]);
             const partial_text_buf = display_str[0 .. idx + codepoint_len];
-            const partial_rect = try self.font.textRect(partial_text_buf);
+            const partial_rect = try self.font.textRect(partial_text_buf, font_pixel_size);
             if (partial_rect.max[0] + UiContext.text_hpadding > sig.mouse_pos[0]) break;
             idx += codepoint_len;
         }
