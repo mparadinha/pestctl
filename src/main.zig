@@ -121,6 +121,18 @@ pub fn main() !void {
 
     var session_opt = if (cmdline_args.exec_path) |path| try Session.init(allocator, path) else null;
     defer if (session_opt) |*session| session.deinit();
+    var totals = [3]usize{ 0, 0, 0 };
+    for (session_opt.?.elf.dwarf.units) |unit, unit_idx| {
+        std.debug.print("debug unit #{} has: {} variables, {} types, {} functions\n", .{
+            unit_idx, unit.variables.len, unit.types.len, unit.functions.len,
+        });
+        totals[0] += unit.variables.len;
+        totals[1] += unit.types.len;
+        totals[2] += unit.functions.len;
+    }
+    std.debug.print("totals: {} variables, {} types, {} functions\n", .{
+        totals[0], totals[1], totals[2],
+    });
 
     var last_time = @floatCast(f32, c.glfwGetTime());
 
@@ -128,6 +140,7 @@ pub fn main() !void {
     var num_buf = try std.BoundedArray(u8, 0x1000).init(0);
     var file_buf = try std.BoundedArray(u8, 0x1000).init(0);
     var var_buf = try std.BoundedArray(u8, 0x1000).init(0);
+    var func_buf = try std.BoundedArray(u8, 0x1000).init(0);
     // @debug
     try num_buf.appendSlice("106");
     try file_buf.appendSlice("main.zig");
@@ -214,63 +227,55 @@ pub fn main() !void {
                 }
                 if (text_input_sig.focused and src_file_buf.len > 0) {
                     const text_input_node = ui.topParent().last.?;
-                    ui.startCtxMenu(.{ .top_left = text_input_node.rect.min });
-                    {
-                        const children_size = [2]Size{ Size.by_children(1), Size.by_children(1) };
-                        const bg_color = vec4{ 0, 0, 0, 0.85 };
-                        const tooltip_bg = ui.addNode(.{ .no_id = true, .draw_background = true }, "", .{
-                            .bg_color = bg_color,
-                            .pref_size = children_size,
-                        });
-                        ui.pushParent(tooltip_bg);
-                        defer ui.popParentAssert(tooltip_bg);
+                    const input = src_file_buf.slice();
+                    //const input_path = try std.fs.path.join(frame_arena.allocator(), &.{ cwd, input });
+                    // TODO: don't crash if user writes "tmp/dir////"
+                    const inner_dir = if (std.mem.lastIndexOfScalar(u8, input, '/')) |idx| blk: {
+                        break :blk input[0 .. idx + 1];
+                    } else "";
+                    const full_dir_path = try std.fs.path.join(frame_arena.allocator(), &.{ cwd, inner_dir });
 
-                        const input = src_file_buf.slice();
-                        // TODO: don't crash if user writes "tmp/dir////"
-                        const inner_dir = if (std.mem.lastIndexOfScalar(u8, input, '/')) |idx| blk: {
-                            break :blk input[0 .. idx + 1];
-                        } else "";
-
-                        var tmp_arena = std.heap.ArenaAllocator.init(allocator);
-                        defer tmp_arena.deinit();
-                        var arena_alloc = tmp_arena.allocator();
-
-                        const input_path = try std.fs.path.join(arena_alloc, &.{ cwd, input });
-                        const full_dir_path = try std.fs.path.join(arena_alloc, &.{ cwd, inner_dir });
-
-                        const FileEntry = struct { name: []const u8, path: []const u8, kind: std.fs.File.Kind };
-                        const ScoreCtx = struct {
-                            target: []const u8,
-                            pub fn score(ctx: @This(), file: FileEntry) f32 {
-                                return strCmpScore(ctx.target, file.path);
-                            }
-                        };
-                        var scored_files = ScoredList(FileEntry, 20, ScoreCtx).init(.{ .target = input_path });
-
-                        var dir = try std.fs.openDirAbsolute(full_dir_path, .{ .iterate = true });
-                        var dir_iter = dir.iterate();
-                        while (try dir_iter.next()) |entry| {
-                            scored_files.addEntry(.{
-                                .name = try arena_alloc.dupe(u8, entry.name),
-                                .path = try std.fs.path.join(arena_alloc, &.{ cwd, inner_dir, entry.name }),
-                                .kind = entry.kind,
-                            });
-                        }
-
-                        ui.pushStyle(.{ .pref_size = fill_x_size, .border_color = math.zeroes(vec4) });
-                        for (scored_files.slice()) |entry| {
-                            const button_sig = if (entry.kind == .Directory)
-                                ui.buttonF("{s}{s}/", .{ inner_dir, entry.name })
+                    const FileCtx = struct {
+                        name: []const u8,
+                        inner_dir: []const u8,
+                        path: []const u8,
+                        kind: std.fs.File.Kind,
+                        pub fn fmtName(self: @This(), fmt_allocator: Allocator) ![]const u8 {
+                            return if (self.kind == .Directory)
+                                try std.fmt.allocPrint(fmt_allocator, "{s}{s}/", .{ self.inner_dir, self.name })
                             else
-                                ui.buttonF("{s}{s}", .{ inner_dir, entry.name });
-                            ui.topParent().last.?.flags.draw_background = false;
-                            if (button_sig.clicked) {
-                                std.debug.print("TODO: switch input buffer to {s}\n", .{entry.name});
-                            }
+                                try std.fmt.allocPrint(fmt_allocator, "{s}{s}", .{ self.inner_dir, self.name });
                         }
-                        _ = ui.popStyle();
+                        pub fn fmtExtra(self: @This(), fmt_allocator: Allocator) ![]const u8 {
+                            _ = self;
+                            _ = fmt_allocator;
+                            return "";
+                        }
+                    };
+                    var file_fuzzy_search = FuzzySearchOptions(FileCtx, 20).init(input);
+                    defer file_fuzzy_search.deinit();
+
+                    var dir = try std.fs.openDirAbsolute(full_dir_path, .{ .iterate = true });
+                    var dir_iter = dir.iterate();
+                    while (try dir_iter.next()) |entry| {
+                        const file_ctx = FileCtx{
+                            .name = try frame_arena.allocator().dupe(u8, entry.name),
+                            .inner_dir = inner_dir,
+                            .path = try std.fs.path.join(frame_arena.allocator(), &.{ cwd, inner_dir, entry.name }),
+                            .kind = entry.kind,
+                        };
+                        file_fuzzy_search.addEntry(file_ctx.path, file_ctx);
                     }
-                    ui.endCtxMenu();
+
+                    const choice = try file_fuzzy_search.present(
+                        &frame_arena,
+                        &ui,
+                        "filepath_chooser",
+                        .{ .top_left = text_input_node.rect.min },
+                    );
+                    if (choice) |file_ctx| {
+                        std.debug.print("TODO: switch input buffer to {s}\n", .{file_ctx.name});
+                    }
                 }
             }
             ui.popParentAssert(open_file_parent);
@@ -479,54 +484,48 @@ pub fn main() !void {
                 //}
                 if (text_input_sig.focused and var_buf.len > 0) {
                     const text_input_node = ui.topParent().last.?;
-                    ui.startCtxMenu(.{ .top_left = text_input_node.rect.min });
-                    {
-                        const children_size = [2]Size{ Size.by_children(1), Size.by_children(1) };
-                        const bg_color = vec4{ 0, 0, 0, 0.85 };
-                        const tooltip_bg = ui.addNode(.{ .no_id = true, .draw_background = true }, "", .{
-                            .bg_color = bg_color,
-                            .pref_size = children_size,
-                        });
-                        ui.pushParent(tooltip_bg);
-                        defer ui.popParentAssert(tooltip_bg);
 
-                        const search_str = var_buf.slice();
+                    const VarCtx = struct {
+                        variable: Dwarf.Variable,
+                        line_progs: []const Dwarf.LineProg,
+                        unit_idx: usize,
+                        pub fn fmtName(self: @This(), fmt_allocator: Allocator) ![]const u8 {
+                            _ = fmt_allocator;
+                            return self.variable.name orelse unreachable;
+                        }
+                        pub fn fmtExtra(self: @This(), fmt_allocator: Allocator) ![]const u8 {
+                            if (self.variable.decl_coords) |coords| {
+                                const src = coords.toSrcLoc(self.line_progs[self.unit_idx]);
+                                return try std.fmt.allocPrint(fmt_allocator, "({s}:{})", .{
+                                    src.file, src.line,
+                                });
+                            } else return "";
+                        }
+                    };
+                    var var_fuzzy_search = FuzzySearchOptions(VarCtx, 10).init(var_buf.slice());
+                    defer var_fuzzy_search.deinit();
 
-                        const score_var_zone = tracy.ZoneN(@src(), "score_var");
-                        const VarEntry = struct { variable: Dwarf.Variable, comp_unit_idx: usize };
-                        const ScoreCtx = struct {
-                            target: []const u8,
-                            pub fn score(ctx: @This(), entry: VarEntry) f32 {
-                                return if (entry.variable.name) |name| strCmpScore(ctx.target, name) else 0;
-                            }
-                        };
-                        var scored_vars = ScoredList(VarEntry, 10, ScoreCtx).init(.{ .target = search_str });
-                        for (session.elf.dwarf.units) |comp_unit, comp_unit_idx| {
-                            for (comp_unit.variables) |variable| {
-                                scored_vars.addEntry(.{ .variable = variable, .comp_unit_idx = comp_unit_idx });
+                    for (session.elf.dwarf.units) |unit, unit_idx| {
+                        for (unit.variables) |variable| {
+                            if (variable.name) |name| {
+                                var_fuzzy_search.addEntry(name, .{
+                                    .variable = variable,
+                                    .line_progs = session.elf.dwarf.line_progs,
+                                    .unit_idx = unit_idx,
+                                });
                             }
                         }
-                        score_var_zone.End();
-
-                        ui.pushStyle(.{ .pref_size = fill_x_size });
-                        for (scored_vars.slice()) |var_ctx, idx| {
-                            const variable = var_ctx.variable;
-                            const unit_idx = var_ctx.comp_unit_idx;
-                            const line_prog = session.elf.dwarf.line_progs[unit_idx];
-                            const var_button_sig = if (variable.decl_coords) |decl_coords| blk: {
-                                const src = decl_coords.toSrcLoc(line_prog);
-                                break :blk ui.buttonF("{s} ({s}:{})###var_button_{}", .{ variable.name, src.file, src.line, idx });
-                            } else ui.buttonF("{s}###var_button_{}", .{ variable.name, idx });
-                            const var_button_node = ui.topParent().last.?;
-                            var_button_node.flags.draw_background = false;
-                            var_button_node.border_color = vec4{ 0, 0, 0, 0 };
-                            if (var_button_sig.clicked) {
-                                try session_cmds.append(.{ .add_watched_variable = variable });
-                            }
-                        }
-                        _ = ui.popStyle();
                     }
-                    ui.endCtxMenu();
+
+                    const choice = try var_fuzzy_search.present(
+                        &frame_arena,
+                        &ui,
+                        "var_table_chooser",
+                        .{ .top_left = text_input_node.rect.min },
+                    );
+                    if (choice) |var_ctx| {
+                        try session_cmds.append(.{ .add_watched_variable = var_ctx.variable });
+                    }
                 }
             }
             ui.popParentAssert(add_var_parent);
@@ -583,6 +582,24 @@ pub fn main() !void {
                 }
             }
             ui.popParentAssert(set_break_parent);
+
+            const set_break_func_parent = ui.pushLayoutParent("set_break_func_parent", [2]Size{ Size.percent(1, 1), Size.by_children(1) }, .x);
+            {
+                const button_sig = ui.button("Set Breakpoint###set_func_breakpoint");
+
+                const func_input_size = [2]Size{ Size.percent(1, 0), Size.text_dim(1) };
+                ui.labelBox("Function");
+                ui.pushStyle(.{ .bg_color = vec4{ 0.75, 0.75, 0.75, 1 } });
+                ui.pushStyle(.{ .pref_size = func_input_size });
+                const func_sig = ui.textInput("src_funcname", &func_buf.buffer, &func_buf.len);
+                _ = ui.popStyle();
+                _ = ui.popStyle();
+
+                if (button_sig.clicked or func_sig.enter_pressed) {
+                    std.debug.print("TODO: set break at function '{s}'\n", .{func_buf.slice()});
+                }
+            }
+            ui.popParentAssert(set_break_func_parent);
         }
         ui.popParentAssert(right_side_parent);
 
@@ -593,10 +610,10 @@ pub fn main() !void {
         gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
         try ui.render();
 
+        // special debug commands
         if (window.event_queue.searchAndRemove(.KeyUp, .{ .key = c.GLFW_KEY_D, .mods = .{ .shift = true } })) {
             try session_cmds.append(.{ .dump_ui_tree = "ui_main_tree.dot" });
         }
-
         if (window.event_queue.searchAndRemove(.KeyUp, .{
             .key = c.GLFW_KEY_ESCAPE,
             .mods = .{ .shift = true, .control = true },
@@ -1213,88 +1230,127 @@ const CallStackViewer = struct {
     }
 };
 
-fn strCmpScore(str_a: []const u8, str_b: []const u8) f32 {
-    var score = @as(f32, 0);
+/// higher score means better match
+fn fuzzyScore(pattern: []const u8, test_str: []const u8) f32 {
+    var score: f32 = 0;
 
-    var max_idx = std.math.min(str_a.len, str_b.len);
-    var idx = @as(usize, 0);
-    while (idx < max_idx) : (idx += 1) {
-        if (str_a[idx] == str_b[idx]) score += 1;
+    for (pattern) |pat_char, pat_idx| {
+        for (test_str) |test_char, test_idx| {
+            var char_score: f32 = 0;
+            if (std.ascii.toLower(pat_char) == std.ascii.toLower(test_char)) {
+                char_score += 0.5;
+                if (pat_char == test_char) char_score += 1;
+                if (test_idx == pat_idx) char_score *= 5;
+            }
+            score += char_score;
+        }
     }
+
+    // TODO: make matches at the beginning score better then at the end
+
+    const substr_matches = std.mem.count(u8, test_str, pattern);
+    score *= @intToFloat(f32, @as(u64, 1) << @intCast(u6, substr_matches * 2));
 
     return score;
 }
 
-// `ScoreCtx` must have a function called `score` which takes in a `T` and returns `f32`
-pub fn ScoredList(
-    comptime T: type,
-    comptime slots: usize,
-    comptime ScoreCtx: type,
-) type {
-    std.debug.assert(slots > 0);
-    std.debug.assert(@hasDecl(ScoreCtx, "score"));
-    std.debug.assert(@TypeOf(ScoreCtx.score) == fn (ScoreCtx, T) f32);
+fn FuzzySearchOptions(comptime Ctx: type, comptime max_slots: usize) type {
     return struct {
-        buffer: [slots]T,
-        len: usize,
-        scores: [slots]f32,
-        score_ctx: ScoreCtx,
+        slots: [max_slots]Entry,
+        slots_filled: usize,
+        target: []const u8,
 
-        const Self = @This();
+        pub const Entry = struct {
+            str: []const u8,
+            score: f32,
+            ctx: Ctx,
+        };
 
-        pub fn init(ctx: ScoreCtx) Self {
-            return .{ .buffer = undefined, .len = 0, .scores = undefined, .score_ctx = ctx };
+        pub fn init(target: []const u8) @This() {
+            return .{
+                .slots = undefined,
+                .slots_filled = 0,
+                .target = target,
+            };
         }
 
-        pub fn addEntry(self: *Self, entry: T) void {
-            const score = self.score_ctx.score(entry);
-            if (self.len < slots) {
-                self.buffer[self.len] = entry;
-                self.scores[self.len] = score;
-                self.len += 1;
+        pub fn deinit(self: @This()) void {
+            _ = self;
+        }
+
+        pub fn addEntry(self: *@This(), test_str: []const u8, ctx: Ctx) void {
+            const score = fuzzyScore(self.target, test_str);
+            const new_entry = Entry{ .str = test_str, .score = score, .ctx = ctx };
+            if (self.slots_filled < self.slots.len) {
+                self.slots[self.slots_filled] = new_entry;
+                self.slots_filled += 1;
+                return;
             } else {
-                const min_idx = indexOfMin(f32, &self.scores);
-                self.buffer[min_idx] = entry;
-                self.scores[min_idx] = score;
+                var worst_idx: usize = 0;
+                for (self.slots) |entry, idx| {
+                    if (entry.score < self.slots[worst_idx].score) worst_idx = idx;
+                }
+                self.slots[worst_idx] = new_entry;
             }
         }
 
-        pub fn slice(self: *Self) []T {
-            self.sort();
-            return self.buffer[0..self.len];
-        }
+        pub fn present(
+            self: *@This(),
+            arena: *std.heap.ArenaAllocator,
+            ui: *UiContext,
+            label: []const u8,
+            placement: UiContext.Placement,
+        ) !?Ctx {
+            var allocator = arena.allocator();
+            const filled_slots = self.slots[0..self.slots_filled];
+            var clicked_option: ?usize = null;
 
-        /// might returns less than `n` entries
-        pub fn topEntries(self: *Self, n: usize) []T {
-            return self.slice()[0..std.math.min(n, self.len)];
-        }
-
-        /// sort in decreasing order (using insertion sort)
-        fn sort(self: *Self) void {
+            // sort the entries before displaying (using insertion sort)
             var sort_idx: usize = 1;
-            while (sort_idx < self.len) : (sort_idx += 1) {
+            while (sort_idx < filled_slots.len) : (sort_idx += 1) {
                 var cmp_idx: usize = sort_idx;
                 cmp_loop: while (cmp_idx > 0) : (cmp_idx -= 1) {
-                    if (self.scores[cmp_idx] > self.scores[cmp_idx - 1]) {
-                        std.mem.swap(T, &self.buffer[cmp_idx], &self.buffer[cmp_idx - 1]);
-                        std.mem.swap(f32, &self.scores[cmp_idx], &self.scores[cmp_idx - 1]);
+                    if (filled_slots[cmp_idx].score > filled_slots[cmp_idx - 1].score) {
+                        std.mem.swap(Entry, &filled_slots[cmp_idx], &filled_slots[cmp_idx - 1]);
                     } else break :cmp_loop;
                 }
             }
+
+            ui.startCtxMenu(placement); // TODO: use the new ui "windows"
+            defer ui.endCtxMenu();
+
+            const children_size = [2]Size{ Size.by_children(1), Size.by_children(1) };
+            const bg_color = vec4{ 0, 0, 0, 0.85 };
+            const bg_node = ui.addNode(.{ .no_id = true, .draw_background = true }, "", .{
+                .bg_color = bg_color,
+                .pref_size = children_size,
+            });
+            ui.pushParent(bg_node);
+            defer ui.popParentAssert(bg_node);
+
+            const fill_x_size = [2]Size{ Size.percent(1, 1), Size.text_dim(1) };
+            ui.pushStyle(.{ .pref_size = fill_x_size });
+            for (self.slots[0..self.slots_filled]) |entry, idx| {
+                const name = try entry.ctx.fmtName(allocator);
+                const extra = try entry.ctx.fmtExtra(allocator);
+                const button_sig = if (extra.len != 0)
+                    ui.buttonF("{s} {s}###{s}_option_button_{d}", .{ name, extra, label, idx })
+                else
+                    ui.buttonF("{s}###{s}_option_button_{d}", .{ name, label, idx });
+                const button_node = ui.topParent().last.?;
+                button_node.flags.draw_background = false;
+                button_node.border_color = vec4{ 0, 0, 0, 0 };
+
+                if (button_sig.clicked) clicked_option = idx;
+            }
+            _ = ui.popStyle();
+
+            if (clicked_option) |idx|
+                return self.slots[idx].ctx
+            else
+                return null;
         }
     };
-}
-
-fn indexOfMin(comptime T: type, slice: []const T) usize {
-    var min = slice[0];
-    var min_idx: usize = 0;
-    for (slice) |value, idx| {
-        if (value < min) {
-            min = value;
-            min_idx = idx;
-        }
-    }
-    return min_idx;
 }
 
 pub fn printStackTrace(ret_addr: usize) void {
