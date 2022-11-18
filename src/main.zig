@@ -119,6 +119,14 @@ pub fn main() !void {
     var ui = try UiContext.init(allocator, "VictorMono-Regular.ttf", "icons.ttf", &window);
     defer ui.deinit();
 
+    // this second UiContext is meant to use for debugging the normal ui (but who debugs this one? 🤔)
+    var dbg_ui = try UiContext.init(allocator, "VictorMono-Regular.ttf", "icons.ttf", &window);
+    defer dbg_ui.deinit();
+    var dbg_ui_active = false;
+    var dbg_ui_node_list_idx: usize = 0;
+    var dbg_ui_frozen_mouse_pos: ?vec2 = null;
+    var dbg_ui_node_info_top_left: ?vec2 = null;
+
     var session_opt = if (cmdline_args.exec_path) |path| try Session.init(allocator, path) else null;
     defer if (session_opt) |*session| session.deinit();
     var totals = [3]usize{ 0, 0, 0 };
@@ -611,7 +619,10 @@ pub fn main() !void {
         try ui.render();
 
         // special debug commands
-        if (window.event_queue.searchAndRemove(.KeyUp, .{ .key = c.GLFW_KEY_D, .mods = .{ .shift = true } })) {
+        if (window.event_queue.searchAndRemove(.KeyUp, .{
+            .key = c.GLFW_KEY_T,
+            .mods = .{ .shift = true, .control = true },
+        })) {
             try session_cmds.append(.{ .dump_ui_tree = "ui_main_tree.dot" });
         }
         if (window.event_queue.searchAndRemove(.KeyUp, .{
@@ -628,6 +639,146 @@ pub fn main() !void {
             if (ui.active_node_key) |key| std.debug.print("active node: {s}\n", .{ui.node_table.getFromHash(key).?.hash_string});
             if (ui.focused_node_key) |key| std.debug.print("focused node: {s}\n", .{ui.node_table.getFromHash(key).?.hash_string});
             try session_cmds.append(.{ .dump_ui_tree = "ui_main_tree.dot" });
+        }
+        if (window.event_queue.searchAndRemove(.KeyUp, .{
+            .key = c.GLFW_KEY_D,
+            .mods = .{ .shift = true, .control = true },
+        })) dbg_ui_active = !dbg_ui_active;
+        if (dbg_ui_active) {
+            try dbg_ui.startBuild(width, height, mouse_pos, &window.event_queue);
+
+            var select_mouse_pos = if (dbg_ui_frozen_mouse_pos) |pos| pos else mouse_pos;
+            var selected_nodes = std.ArrayList(*UiContext.Node).init(allocator);
+            defer selected_nodes.deinit();
+            var node_iter = ui.node_table.valueIterator();
+            while (node_iter.next()) |node| {
+                if (node.rect.contains(select_mouse_pos)) try selected_nodes.append(node);
+            }
+
+            if (window.event_queue.fetchAndRemove(.MouseScroll, null)) |scroll_ev| {
+                const scroll = -@floatToInt(isize, scroll_ev.y);
+                if (scroll > 0) dbg_ui_node_list_idx += @intCast(usize, scroll);
+                if (scroll < 0) {
+                    if (-scroll > dbg_ui_node_list_idx) {
+                        dbg_ui_node_list_idx = 0;
+                    } else {
+                        dbg_ui_node_list_idx -= @intCast(usize, -scroll);
+                    }
+                }
+            }
+            dbg_ui_node_list_idx = std.math.clamp(dbg_ui_node_list_idx, 0, selected_nodes.items.len - 1);
+
+            if (window.event_queue.find(.MouseUp, c.GLFW_MOUSE_BUTTON_MIDDLE)) |ev_idx| blk: {
+                const mods = window.get_modifiers();
+                if (!(mods.shift and mods.control)) break :blk;
+                if (dbg_ui_node_info_top_left != null) {
+                    dbg_ui_node_info_top_left = null;
+                } else {
+                    dbg_ui_node_info_top_left = mouse_pos;
+                }
+                _ = window.event_queue.removeAt(ev_idx);
+            }
+
+            if (window.event_queue.searchAndRemove(.KeyUp, .{
+                .key = c.GLFW_KEY_F,
+                .mods = .{ .shift = true, .control = true },
+            })) {
+                if (dbg_ui_frozen_mouse_pos != null) {
+                    std.debug.print("dbg_ui: unfreezing mouse_pos\n", .{});
+                    dbg_ui_frozen_mouse_pos = null;
+                } else {
+                    std.debug.print("dbg_ui: freezing mouse_pos @ {d}\n", .{mouse_pos});
+                    dbg_ui_frozen_mouse_pos = mouse_pos;
+                }
+            }
+
+            for (selected_nodes.items) |node, idx| {
+                const box_node = dbg_ui.addNode(.{
+                    .no_id = true,
+                    .draw_border = true,
+                    .floating_x = true,
+                    .floating_y = true,
+                }, "", .{});
+                if (idx == dbg_ui_node_list_idx) {
+                    box_node.border_color = vec4{ 0, 1, 0, 0.75 };
+                } else {
+                    box_node.border_color = vec4{ 1, 0, 0, 0.75 };
+                }
+                const size = node.rect.size();
+                box_node.rel_pos = node.rect.min;
+                box_node.pref_size = [2]Size{ Size.pixels(size[0], 1), Size.pixels(size[1], 1) };
+            }
+
+            if (dbg_ui_node_info_top_left) |top_left| {
+                dbg_ui.startCtxMenu(.{ .top_left = top_left });
+                defer dbg_ui.endCtxMenu();
+                dbg_ui.ctx_menu_root_node.?.child_layout_axis = .x;
+                {
+                    const left_bg_node = dbg_ui.addNode(.{
+                        .no_id = true,
+                        .draw_background = true,
+                    }, "", .{ .child_layout_axis = .y });
+                    left_bg_node.bg_color = vec4{ 0, 0, 0, 1 };
+                    left_bg_node.pref_size = [2]Size{ Size.by_children(1), Size.by_children(1) };
+                    dbg_ui.pushParent(left_bg_node);
+                    defer dbg_ui.popParentAssert(left_bg_node);
+
+                    for (selected_nodes.items) |node, idx| {
+                        if (idx == dbg_ui_node_list_idx) {
+                            _ = dbg_ui.textBoxF("hash=\"{s}\"", .{node.hash_string});
+                        } else {
+                            dbg_ui.labelF("hash=\"{s}\"", .{node.hash_string});
+                        }
+                    }
+                }
+                {
+                    const right_bg_node = dbg_ui.addNode(.{
+                        .no_id = true,
+                        .draw_background = true,
+                    }, "", .{ .child_layout_axis = .y });
+                    right_bg_node.bg_color = vec4{ 0, 0, 0, 1 };
+                    right_bg_node.pref_size = [2]Size{ Size.by_children(1), Size.by_children(1) };
+                    dbg_ui.pushParent(right_bg_node);
+                    defer dbg_ui.popParentAssert(right_bg_node);
+
+                    const node = selected_nodes.items[dbg_ui_node_list_idx];
+                    if (node.flags.draw_text) {
+                        if (node.display_string.len > 20) {
+                            dbg_ui.labelF("display_string=\"{s}...\"", .{node.display_string[0..17]});
+                        } else {
+                            dbg_ui.labelF("display_string=\"{s}\"", .{node.display_string});
+                        }
+                    }
+                    if (node.flags.draw_background) dbg_ui.labelF("bg_color={d}", .{node.bg_color});
+                    if (node.flags.draw_border) dbg_ui.labelF("border_color={d}", .{node.border_color});
+                    if (node.flags.draw_text) dbg_ui.labelF("text_color={d}", .{node.text_color});
+                    dbg_ui.labelF("corner_roundness={d}\n", .{node.corner_roundness});
+                    dbg_ui.labelF("border_thickness={d}\n", .{node.border_thickness});
+                    dbg_ui.labelF("pref_size={any}\n", .{node.pref_size});
+                    dbg_ui.labelF("child_layout_axis={}\n", .{node.child_layout_axis});
+                    dbg_ui.labelF("cursor_type={}\n", .{node.cursor_type});
+                    dbg_ui.labelF("font_type={}\n", .{node.font_type});
+                    dbg_ui.labelF("font_size={d}\n", .{node.font_size});
+                    dbg_ui.labelF("text_align={}\n", .{node.text_align});
+                    dbg_ui.labelF("text_rect={}\n", .{node.text_rect});
+                    dbg_ui.labelF("calc_size={d}\n", .{node.calc_size});
+                    dbg_ui.labelF("calc_rel_pos={d}\n", .{node.calc_rel_pos});
+                    dbg_ui.labelF("rect={}\n", .{node.rect});
+                    dbg_ui.labelF("clip_rect={d}\n", .{node.clip_rect});
+                    dbg_ui.labelF("hot_trans={d}\n", .{node.hot_trans});
+                    dbg_ui.labelF("active_trans={d}\n", .{node.active_trans});
+                    dbg_ui.labelF("rel_pos={d}\n", .{node.rel_pos});
+                    dbg_ui.labelF("rel_pos_placement={}\n", .{node.rel_pos_placement});
+                    dbg_ui.labelF("rel_pos_placement_parent={}\n", .{node.rel_pos_placement_parent});
+                    dbg_ui.labelF("cursor={}\n", .{node.cursor});
+                    dbg_ui.labelF("mark={}\n", .{node.mark});
+                    dbg_ui.labelF("scroll_offset={d}\n", .{node.scroll_offset});
+                    dbg_ui.labelF("toggle={}\n", .{node.toggle});
+                }
+            }
+
+            dbg_ui.endBuild(dt);
+            try dbg_ui.render();
         }
 
         const cur_src_loc = if (session_opt) |s| s.src_loc else null;

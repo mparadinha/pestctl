@@ -179,7 +179,7 @@ pub const Node = struct {
     last_click_time: f32, // used for double click checks
     last_double_click_time: f32, // used for triple click checks
     scroll_offset: vec2,
-    toogle: bool,
+    toggle: bool,
 };
 
 pub const Axis = enum { x, y };
@@ -1724,7 +1724,7 @@ pub const PRNG = struct {
 
     pub fn next(self: *PRNG) u64 {
         // 3 random primes I generated online
-        self.state = ((self.state * 2676693499) + 5223158351) % 4150081079;
+        self.state = ((self.state *% 2676693499) +% 5223158351) ^ 4150081079;
         return self.state;
     }
 };
