@@ -644,9 +644,7 @@ pub fn main() !void {
             .key = c.GLFW_KEY_D,
             .mods = .{ .shift = true, .control = true },
         })) dbg_ui_active = !dbg_ui_active;
-        if (dbg_ui_active) {
-            try dbg_ui.startBuild(width, height, mouse_pos, &window.event_queue);
-
+        if (dbg_ui_active) dbg_ui_blk: {
             var select_mouse_pos = if (dbg_ui_frozen_mouse_pos) |pos| pos else mouse_pos;
             var selected_nodes = std.ArrayList(*UiContext.Node).init(allocator);
             defer selected_nodes.deinit();
@@ -654,6 +652,7 @@ pub fn main() !void {
             while (node_iter.next()) |node| {
                 if (node.rect.contains(select_mouse_pos)) try selected_nodes.append(node);
             }
+            if (selected_nodes.items.len == 0) break :dbg_ui_blk;
 
             if (window.event_queue.fetchAndRemove(.MouseScroll, null)) |scroll_ev| {
                 const scroll = -@floatToInt(isize, scroll_ev.y);
@@ -692,22 +691,31 @@ pub fn main() !void {
                 }
             }
 
-            for (selected_nodes.items) |node, idx| {
+            try dbg_ui.startBuild(width, height, mouse_pos, &window.event_queue);
+
+            for (selected_nodes.items) |node| {
                 const box_node = dbg_ui.addNode(.{
                     .no_id = true,
                     .draw_border = true,
                     .floating_x = true,
                     .floating_y = true,
                 }, "", .{});
-                if (idx == dbg_ui_node_list_idx) {
-                    box_node.border_color = vec4{ 0, 1, 0, 0.75 };
-                } else {
-                    box_node.border_color = vec4{ 1, 0, 0, 0.75 };
-                }
+                box_node.border_color = vec4{ 1, 0, 0, 0.75 };
                 const size = node.rect.size();
                 box_node.rel_pos = node.rect.min;
                 box_node.pref_size = [2]Size{ Size.pixels(size[0], 1), Size.pixels(size[1], 1) };
             }
+            const selected_node = selected_nodes.items[dbg_ui_node_list_idx];
+            const selected_box_node = dbg_ui.addNode(.{
+                .no_id = true,
+                .draw_border = true,
+                .floating_x = true,
+                .floating_y = true,
+            }, "", .{});
+            selected_box_node.border_color = vec4{ 0, 1, 0, 0.75 };
+            const size = selected_node.rect.size();
+            selected_box_node.rel_pos = selected_node.rect.min;
+            selected_box_node.pref_size = [2]Size{ Size.pixels(size[0], 1), Size.pixels(size[1], 1) };
 
             if (dbg_ui_node_info_top_left) |top_left| {
                 dbg_ui.startCtxMenu(.{ .top_left = top_left });
@@ -723,6 +731,7 @@ pub fn main() !void {
                     dbg_ui.pushParent(left_bg_node);
                     defer dbg_ui.popParentAssert(left_bg_node);
 
+                    dbg_ui.pushStyle(.{ .pref_size = fill_x_size });
                     for (selected_nodes.items) |node, idx| {
                         if (idx == dbg_ui_node_list_idx) {
                             _ = dbg_ui.textBoxF("hash=\"{s}\"", .{node.hash_string});
@@ -730,6 +739,7 @@ pub fn main() !void {
                             dbg_ui.labelF("hash=\"{s}\"", .{node.hash_string});
                         }
                     }
+                    _ = dbg_ui.popStyle();
                 }
                 {
                     const right_bg_node = dbg_ui.addNode(.{
@@ -749,6 +759,10 @@ pub fn main() !void {
                             dbg_ui.labelF("display_string=\"{s}\"", .{node.display_string});
                         }
                     }
+                    inline for (@typeInfo(UiContext.Flags).Struct.fields) |field| {
+                        const flag = @field(node.flags, field.name);
+                        if (flag) dbg_ui.labelF("flags.{s}={}\n", .{ field.name, flag });
+                    }
                     if (node.flags.draw_background) dbg_ui.labelF("bg_color={d}", .{node.bg_color});
                     if (node.flags.draw_border) dbg_ui.labelF("border_color={d}", .{node.border_color});
                     if (node.flags.draw_text) dbg_ui.labelF("text_color={d}", .{node.text_color});
@@ -765,11 +779,11 @@ pub fn main() !void {
                     dbg_ui.labelF("calc_rel_pos={d}\n", .{node.calc_rel_pos});
                     dbg_ui.labelF("rect={}\n", .{node.rect});
                     dbg_ui.labelF("clip_rect={d}\n", .{node.clip_rect});
-                    dbg_ui.labelF("hot_trans={d}\n", .{node.hot_trans});
-                    dbg_ui.labelF("active_trans={d}\n", .{node.active_trans});
+                    dbg_ui.labelF("hot_trans={d:.4}\n", .{node.hot_trans});
+                    dbg_ui.labelF("active_trans={d:.4}\n", .{node.active_trans});
                     dbg_ui.labelF("rel_pos={d}\n", .{node.rel_pos});
-                    dbg_ui.labelF("rel_pos_placement={}\n", .{node.rel_pos_placement});
-                    dbg_ui.labelF("rel_pos_placement_parent={}\n", .{node.rel_pos_placement_parent});
+                    dbg_ui.labelF("rel_pos_placement={s}\n", .{@tagName(node.rel_pos_placement)});
+                    dbg_ui.labelF("rel_pos_placement_parent={s}\n", .{@tagName(node.rel_pos_placement_parent)});
                     dbg_ui.labelF("cursor={}\n", .{node.cursor});
                     dbg_ui.labelF("mark={}\n", .{node.mark});
                     dbg_ui.labelF("scroll_offset={d}\n", .{node.scroll_offset});
@@ -1506,10 +1520,10 @@ fn FuzzySearchOptions(comptime Ctx: type, comptime max_slots: usize) type {
                 const name_color = name_node.text_color;
                 name_node.flags.draw_active_effects = true;
                 name_node.active_trans = button_node.active_trans;
+                ui.pushTmpStyle(.{ .font_size = name_node.font_size * 0.8 });
                 ui.labelF("{s}", .{extra});
                 const extra_node = ui.topParent().last.?;
                 extra_node.pref_size = [2]Size{ Size.text_dim(1), Size.pixels(name_size[1], 1) };
-                extra_node.font_size = name_node.font_size * 0.8;
                 extra_node.text_color = vec4{
                     name_color[0] * 0.75,
                     name_color[1] * 0.75,
