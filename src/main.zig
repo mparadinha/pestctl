@@ -1665,6 +1665,7 @@ fn FuzzySearchOptions(comptime Ctx: type, comptime max_slots: usize) type {
                 const is_highlight = matches: {
                     for (draw_ctx.match_pattern) |match| {
                         if (match == char) break :matches true;
+                        if (match >= 'A' and char >= 'A' and (match & 0x0f) == (char & 0x0f)) break :matches true;
                     } else break :matches false;
                 };
                 var font = if (is_highlight) &ui.font_bold else &ui.font;
