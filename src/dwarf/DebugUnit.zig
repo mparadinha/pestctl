@@ -33,6 +33,7 @@ comp_dir: []const u8,
 functions: []Function,
 variables: []Variable,
 types: []Type,
+global_vars: []usize, // indices in `variables`
 
 pub const Abbrev = struct {
     tag: u16,
@@ -264,6 +265,7 @@ pub fn deinit(self: *DebugUnit) void {
     self.allocator.free(self.functions);
     self.allocator.free(self.variables);
     self.allocator.free(self.types);
+    self.allocator.free(self.global_vars);
     self.arena.deinit();
 }
 
@@ -745,6 +747,11 @@ fn loadAllVariables(self: *DebugUnit, debug_str: []const u8) !VarFixups {
     var type_fixups = std.ArrayList(TypePtrFixup).init(self.allocator);
     var var_fn_fixups = std.ArrayList(VarPtrFixup).init(self.allocator);
     var param_fixups = std.ArrayList(VarPtrFixup).init(self.allocator);
+    var global_vars = std.ArrayList(usize).init(self.allocator);
+
+    var func_stack = std.ArrayList(u16).init(self.allocator);
+    defer func_stack.deinit();
+    var subprogram_count: usize = 0;
 
     var read_ctx = EntryReadCtx.init(
         self.allocator,
@@ -757,9 +764,6 @@ fn loadAllVariables(self: *DebugUnit, debug_str: []const u8) !VarFixups {
         debug_str,
     );
     defer read_ctx.deinit();
-    var func_stack = std.ArrayList(u16).init(self.allocator);
-    defer func_stack.deinit();
-    var subprogram_count: usize = 0;
     while (try read_ctx.nextEntry()) |entry| {
         if (std.meta.activeTag(entry) == .close_tag) {
             switch (entry.close_tag) {
@@ -798,6 +802,8 @@ fn loadAllVariables(self: *DebugUnit, debug_str: []const u8) !VarFixups {
                             std.debug.panic("0x{x}\n", .{read_ctx.last_tag_offset}),
                         .var_idx = vars.items.len,
                     });
+                } else {
+                    try global_vars.append(vars.items.len);
                 }
                 try vars.append(.{
                     .name = attribs.name,
@@ -852,6 +858,7 @@ fn loadAllVariables(self: *DebugUnit, debug_str: []const u8) !VarFixups {
     }
 
     self.variables = vars.toOwnedSlice();
+    self.global_vars = global_vars.toOwnedSlice();
     return VarFixups{
         .type_fixups = type_fixups.toOwnedSlice(),
         .var_fn_fixups = var_fn_fixups.toOwnedSlice(),

@@ -129,17 +129,18 @@ pub fn main() !void {
 
     var session_opt = if (cmdline_args.exec_path) |path| try Session.init(allocator, path) else null;
     defer if (session_opt) |*session| session.deinit();
-    var totals = [3]usize{ 0, 0, 0 };
+    var totals = [4]usize{ 0, 0, 0, 0 };
     for (session_opt.?.elf.dwarf.units) |unit, unit_idx| {
-        std.debug.print("debug unit #{} has: {} variables, {} types, {} functions\n", .{
-            unit_idx, unit.variables.len, unit.types.len, unit.functions.len,
+        std.debug.print("debug unit #{} has: {} variables ({} globals), {} types, {} functions\n", .{
+            unit_idx, unit.variables.len, unit.global_vars.len, unit.types.len, unit.functions.len,
         });
         totals[0] += unit.variables.len;
-        totals[1] += unit.types.len;
-        totals[2] += unit.functions.len;
+        totals[1] += unit.global_vars.len;
+        totals[2] += unit.types.len;
+        totals[3] += unit.functions.len;
     }
-    std.debug.print("totals: {} variables, {} types, {} functions\n", .{
-        totals[0], totals[1], totals[2],
+    std.debug.print("totals: {} variables ({} globals), {} types, {} functions\n", .{
+        totals[0], totals[1], totals[2], totals[3],
     });
 
     var last_time = @floatCast(f32, c.glfwGetTime());
@@ -487,16 +488,41 @@ pub fn main() !void {
 
                     if (!std.mem.eql(u8, var_buf.slice(), var_search.target)) {
                         try var_search.resetSearch(var_buf.slice());
-                        // TODO: only shows/score variables that would be possible to choose
-                        // * when stopped inside a function:
-                        // only show the local vars,
-                        // paramaters and global (no need to show all the variables for all
-                        // the functions all the time)
-                        // * when not running: only show globals
+                        // here we only shows/score variables that would be possible to choose
+                        // (why? a debug build of the zig compiler has ~700k variables)
+                        // always add all the globals
                         for (session.elf.dwarf.units) |unit, unit_idx| {
-                            for (unit.variables) |variable| {
-                                if (variable.name) |name| {
-                                    var_search.addEntry(name, .{
+                            for (unit.global_vars) |var_idx| {
+                                const variable = unit.variables[var_idx];
+                                if (variable.name == null) continue;
+                                var_search.addEntry(variable.name.?, .{
+                                    .variable = variable,
+                                    .line_progs = session.elf.dwarf.line_progs,
+                                    .unit_idx = unit_idx,
+                                });
+                            }
+                        }
+                        // and if we're in a function add the locals/parameters too
+                        for (session.elf.dwarf.units) |unit, unit_idx| {
+                            for (unit.functions) |func, func_idx| {
+                                if (func.low_pc == null or func.high_pc == null) continue;
+                                const addr = session.regs.rip;
+                                if (!(addr <= func.low_pc.? and addr < func.high_pc.?)) continue;
+                                // params
+                                for (func.params) |variable| {
+                                    if (variable.name == null) continue;
+                                    var_search.addEntry(variable.name.?, .{
+                                        .variable = variable.*,
+                                        .line_progs = session.elf.dwarf.line_progs,
+                                        .unit_idx = unit_idx,
+                                    });
+                                }
+                                // locals
+                                for (unit.variables) |variable| {
+                                    if (variable.function == null) continue;
+                                    if (variable.function.? != &unit.functions[func_idx]) continue;
+                                    if (variable.name == null) continue;
+                                    var_search.addEntry(variable.name.?, .{
                                         .variable = variable,
                                         .line_progs = session.elf.dwarf.line_progs,
                                         .unit_idx = unit_idx,
@@ -827,7 +853,7 @@ pub fn main() !void {
                     const session = if (session_opt) |*s| s else break :case_blk;
                     try session.watched_vars.append(variable);
                     //session.watched_vars.append(variable) catch |err| {
-                    //    std.debug.print("{s}: failed to add watched varible '{s}'\n", .{
+                    //    std.debug.print("{s}: failed to add watched variable '{s}'\n", .{
                     //        err, variable.name,
                     //    });
                     //};
