@@ -16,8 +16,9 @@ pub usingnamespace @import("ui_widgets.zig");
 allocator: Allocator,
 generic_shader: gfx.Shader,
 font: Font,
+font_bold: Font,
 icon_font: Font,
-string_arena: std.heap.ArenaAllocator,
+build_arena: std.heap.ArenaAllocator,
 node_table: NodeTable,
 prng: PRNG,
 
@@ -55,7 +56,7 @@ focused_node_key: ?NodeKey,
 const NodeKey = NodeTable.Hash;
 
 // call `deinit` to cleanup resources
-pub fn init(allocator: Allocator, font_path: []const u8, icon_font_path: []const u8, window_ptr: *window.Window) !UiContext {
+pub fn init(allocator: Allocator, font_path: []const u8, font_bold_path: []const u8, icon_font_path: []const u8, window_ptr: *window.Window) !UiContext {
     return UiContext{
         .allocator = allocator,
         .generic_shader = gfx.Shader.from_srcs(allocator, "ui_generic", .{
@@ -64,8 +65,9 @@ pub fn init(allocator: Allocator, font_path: []const u8, icon_font_path: []const
             .fragment = fragment_shader_src,
         }),
         .font = try Font.from_ttf(allocator, font_path),
+        .font_bold = try Font.from_ttf(allocator, font_bold_path),
         .icon_font = try Font.from_ttf(allocator, icon_font_path),
-        .string_arena = std.heap.ArenaAllocator.init(allocator),
+        .build_arena = std.heap.ArenaAllocator.init(allocator),
         .node_table = NodeTable.init(allocator),
         .prng = PRNG.init(0),
 
@@ -98,8 +100,9 @@ pub fn deinit(self: *UiContext) void {
     self.style_stack.deinit();
     self.parent_stack.deinit();
     self.node_table.deinit();
-    self.string_arena.deinit();
+    self.build_arena.deinit();
     self.font.deinit();
+    self.font_bold.deinit();
     self.icon_font.deinit();
     self.generic_shader.deinit();
     self.window_roots.deinit();
@@ -149,6 +152,8 @@ pub const Node = struct {
     font_type: FontType,
     font_size: f32,
     text_align: TextAlign,
+    custom_draw_fn: ?CustomDrawFn,
+    custom_draw_ctx_as_bytes: ?[]const u8, // gets copied during `addNode`
 
     // per-frame sizing information
     text_rect: Rect,
@@ -182,8 +187,14 @@ pub const Node = struct {
     toggle: bool,
 };
 
+pub const CustomDrawFn = fn (
+    ui: *UiContext,
+    shader_inputs: *std.ArrayList(ShaderInput),
+    node: *Node,
+) error{OutOfMemory}!void;
+
 pub const Axis = enum { x, y };
-pub const FontType = enum { text, icon };
+pub const FontType = enum { text, text_bold, icon };
 pub const TextAlign = enum { left, center, right };
 
 pub const Style = struct {
@@ -198,6 +209,8 @@ pub const Style = struct {
     font_type: FontType = .text,
     font_size: f32 = 18,
     text_align: TextAlign = .left,
+    custom_draw_fn: ?CustomDrawFn = null,
+    custom_draw_ctx_as_bytes: ?[]const u8 = null,
 };
 
 pub const Size = union(enum) {
@@ -410,7 +423,7 @@ pub fn addNodeRaw(self: *UiContext, flags: Flags, string: []const u8, init_args:
 }
 
 pub fn addNodeRawStrings(self: *UiContext, flags: Flags, display_string_in: []const u8, hash_string_in: []const u8, init_args: anytype) !*Node {
-    const allocator = self.string_arena.allocator();
+    const allocator = self.build_arena.allocator();
     const display_string = try allocator.dupe(u8, display_string_in);
     const hash_string = try allocator.dupe(u8, hash_string_in);
 
@@ -477,9 +490,14 @@ pub fn addNodeRawStrings(self: *UiContext, flags: Flags, display_string_in: []co
     // calling textRect is too expensive to do multiple times per frame
     const font_rect = try ((switch (node.font_type) {
         .text => &self.font,
+        .text_bold => &self.font_bold,
         .icon => &self.icon_font,
     }).textRect(display_string, node.font_size));
     node.text_rect = .{ .min = font_rect.min, .max = font_rect.max };
+
+    // save the custom draw context if needed
+    if (node.custom_draw_ctx_as_bytes) |ctx_bytes|
+        node.custom_draw_ctx_as_bytes = try allocator.dupe(u8, ctx_bytes);
 
     if (self.auto_pop_style) {
         _ = self.popStyle();
@@ -556,9 +574,9 @@ pub fn startBuild(self: *UiContext, screen_w: u32, screen_h: u32, mouse_pos: vec
     for (self.window_roots.items) |node| self.computeSignalsForTree(node);
     if (self.root_node) |node| self.computeSignalsForTree(node);
 
-    // clear out the whole string arena
-    self.string_arena.deinit();
-    self.string_arena = std.heap.ArenaAllocator.init(self.allocator);
+    // clear out the whole arena
+    self.build_arena.deinit();
+    self.build_arena = std.heap.ArenaAllocator.init(self.allocator);
 
     self.node_keys_this_frame.clearRetainingCapacity();
 
@@ -793,7 +811,7 @@ pub fn render(self: *UiContext) !void {
     var field_offset: usize = 0;
     inline for (@typeInfo(ShaderInput).Struct.fields) |field, i| {
         const elems = switch (@typeInfo(field.field_type)) {
-            .Float => 1,
+            .Float, .Int => 1,
             .Array => |array| array.len,
             else => @compileError("new type in ShaderInput struct: " ++ @typeName(field.field_type)),
         };
@@ -801,12 +819,22 @@ pub fn render(self: *UiContext) !void {
             .Array => |array| array.child,
             else => field.field_type,
         };
-        const gl_type = switch (@typeInfo(child_type)) {
-            .Float => gl.FLOAT,
-            else => @compileError("new type in ShaderInput struct: " ++ @typeName(child_type)),
-        };
+
         const offset_ptr = if (field_offset == 0) null else @intToPtr(*const anyopaque, field_offset);
-        gl.vertexAttribPointer(i, elems, gl_type, gl.FALSE, stride, offset_ptr);
+        switch (@typeInfo(child_type)) {
+            .Float => {
+                const gl_type = gl.FLOAT;
+                gl.vertexAttribPointer(i, elems, gl_type, gl.FALSE, stride, offset_ptr);
+            },
+            .Int => {
+                const type_info = @typeInfo(child_type).Int;
+                std.debug.assert(type_info.signedness == .unsigned);
+                std.debug.assert(type_info.bits == 32);
+                const gl_type = gl.UNSIGNED_INT;
+                gl.vertexAttribIPointer(i, elems, gl_type, stride, offset_ptr);
+            },
+            else => @compileError("new type in ShaderInput struct: " ++ @typeName(child_type)),
+        }
         gl.enableVertexAttribArray(i);
         field_offset += @sizeOf(field.field_type);
     }
@@ -821,8 +849,10 @@ pub fn render(self: *UiContext) !void {
     self.generic_shader.set("screen_size", self.screen_size);
     self.generic_shader.set("text_atlas", @as(i32, 0));
     self.font.texture.bind(0);
-    self.generic_shader.set("icon_atlas", @as(i32, 1));
-    self.icon_font.texture.bind(1);
+    self.generic_shader.set("text_bold_atlas", @as(i32, 1));
+    self.font_bold.texture.bind(1);
+    self.generic_shader.set("icon_atlas", @as(i32, 2));
+    self.icon_font.texture.bind(2);
     gl.bindVertexArray(inputs_vao);
     gl.drawArrays(gl.POINTS, 0, @intCast(i32, shader_inputs.items.len));
 }
@@ -843,6 +873,8 @@ fn setupTreeForRender(self: *UiContext, shader_inputs: *std.ArrayList(ShaderInpu
 
 // small helper for `UiContext.render`
 fn addShaderInputsForNode(self: *UiContext, shader_inputs: *std.ArrayList(ShaderInput), node: *Node) !void {
+    if (node.custom_draw_fn) |draw_fn| return draw_fn(self, shader_inputs, node);
+
     const base_rect = ShaderInput{
         .bottom_left_pos = node.rect.min,
         .top_right_pos = node.rect.max,
@@ -854,10 +886,7 @@ fn addShaderInputsForNode(self: *UiContext, shader_inputs: *std.ArrayList(Shader
         .border_thickness = node.border_thickness,
         .clip_rect_min = node.clip_rect.min,
         .clip_rect_max = node.clip_rect.max,
-        .use_icon_font = switch (node.font_type) {
-            .text => 0,
-            .icon => 1,
-        },
+        .which_font = @enumToInt(node.font_type),
     };
 
     // draw background
@@ -904,6 +933,7 @@ fn addShaderInputsForNode(self: *UiContext, shader_inputs: *std.ArrayList(Shader
     if (node.flags.draw_text) {
         const font = switch (node.font_type) {
             .text => &self.font,
+            .text_bold => &self.font_bold,
             .icon => &self.icon_font,
         };
 
@@ -932,14 +962,14 @@ fn addShaderInputsForNode(self: *UiContext, shader_inputs: *std.ArrayList(Shader
                 .border_thickness = 0,
                 .clip_rect_min = base_rect.clip_rect_min,
                 .clip_rect_max = base_rect.clip_rect_max,
-                .use_icon_font = base_rect.use_icon_font,
+                .which_font = base_rect.which_font,
             });
         }
     }
 }
 
 // this struct must have the exact layout expected by the shader
-const ShaderInput = extern struct {
+pub const ShaderInput = extern struct {
     bottom_left_pos: [2]f32,
     top_right_pos: [2]f32,
     bottom_left_uv: [2]f32,
@@ -950,7 +980,7 @@ const ShaderInput = extern struct {
     border_thickness: f32,
     clip_rect_min: [2]f32,
     clip_rect_max: [2]f32,
-    use_icon_font: f32,
+    which_font: u32,
 };
 
 const vertex_shader_src =
@@ -966,7 +996,7 @@ const vertex_shader_src =
     \\layout (location = 7) in float attrib_border_thickness;
     \\layout (location = 8) in vec2 attrib_clip_rect_min;
     \\layout (location = 9) in vec2 attrib_clip_rect_max;
-    \\layout (location = 10) in float attrib_use_icon_font;
+    \\layout (location = 10) in uint attrib_which_font;
     \\
     \\uniform vec2 screen_size; // in pixels
     \\
@@ -982,7 +1012,7 @@ const vertex_shader_src =
     \\    vec2 rect_size;
     \\    vec2 clip_rect_min;
     \\    vec2 clip_rect_max;
-    \\    float use_icon_font;
+    \\    uint which_font;
     \\} vs_out;
     \\
     \\void main() {
@@ -1001,7 +1031,7 @@ const vertex_shader_src =
     \\    vs_out.rect_size = attrib_top_right_pos - attrib_bottom_left_pos;
     \\    vs_out.clip_rect_min = attrib_clip_rect_min;
     \\    vs_out.clip_rect_max = attrib_clip_rect_max;
-    \\    vs_out.use_icon_font = attrib_use_icon_font;
+    \\    vs_out.which_font = attrib_which_font;
     \\}
     \\
 ;
@@ -1025,7 +1055,7 @@ const geometry_shader_src =
     \\    vec2 rect_size;
     \\    vec2 clip_rect_min;
     \\    vec2 clip_rect_max;
-    \\    float use_icon_font;
+    \\    uint which_font;
     \\} gs_in[];
     \\
     \\out GS_Out {
@@ -1038,7 +1068,7 @@ const geometry_shader_src =
     \\    vec2 rect_size;
     \\    vec2 clip_rect_min;
     \\    vec2 clip_rect_max;
-    \\    float use_icon_font;
+    \\    flat uint which_font;
     \\} gs_out;
     \\
     \\void main() {
@@ -1060,7 +1090,7 @@ const geometry_shader_src =
     \\    gs_out.quad_size_ratio = (quad_size.x / quad_size.y) * (screen_size.x / screen_size.y);
     \\    gs_out.clip_rect_min = gs_in[0].clip_rect_min;
     \\    gs_out.clip_rect_max = gs_in[0].clip_rect_max;
-    \\    gs_out.use_icon_font = gs_in[0].use_icon_font;
+    \\    gs_out.which_font = gs_in[0].which_font;
     \\
     \\    gl_Position        = bottom_left_pos;
     \\    gs_out.uv          = bottom_left_uv;
@@ -1117,11 +1147,12 @@ const fragment_shader_src =
     \\    vec2 clip_rect_min;
     \\    vec2 clip_rect_max;
     \\
-    \\    float use_icon_font;
+    \\    flat uint which_font;
     \\} fs_in;
     \\
     \\uniform vec2 screen_size; // in pixels
     \\uniform sampler2D text_atlas;
+    \\uniform sampler2D text_bold_atlas;
     \\uniform sampler2D icon_atlas;
     \\
     \\out vec4 FragColor;
@@ -1150,9 +1181,12 @@ const fragment_shader_src =
     \\    vec4 color = fs_in.color;
     \\    vec2 quad_coords = fs_in.quad_coords;
     \\
-    \\    float text_alpha = texture(text_atlas, uv).r;
-    \\    float icon_alpha = texture(icon_atlas, uv).r;
-    \\    float alpha = (fs_in.use_icon_font == 0) ? text_alpha : icon_alpha;
+    \\    float alpha = 1;
+    \\    switch (fs_in.which_font) {
+    \\        case 0u: alpha = texture(text_atlas, uv).r; break;
+    \\        case 1u: alpha = texture(text_bold_atlas, uv).r; break;
+    \\        case 2u: alpha = texture(icon_atlas, uv).r; break;
+    \\    }
     \\    if (uv == vec2(0, 0)) alpha = 1;
     \\
     \\    if (!insideBorder(quad_coords)) alpha = 0;

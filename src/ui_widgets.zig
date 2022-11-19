@@ -36,7 +36,7 @@ pub fn label(self: *UiContext, string: []const u8) void {
 }
 
 pub fn labelF(self: *UiContext, comptime fmt: []const u8, args: anytype) void {
-    const str = std.fmt.allocPrint(self.string_arena.allocator(), fmt, args) catch |e| blk: {
+    const str = std.fmt.allocPrint(self.build_arena.allocator(), fmt, args) catch |e| blk: {
         self.setErrorInfo(@errorReturnTrace(), @errorName(e));
         break :blk "";
     };
@@ -54,7 +54,7 @@ pub fn labelBox(self: *UiContext, string: []const u8) void {
 }
 
 pub fn labelBoxF(self: *UiContext, comptime fmt: []const u8, args: anytype) void {
-    const str = std.fmt.allocPrint(self.string_arena.allocator(), fmt, args) catch |e| blk: {
+    const str = std.fmt.allocPrint(self.build_arena.allocator(), fmt, args) catch |e| blk: {
         self.setErrorInfo(@errorReturnTrace(), @errorName(e));
         break :blk "";
     };
@@ -69,7 +69,7 @@ pub fn text(self: *UiContext, string: []const u8) Signal {
 }
 
 pub fn textF(self: *UiContext, comptime fmt: []const u8, args: anytype) Signal {
-    const str = std.fmt.allocPrint(self.string_arena.allocator(), fmt, args) catch |e| blk: {
+    const str = std.fmt.allocPrint(self.build_arena.allocator(), fmt, args) catch |e| blk: {
         self.setErrorInfo(@errorReturnTrace(), @errorName(e));
         break :blk "";
     };
@@ -86,7 +86,7 @@ pub fn textBox(self: *UiContext, string: []const u8) Signal {
 }
 
 pub fn textBoxF(self: *UiContext, comptime fmt: []const u8, args: anytype) Signal {
-    const str = std.fmt.allocPrint(self.string_arena.allocator(), fmt, args) catch |e| blk: {
+    const str = std.fmt.allocPrint(self.build_arena.allocator(), fmt, args) catch |e| blk: {
         self.setErrorInfo(@errorReturnTrace(), @errorName(e));
         break :blk "";
     };
@@ -108,7 +108,7 @@ pub fn button(self: *UiContext, string: []const u8) Signal {
 }
 
 pub fn buttonF(self: *UiContext, comptime fmt: []const u8, args: anytype) Signal {
-    const str = std.fmt.allocPrint(self.string_arena.allocator(), fmt, args) catch |e| blk: {
+    const str = std.fmt.allocPrint(self.build_arena.allocator(), fmt, args) catch |e| blk: {
         self.setErrorInfo(@errorReturnTrace(), @errorName(e));
         break :blk "";
     };

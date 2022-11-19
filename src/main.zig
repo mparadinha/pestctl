@@ -116,11 +116,11 @@ pub fn main() !void {
     gl.depthFunc(gl.LEQUAL);
     gl.enable(gl.LINE_SMOOTH);
 
-    var ui = try UiContext.init(allocator, "VictorMono-Regular.ttf", "icons.ttf", &window);
+    var ui = try UiContext.init(allocator, "VictorMono-Regular.ttf", "VictorMono-Bold.ttf", "icons.ttf", &window);
     defer ui.deinit();
 
     // this second UiContext is meant to use for debugging the normal ui (but who debugs this one? 🤔)
-    var dbg_ui = try UiContext.init(allocator, "VictorMono-Regular.ttf", "icons.ttf", &window);
+    var dbg_ui = try UiContext.init(allocator, "VictorMono-Regular.ttf", "VictorMono-Bold.ttf", "icons.ttf", &window);
     defer dbg_ui.deinit();
     var dbg_ui_active = false;
     var dbg_ui_node_list_idx: usize = 0;
@@ -1399,16 +1399,28 @@ const CallStackViewer = struct {
 
 /// higher score means better match
 fn fuzzyScore(pattern: []const u8, test_str: []const u8) f32 {
+    const trace = tracy.Zone(@src());
+    defer trace.End();
+
     var score: f32 = 0;
+
+    const to_lower_lut = comptime lut: {
+        var table: [128]u8 = undefined;
+        for (table) |*entry, char| {
+            entry.* = if ('A' <= char and char <= 'Z') char + 32 else char;
+        }
+        break :lut table;
+    };
 
     for (pattern) |pat_char, pat_idx| {
         for (test_str) |test_char, test_idx| {
             var char_score: f32 = 0;
-            if (std.ascii.toLower(pat_char) == std.ascii.toLower(test_char)) {
-                char_score += 0.5;
-                if (pat_char == test_char) char_score += 1;
-                if (test_idx == pat_idx) char_score *= 5;
-            }
+            const case_sensitive_match = (pat_char == test_char);
+            const case_insensitive_match = to_lower_lut[pat_char] == to_lower_lut[test_char];
+            if (!case_insensitive_match) continue;
+            char_score += 0.5;
+            if (case_sensitive_match) char_score += 1;
+            if (test_idx == pat_idx) char_score *= 5;
             score += char_score;
         }
     }
@@ -1446,6 +1458,9 @@ fn FuzzySearchOptions(comptime Ctx: type, comptime max_slots: usize) type {
         }
 
         pub fn addEntry(self: *@This(), test_str: []const u8, ctx: Ctx) void {
+            const trace = tracy.Zone(@src());
+            defer trace.End();
+
             const score = fuzzyScore(self.target, test_str);
             const new_entry = Entry{ .str = test_str, .score = score, .ctx = ctx };
             if (self.slots_filled < self.slots.len) {
@@ -1468,6 +1483,9 @@ fn FuzzySearchOptions(comptime Ctx: type, comptime max_slots: usize) type {
             label: []const u8,
             placement: UiContext.Placement,
         ) !?Ctx {
+            const trace = tracy.Zone(@src());
+            defer trace.End();
+
             var allocator = arena.allocator();
             const filled_slots = self.slots[0..self.slots_filled];
             var clicked_option: ?usize = null;
@@ -1496,6 +1514,9 @@ fn FuzzySearchOptions(comptime Ctx: type, comptime max_slots: usize) type {
             defer ui.popParentAssert(bg_node);
 
             for (self.slots[0..self.slots_filled]) |entry, idx| {
+                const entry_trace = tracy.Zone(@src());
+                defer entry_trace.End();
+
                 const button_node = ui.addNodeStringsF(.{
                     .clickable = true,
                     .draw_text = true,
@@ -1514,12 +1535,21 @@ fn FuzzySearchOptions(comptime Ctx: type, comptime max_slots: usize) type {
                 const name = try entry.ctx.fmtName(allocator);
                 const extra = try entry.ctx.fmtExtra(allocator);
 
-                _ = ui.textF("{s}###{s}_opt_btn_name_{d}", .{ name, label, idx });
-                const name_node = ui.topParent().last.?;
+                const draw_ctx = CustomDrawMatchHighlightCtx{
+                    .match_pattern = self.target,
+                    .highlight_color = vec4{ 0.99, 0.36, 0.1, 1 }, // orange #fc5b19
+                };
+                const name_node = ui.addNodeStringsF(.{
+                    .draw_text = true,
+                    .draw_active_effects = true,
+                }, "{s}", .{name}, "{s}_opt_btn_name_{d}", .{ label, idx }, .{
+                    .custom_draw_fn = CustomDrawMatchHighlight,
+                    .custom_draw_ctx_as_bytes = std.mem.asBytes(&draw_ctx),
+                });
+                name_node.active_trans = button_node.active_trans;
                 const name_size = name_node.rect.size();
                 const name_color = name_node.text_color;
-                name_node.flags.draw_active_effects = true;
-                name_node.active_trans = button_node.active_trans;
+
                 ui.pushTmpStyle(.{ .font_size = name_node.font_size * 0.8 });
                 ui.labelF("{s}", .{extra});
                 const extra_node = ui.topParent().last.?;
@@ -1540,6 +1570,68 @@ fn FuzzySearchOptions(comptime Ctx: type, comptime max_slots: usize) type {
                 return self.slots[idx].ctx
             else
                 return null;
+        }
+
+        const CustomDrawMatchHighlightCtx = struct {
+            match_pattern: []const u8,
+            highlight_color: vec4,
+        };
+        pub fn CustomDrawMatchHighlight(
+            ui: *UiContext,
+            shader_inputs: *std.ArrayList(UiContext.ShaderInput),
+            node: *UiContext.Node,
+        ) error{OutOfMemory}!void {
+            const trace = tracy.Zone(@src());
+            defer trace.End();
+
+            const draw_ctx = if (node.custom_draw_ctx_as_bytes) |ctx_bytes| ctx: {
+                std.debug.assert(ctx_bytes.len == @sizeOf(CustomDrawMatchHighlightCtx));
+                break :ctx @ptrCast(*align(1) const CustomDrawMatchHighlightCtx, ctx_bytes.ptr).*;
+            } else @panic("forgot to set the draw ctx");
+
+            var text_pos = ui.textPosFromNode(node);
+            if (node.flags.draw_active_effects) {
+                text_pos[1] -= 0.1 * node.font_size * node.active_trans;
+            }
+
+            const display_text = node.display_string;
+
+            // TODO: make this unicode compliant
+            var cursor = [2]f32{ 0, 0 };
+            for (display_text) |char| {
+                const is_highlight = matches: {
+                    for (draw_ctx.match_pattern) |match| {
+                        if (match == char) break :matches true;
+                    } else break :matches false;
+                };
+                var font = if (is_highlight) &ui.font_bold else &ui.font;
+                var text_color = if (is_highlight) draw_ctx.highlight_color else node.text_color;
+
+                const quad = font.buildQuad(char, node.font_size, &cursor) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => @panic(@errorName(err)),
+                };
+                var quad_rect = UiContext.Rect{ .min = quad.points[0].pos, .max = quad.points[2].pos };
+                quad_rect.min += text_pos;
+                quad_rect.max += text_pos;
+
+                try shader_inputs.append(.{
+                    .bottom_left_pos = quad_rect.min,
+                    .top_right_pos = quad_rect.max,
+                    .bottom_left_uv = quad.points[0].uv,
+                    .top_right_uv = quad.points[2].uv,
+                    .top_color = text_color,
+                    .bottom_color = text_color,
+                    .corner_roundness = 0,
+                    .border_thickness = 0,
+                    .clip_rect_min = node.clip_rect.min,
+                    .clip_rect_max = node.clip_rect.max,
+                    .which_font = if (is_highlight)
+                        @enumToInt(UiContext.FontType.text_bold)
+                    else
+                        @enumToInt(UiContext.FontType.text),
+                });
+            }
         }
     };
 }

@@ -257,6 +257,10 @@ fn increaseTextureAndRepack(self: *Font) !void {
     self.texture.updateData(self.texture_data);
 }
 
+pub fn ensureCharData(self: *Font, codepoint: u21, pixel_size: f32) !void {
+    _ = try self.getCharData(codepoint, pixel_size);
+}
+
 fn getCharData(self: *Font, codepoint: u21, pixel_size: f32) !CharData {
     const char_key = CharKey{ .codepoint = codepoint, .size = pixel_size };
     if (self.char_data.get(char_key)) |value| return value;
