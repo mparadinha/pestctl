@@ -145,10 +145,16 @@ pub fn main() !void {
     var last_time = @floatCast(f32, c.glfwGetTime());
 
     var src_file_buf = try std.BoundedArray(u8, 0x1000).init(0);
+    var src_file_search = FuzzySearchOptions(SrcFileSearchCtx, 20).init(allocator);
+    defer src_file_search.deinit();
     var num_buf = try std.BoundedArray(u8, 0x1000).init(0);
     var file_buf = try std.BoundedArray(u8, 0x1000).init(0);
     var var_buf = try std.BoundedArray(u8, 0x1000).init(0);
+    var var_search = FuzzySearchOptions(VarSearchCtx, 10).init(allocator);
+    defer var_search.deinit();
     var func_buf = try std.BoundedArray(u8, 0x1000).init(0);
+    var func_search = FuzzySearchOptions(FuncSearchCtx, 10).init(allocator);
+    defer func_search.deinit();
     // @debug
     try num_buf.appendSlice("106");
     try file_buf.appendSlice("main.zig");
@@ -236,46 +242,32 @@ pub fn main() !void {
                 if (text_input_sig.focused and src_file_buf.len > 0) {
                     const text_input_node = ui.topParent().last.?;
                     const input = src_file_buf.slice();
-                    //const input_path = try std.fs.path.join(frame_arena.allocator(), &.{ cwd, input });
-                    // TODO: don't crash if user writes "tmp/dir////"
-                    const inner_dir = if (std.mem.lastIndexOfScalar(u8, input, '/')) |idx| blk: {
-                        break :blk input[0 .. idx + 1];
-                    } else "";
-                    const full_dir_path = try std.fs.path.join(frame_arena.allocator(), &.{ cwd, inner_dir });
 
-                    const FileCtx = struct {
-                        name: []const u8,
-                        inner_dir: []const u8,
-                        path: []const u8,
-                        kind: std.fs.File.Kind,
-                        pub fn fmtName(self: @This(), fmt_allocator: Allocator) ![]const u8 {
-                            return if (self.kind == .Directory)
-                                try std.fmt.allocPrint(fmt_allocator, "{s}{s}/", .{ self.inner_dir, self.name })
-                            else
-                                try std.fmt.allocPrint(fmt_allocator, "{s}{s}", .{ self.inner_dir, self.name });
-                        }
-                        pub fn fmtExtra(self: @This(), fmt_allocator: Allocator) ![]const u8 {
-                            _ = self;
-                            _ = fmt_allocator;
-                            return "";
-                        }
-                    };
-                    var file_fuzzy_search = FuzzySearchOptions(FileCtx, 20).init(input);
-                    defer file_fuzzy_search.deinit();
+                    if (!std.mem.eql(u8, input, src_file_search.target)) {
+                        try src_file_search.resetSearch(input);
 
-                    var dir = try std.fs.openDirAbsolute(full_dir_path, .{ .iterate = true });
-                    var dir_iter = dir.iterate();
-                    while (try dir_iter.next()) |entry| {
-                        const file_ctx = FileCtx{
-                            .name = try frame_arena.allocator().dupe(u8, entry.name),
-                            .inner_dir = inner_dir,
-                            .path = try std.fs.path.join(frame_arena.allocator(), &.{ cwd, inner_dir, entry.name }),
-                            .kind = entry.kind,
-                        };
-                        file_fuzzy_search.addEntry(file_ctx.path, file_ctx);
+                        //const input_path = try std.fs.path.join(frame_arena.allocator(), &.{ cwd, input });
+                        // TODO: don't crash if user writes "tmp/dir////"
+                        const inner_dir = if (std.mem.lastIndexOfScalar(u8, input, '/')) |idx| blk: {
+                            break :blk input[0 .. idx + 1];
+                        } else "";
+                        const full_dir_path = try std.fs.path.join(frame_arena.allocator(), &.{ cwd, inner_dir });
+
+                        var dir = try std.fs.openDirAbsolute(full_dir_path, .{ .iterate = true });
+                        var dir_iter = dir.iterate();
+                        while (try dir_iter.next()) |entry| {
+                            const file_ctx = SrcFileSearchCtx{
+                                // these strings get release by the search list
+                                .name = try src_file_search.allocator.dupe(u8, entry.name),
+                                .inner_dir = inner_dir,
+                                .path = try std.fs.path.join(src_file_search.allocator, &.{ cwd, inner_dir, entry.name }),
+                                .kind = entry.kind,
+                            };
+                            src_file_search.addEntry(file_ctx.path, file_ctx);
+                        }
                     }
 
-                    const choice = try file_fuzzy_search.present(
+                    const choice = try src_file_search.present(
                         &frame_arena,
                         &ui,
                         "filepath_chooser",
@@ -493,39 +485,28 @@ pub fn main() !void {
                 if (text_input_sig.focused and var_buf.len > 0) {
                     const text_input_node = ui.topParent().last.?;
 
-                    const VarCtx = struct {
-                        variable: Dwarf.Variable,
-                        line_progs: []const Dwarf.LineProg,
-                        unit_idx: usize,
-                        pub fn fmtName(self: @This(), fmt_allocator: Allocator) ![]const u8 {
-                            _ = fmt_allocator;
-                            return self.variable.name orelse unreachable;
-                        }
-                        pub fn fmtExtra(self: @This(), fmt_allocator: Allocator) ![]const u8 {
-                            if (self.variable.decl_coords) |coords| {
-                                const src = coords.toSrcLoc(self.line_progs[self.unit_idx]);
-                                return try std.fmt.allocPrint(fmt_allocator, "({s}:{})", .{
-                                    src.file, src.line,
-                                });
-                            } else return "";
-                        }
-                    };
-                    var var_fuzzy_search = FuzzySearchOptions(VarCtx, 10).init(var_buf.slice());
-                    defer var_fuzzy_search.deinit();
-
-                    for (session.elf.dwarf.units) |unit, unit_idx| {
-                        for (unit.variables) |variable| {
-                            if (variable.name) |name| {
-                                var_fuzzy_search.addEntry(name, .{
-                                    .variable = variable,
-                                    .line_progs = session.elf.dwarf.line_progs,
-                                    .unit_idx = unit_idx,
-                                });
+                    if (!std.mem.eql(u8, var_buf.slice(), var_search.target)) {
+                        try var_search.resetSearch(var_buf.slice());
+                        // TODO: only shows/score variables that would be possible to choose
+                        // * when stopped inside a function:
+                        // only show the local vars,
+                        // paramaters and global (no need to show all the variables for all
+                        // the functions all the time)
+                        // * when not running: only show globals
+                        for (session.elf.dwarf.units) |unit, unit_idx| {
+                            for (unit.variables) |variable| {
+                                if (variable.name) |name| {
+                                    var_search.addEntry(name, .{
+                                        .variable = variable,
+                                        .line_progs = session.elf.dwarf.line_progs,
+                                        .unit_idx = unit_idx,
+                                    });
+                                }
                             }
                         }
                     }
 
-                    const choice = try var_fuzzy_search.present(
+                    const choice = try var_search.present(
                         &frame_arena,
                         &ui,
                         "var_table_chooser",
@@ -1397,6 +1378,48 @@ const CallStackViewer = struct {
     }
 };
 
+const SrcFileSearchCtx = struct {
+    name: []const u8,
+    inner_dir: []const u8,
+    path: []const u8,
+    kind: std.fs.File.Kind,
+    pub fn free(self: @This(), allocator: Allocator) void {
+        allocator.free(self.name);
+        allocator.free(self.path);
+    }
+    pub fn fmtName(self: @This(), fmt_allocator: Allocator) ![]const u8 {
+        return if (self.kind == .Directory)
+            try std.fmt.allocPrint(fmt_allocator, "{s}{s}/", .{ self.inner_dir, self.name })
+        else
+            try std.fmt.allocPrint(fmt_allocator, "{s}{s}", .{ self.inner_dir, self.name });
+    }
+    pub fn fmtExtra(self: @This(), fmt_allocator: Allocator) ![]const u8 {
+        _ = self;
+        _ = fmt_allocator;
+        return "";
+    }
+};
+
+const VarSearchCtx = struct {
+    variable: Dwarf.Variable,
+    line_progs: []const Dwarf.LineProg,
+    unit_idx: usize,
+    pub fn fmtName(self: @This(), fmt_allocator: Allocator) ![]const u8 {
+        _ = fmt_allocator;
+        return self.variable.name orelse unreachable;
+    }
+    pub fn fmtExtra(self: @This(), fmt_allocator: Allocator) ![]const u8 {
+        if (self.variable.decl_coords) |coords| {
+            const src = coords.toSrcLoc(self.line_progs[self.unit_idx]);
+            return try std.fmt.allocPrint(fmt_allocator, "({s}:{})", .{
+                src.file, src.line,
+            });
+        } else return "";
+    }
+};
+
+const FuncSearchCtx = struct {};
+
 /// higher score means better match
 fn fuzzyScore(pattern: []const u8, test_str: []const u8) f32 {
     const trace = tracy.Zone(@src());
@@ -1435,6 +1458,7 @@ fn fuzzyScore(pattern: []const u8, test_str: []const u8) f32 {
 
 fn FuzzySearchOptions(comptime Ctx: type, comptime max_slots: usize) type {
     return struct {
+        allocator: Allocator,
         slots: [max_slots]Entry,
         slots_filled: usize,
         target: []const u8,
@@ -1445,21 +1469,33 @@ fn FuzzySearchOptions(comptime Ctx: type, comptime max_slots: usize) type {
             ctx: Ctx,
         };
 
-        pub fn init(target: []const u8) @This() {
+        pub fn init(allocator: Allocator) @This() {
             return .{
+                .allocator = allocator,
                 .slots = undefined,
                 .slots_filled = 0,
-                .target = target,
+                .target = &[0]u8{},
             };
         }
 
         pub fn deinit(self: @This()) void {
-            _ = self;
+            self.allocator.free(self.target);
+            if (@hasDecl(Ctx, "free")) {
+                for (self.slots[0..self.slots_filled]) |slot| slot.ctx.free(self.allocator);
+            }
+        }
+
+        pub fn resetSearch(self: *@This(), new_target: []const u8) !void {
+            self.deinit();
+            self.target = try self.allocator.dupe(u8, new_target);
+            self.slots_filled = 0;
         }
 
         pub fn addEntry(self: *@This(), test_str: []const u8, ctx: Ctx) void {
             const trace = tracy.Zone(@src());
             defer trace.End();
+
+            std.debug.assert(self.target.len > 0);
 
             const score = fuzzyScore(self.target, test_str);
             const new_entry = Entry{ .str = test_str, .score = score, .ctx = ctx };
@@ -1472,6 +1508,7 @@ fn FuzzySearchOptions(comptime Ctx: type, comptime max_slots: usize) type {
                 for (self.slots) |entry, idx| {
                     if (entry.score < self.slots[worst_idx].score) worst_idx = idx;
                 }
+                if (@hasDecl(Ctx, "free")) self.slots[worst_idx].ctx.free(self.allocator);
                 self.slots[worst_idx] = new_entry;
             }
         }
