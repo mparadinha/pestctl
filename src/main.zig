@@ -264,7 +264,7 @@ pub fn main() !void {
                                 .path = try std.fs.path.join(src_file_search.allocator, &.{ cwd, inner_dir, entry.name }),
                                 .kind = entry.kind,
                             };
-                            src_file_search.addEntry(file_ctx.path, file_ctx);
+                            try src_file_search.addEntry(file_ctx.path, file_ctx);
                         }
                     }
 
@@ -495,7 +495,7 @@ pub fn main() !void {
                             for (unit.global_vars) |var_idx| {
                                 const variable = unit.variables[var_idx];
                                 if (variable.name == null) continue;
-                                var_search.addEntry(variable.name.?, .{
+                                try var_search.addEntry(variable.name.?, .{
                                     .variable = variable,
                                     .line_progs = session.elf.dwarf.line_progs,
                                     .unit_idx = unit_idx,
@@ -511,7 +511,7 @@ pub fn main() !void {
                                 // params
                                 for (func.params) |variable| {
                                     if (variable.name == null) continue;
-                                    var_search.addEntry(variable.name.?, .{
+                                    try var_search.addEntry(variable.name.?, .{
                                         .variable = variable.*,
                                         .line_progs = session.elf.dwarf.line_progs,
                                         .unit_idx = unit_idx,
@@ -522,7 +522,7 @@ pub fn main() !void {
                                     if (variable.function == null) continue;
                                     if (variable.function.? != &unit.functions[func_idx]) continue;
                                     if (variable.name == null) continue;
-                                    var_search.addEntry(variable.name.?, .{
+                                    try var_search.addEntry(variable.name.?, .{
                                         .variable = variable,
                                         .line_progs = session.elf.dwarf.line_progs,
                                         .unit_idx = unit_idx,
@@ -1482,12 +1482,359 @@ fn fuzzyScore(pattern: []const u8, test_str: []const u8) f32 {
     return score;
 }
 
+// ported over from https://github.com/lotabout/fuzzy-matcher/blob/master/src/skim.rs
+const FuzzyMatcher = struct {
+    allocator: Allocator,
+    matrix_cache: std.ArrayList(MatrixCell),
+    choice_cache: std.ArrayList(u8),
+    pattern_cache: std.ArrayList(u8),
+    config: Config,
+
+    pub const Config = struct {
+        score_match: f32 = 16,
+        gap_start: f32 = -3,
+        gap_extension: f32 = -1,
+        bonus_first_char_multiplier: f32 = 2,
+        bonus_head: f32 = (16 / 2),
+        bonus_break: f32 = (16 / 2) + (-1),
+        bonus_camel: f32 = (16 / 2) + 2 * (-1),
+        bonus_consecutive: f32 = -((-3) + (-1)),
+        penalty_case_mismatch: f32 = (-1) * 2,
+    };
+
+    pub fn init(allocator: Allocator, config: Config) FuzzyMatcher {
+        return .{
+            .allocator = allocator,
+            .matrix_cache = std.ArrayList(MatrixCell).init(allocator),
+            .choice_cache = std.ArrayList(u8).init(allocator),
+            .pattern_cache = std.ArrayList(u8).init(allocator),
+            .config = config,
+        };
+    }
+
+    pub fn deinit(self: FuzzyMatcher) void {
+        self.matrix_cache.deinit();
+        self.choice_cache.deinit();
+        self.pattern_cache.deinit();
+    }
+
+    pub fn score(self: *FuzzyMatcher, pattern: []const u8, choice: []const u8) !f32 {
+        return (try self.fuzzy(pattern, choice, false, null)).score;
+    }
+
+    pub const MatchResult = struct {
+        score: f32,
+        indices: []usize,
+    };
+
+    /// caller owns returned memory
+    pub fn match(self: *FuzzyMatcher, allocator: Allocator, pattern: []const u8, choice: []const u8) !MatchResult {
+        return try self.fuzzy(pattern, choice, true, allocator);
+    }
+
+    fn fuzzy(
+        self: *FuzzyMatcher,
+        pattern: []const u8,
+        choice: []const u8,
+        with_pos: bool,
+        pos_allocator: ?Allocator,
+    ) !MatchResult {
+        const compressed = !with_pos;
+
+        // init caches
+        self.matrix_cache.clearRetainingCapacity();
+        self.choice_cache.clearRetainingCapacity();
+        try self.choice_cache.appendSlice(choice);
+        self.pattern_cache.clearRetainingCapacity();
+        try self.pattern_cache.appendSlice(pattern);
+
+        const first_match_indices = (try self.cheapMatches(pattern, choice)) orelse return MatchResult{
+            .score = 0,
+            .indices = &[0]usize{},
+        };
+        defer self.allocator.free(first_match_indices);
+
+        const cols = choice.len + 1;
+        const rows = if (compressed) 2 else pattern.len + 1;
+        try self.matrix_cache.resize(rows * cols);
+        const score_matrix = ScoreMatrix{ .buf = self.matrix_cache.items, .rows = rows, .cols = cols };
+        try self.buildScoreMatrix(score_matrix, pattern, choice, first_match_indices, compressed);
+
+        const first_col_of_last_row = first_match_indices[first_match_indices.len - 1];
+        const last_row = score_matrix.row(self.adjustRowIdx(pattern.len, compressed));
+        const index_of_largest = index_of_largest: {
+            var max_idx: usize = 0;
+            var max_val = last_row[0].m_score;
+            for (last_row[first_col_of_last_row..]) |elem, idx| {
+                if (elem.m_score > max_val) {
+                    max_val = elem.m_score;
+                    max_idx = idx;
+                }
+            }
+            break :index_of_largest max_idx;
+        };
+        const pat_idx = index_of_largest + first_col_of_last_row;
+        const m_score = last_row[index_of_largest].m_score;
+
+        const positions = if (with_pos) positions: {
+            var idx_list = try std.ArrayList(usize).initCapacity(pos_allocator.?, pattern.len);
+            var i = score_matrix.rows - 1;
+            var j = pat_idx;
+            var track_m = true;
+            var current_move = Movement.match;
+            const first_col_first_row = first_match_indices[0];
+            while (i > 0 and j > first_col_first_row) {
+                if (current_move == .match) try idx_list.append(j - 1);
+
+                const cell = score_matrix.elem(i, j);
+                current_move = if (track_m) cell.m_move else cell.p_move;
+                if (track_m) i -= 1;
+
+                j -= 1;
+
+                track_m = switch (current_move) {
+                    .match => true,
+                    .skip => false,
+                };
+            }
+            std.mem.reverse(usize, idx_list.items);
+            break :positions idx_list.toOwnedSlice();
+        } else &[0]usize{};
+
+        return MatchResult{ .score = m_score, .indices = positions };
+    }
+
+    fn cheapMatches(self: *FuzzyMatcher, pattern: []const u8, choice: []const u8) !?[]usize {
+        var first_match_indices = std.ArrayList(usize).init(self.allocator);
+        var pattern_idx: usize = 0;
+        for (choice) |c_char, idx| {
+            if (pattern_idx < pattern.len) {
+                if (c_char == pattern[pattern_idx]) {
+                    try first_match_indices.append(idx);
+                    pattern_idx += 1;
+                }
+            } else break;
+        }
+        if (pattern_idx == pattern.len) {
+            return first_match_indices.toOwnedSlice();
+        } else {
+            first_match_indices.deinit();
+            return null;
+        }
+    }
+
+    // `skim.rs` stores the m and p matrices together (not sure why though)
+    const MatrixCell = struct {
+        m_move: Movement,
+        m_score: f32,
+        p_move: Movement,
+        p_score: f32,
+        bonus: f32,
+
+        pub fn reset(self: *MatrixCell) void {
+            self.m_move = .skip;
+            self.m_score = std.math.f32_min;
+            self.p_move = .skip;
+            self.p_score = std.math.f32_min;
+            self.bonus = 0;
+        }
+    };
+
+    const Movement = enum { match, skip };
+
+    // wrapper around MatrixCell 1D buffer to simulate 2D matrix
+    const ScoreMatrix = struct {
+        buf: []MatrixCell,
+        rows: usize,
+        cols: usize,
+
+        pub fn index(self: ScoreMatrix, row_: usize, col_: usize) usize {
+            return row_ * self.cols + col_;
+        }
+
+        pub fn row(self: ScoreMatrix, row_: usize) []MatrixCell {
+            const start = row_ * self.cols;
+            return self.buf[start .. start + self.cols];
+        }
+
+        pub fn elem(self: ScoreMatrix, row_: usize, col_: usize) MatrixCell {
+            return self.buf[self.index(row_, col_)];
+        }
+    };
+
+    fn buildScoreMatrix(
+        self: *FuzzyMatcher,
+        matrix: ScoreMatrix,
+        pattern: []const u8,
+        choice: []const u8,
+        first_match_indices: []usize,
+        compressed: bool,
+    ) !void {
+        var in_place_bonuses = try self.allocator.alloc(f32, matrix.cols);
+        defer self.allocator.free(in_place_bonuses);
+        std.mem.set(f32, in_place_bonuses, 0);
+        self.buildInPlaceBonus(choice, in_place_bonuses);
+
+        matrix.elem(0, 0).reset();
+        {
+            var i: usize = 1;
+            while (i < matrix.rows) : (i += 1) {
+                matrix.elem(i, first_match_indices[i - 1]).reset();
+            }
+            var j: usize = 0;
+            while (j < matrix.cols) : (j += 1) {
+                matrix.elem(0, j).reset();
+                matrix.elem(0, j).p_score = self.config.gap_extension;
+            }
+        }
+
+        for (pattern) |p_ch, i| {
+            const row = self.adjustRowIdx(i + 1, compressed);
+            const row_prev = self.adjustRowIdx(i, compressed);
+            const to_skip = first_match_indices[i];
+
+            for (choice[to_skip..]) |c_ch, j| {
+                const col = to_skip + j + 1;
+                const col_prev = to_skip + j;
+                const idx_cur = matrix.index(row, col);
+                const idx_last = matrix.index(row, col_prev);
+                const idx_prev = matrix.index(row_prev, col_prev);
+
+                // update M matrix: M[i][j] = match(i, j) + max(M[i-1][j-1], P[0-1][j-1])
+                const cur_match_score_opt = self.calculateMatchScore(p_ch, c_ch);
+                if (cur_match_score_opt) |cur_match_score| {
+                    const prev_match_score = matrix.buf[idx_prev].m_score;
+                    const prev_skip_score = matrix.buf[idx_prev].p_score;
+                    const prev_match_bonus = matrix.buf[idx_last].bonus;
+                    const in_place_bonus = in_place_bonuses[col];
+
+                    const consecutive_bonus = std.math.max(
+                        prev_match_bonus,
+                        std.math.max(in_place_bonus, self.config.bonus_consecutive),
+                    );
+                    matrix.buf[idx_last].bonus = consecutive_bonus;
+
+                    const score_match = prev_match_score + consecutive_bonus;
+                    const score_skip = prev_skip_score + in_place_bonus;
+
+                    if (score_match >= score_skip) {
+                        matrix.buf[idx_cur].m_score = score_match + cur_match_score;
+                        matrix.buf[idx_cur].m_move = .match;
+                    } else {
+                        matrix.buf[idx_cur].m_score = score_skip + cur_match_score;
+                        matrix.buf[idx_cur].m_move = .skip;
+                    }
+                } else {
+                    matrix.buf[idx_cur].m_score = std.math.f32_min;
+                    matrix.buf[idx_cur].m_move = .skip;
+                    matrix.buf[idx_cur].bonus = 0;
+                }
+
+                // update P matrix: P[i][j] = max(gap_start + gap_extend + M[i][j-1], gap_extend + P[i][j-1])
+                const prev_match_score = self.config.gap_start + self.config.gap_extension +
+                    matrix.buf[idx_last].m_score;
+                const prev_skip_score = self.config.gap_extension + matrix.buf[idx_last].p_score;
+                if (prev_match_score >= prev_skip_score) {
+                    matrix.buf[idx_cur].p_score = prev_match_score;
+                    matrix.buf[idx_cur].p_move = .match;
+                } else {
+                    matrix.buf[idx_cur].p_score = prev_skip_score;
+                    matrix.buf[idx_cur].p_move = .skip;
+                }
+            }
+        }
+    }
+
+    fn buildInPlaceBonus(self: FuzzyMatcher, choice: []const u8, b: []f32) void {
+        var prev_ch: u8 = 0;
+        for (choice) |c_ch, j| {
+            const prev_ch_type = CharType.of(prev_ch);
+            const ch_type = CharType.of(c_ch);
+            b[j + 1] = self.inPlaceBonus(prev_ch_type, ch_type);
+            prev_ch = c_ch;
+        }
+        if (b.len > 1) b[1] *= self.config.bonus_first_char_multiplier;
+    }
+
+    fn inPlaceBonus(self: FuzzyMatcher, prev_char_type: CharType, char_type: CharType) f32 {
+        switch (CharRole.ofType(prev_char_type, char_type)) {
+            .head => return self.config.bonus_head,
+            .camel => return self.config.bonus_camel,
+            .@"break" => return self.config.bonus_break,
+            .tail => return 0,
+        }
+    }
+
+    fn calculateMatchScore(self: FuzzyMatcher, p_ch: u8, c_ch: u8) ?f32 {
+        if (!charEql(p_ch, c_ch)) return null;
+
+        const match_score = self.config.score_match;
+        var bonus: f32 = 0;
+        if (p_ch != c_ch) bonus += self.config.penalty_case_mismatch;
+        return std.math.max(0, match_score + bonus);
+    }
+
+    // case insensitive
+    fn charEql(a: u8, b: u8) bool {
+        if (a == b) return true;
+        if (a >= 'A') return a + 32 == b;
+        if (b >= 'A') return b + 32 == a;
+        return false;
+    }
+
+    fn adjustRowIdx(self: FuzzyMatcher, row_idx: usize, compressed: bool) usize {
+        _ = self;
+        return if (compressed) row_idx & 1 else row_idx;
+    }
+
+    const CharType = enum {
+        empty,
+        upper,
+        lower,
+        number,
+        hard_sep,
+        soft_sep,
+
+        pub fn of(ch: u8) CharType {
+            return switch (ch) {
+                0 => .empty,
+                ' ', '/', '\\', ',', '(', ')', '[', ']', '{', '}' => .hard_sep,
+                '!'...'\'', '*', '+', '-', '.', ':'...'@', '^'...'`', '~' => .soft_sep,
+                '0'...'9' => .number,
+                'A'...'Z' => .upper,
+                else => .lower,
+            };
+        }
+    };
+
+    const CharRole = enum {
+        head,
+        tail,
+        camel,
+        @"break",
+
+        pub fn of(prev: u8, cur: u8) CharRole {
+            return ofType(CharType.of(prev), CharType.of(cur));
+        }
+
+        pub fn ofType(prev: CharType, cur: CharType) CharRole {
+            if (prev == .empty) return .head;
+            if (prev == .hard_sep) return .head;
+            if (prev == .soft_sep) return .@"break";
+            if (prev == .lower and cur == .upper) return .camel;
+            if (prev == .number and cur == .upper) return .camel;
+            return .tail;
+        }
+    };
+};
+
 fn FuzzySearchOptions(comptime Ctx: type, comptime max_slots: usize) type {
     return struct {
         allocator: Allocator,
         slots: [max_slots]Entry,
         slots_filled: usize,
         target: []const u8,
+        matcher: FuzzyMatcher,
 
         pub const Entry = struct {
             str: []const u8,
@@ -1501,29 +1848,38 @@ fn FuzzySearchOptions(comptime Ctx: type, comptime max_slots: usize) type {
                 .slots = undefined,
                 .slots_filled = 0,
                 .target = &[0]u8{},
+                .matcher = FuzzyMatcher.init(allocator, .{}),
             };
         }
 
         pub fn deinit(self: @This()) void {
             self.allocator.free(self.target);
+            self.cleanEntries();
+            self.matcher.deinit();
+        }
+
+        fn cleanEntries(self: @This()) void {
             if (@hasDecl(Ctx, "free")) {
                 for (self.slots[0..self.slots_filled]) |slot| slot.ctx.free(self.allocator);
             }
         }
 
         pub fn resetSearch(self: *@This(), new_target: []const u8) !void {
-            self.deinit();
+            self.allocator.free(self.target);
+            self.cleanEntries();
+
             self.target = try self.allocator.dupe(u8, new_target);
             self.slots_filled = 0;
         }
 
-        pub fn addEntry(self: *@This(), test_str: []const u8, ctx: Ctx) void {
+        pub fn addEntry(self: *@This(), test_str: []const u8, ctx: Ctx) !void {
             const trace = tracy.Zone(@src());
             defer trace.End();
 
             std.debug.assert(self.target.len > 0);
 
-            const score = fuzzyScore(self.target, test_str);
+            //const score = fuzzyScore(self.target, test_str);
+            const score = try self.matcher.score(self.target, test_str);
             const new_entry = Entry{ .str = test_str, .score = score, .ctx = ctx };
             if (self.slots_filled < self.slots.len) {
                 self.slots[self.slots_filled] = new_entry;
@@ -1599,7 +1955,9 @@ fn FuzzySearchOptions(comptime Ctx: type, comptime max_slots: usize) type {
                 const extra = try entry.ctx.fmtExtra(allocator);
 
                 const draw_ctx = CustomDrawMatchHighlightCtx{
-                    .match_pattern = self.target,
+                    .allocator = self.allocator,
+                    .target = self.target,
+                    .matcher = &self.matcher,
                     .highlight_color = vec4{ 0.99, 0.36, 0.1, 1 }, // orange #fc5b19
                 };
                 const name_node = ui.addNodeStringsF(.{
@@ -1636,7 +1994,9 @@ fn FuzzySearchOptions(comptime Ctx: type, comptime max_slots: usize) type {
         }
 
         const CustomDrawMatchHighlightCtx = struct {
-            match_pattern: []const u8,
+            allocator: Allocator,
+            target: []const u8,
+            matcher: *FuzzyMatcher,
             highlight_color: vec4,
         };
         pub fn CustomDrawMatchHighlight(
@@ -1658,15 +2018,17 @@ fn FuzzySearchOptions(comptime Ctx: type, comptime max_slots: usize) type {
             }
 
             const display_text = node.display_string;
+            const highlight_indices = (try draw_ctx.matcher.match(
+                draw_ctx.allocator,
+                draw_ctx.target,
+                display_text,
+            )).indices;
+            defer draw_ctx.allocator.free(highlight_indices);
 
             // TODO: make this unicode compliant
             var cursor = [2]f32{ 0, 0 };
-            for (display_text) |char| {
-                const is_highlight = matches: {
-                    for (draw_ctx.match_pattern) |match| {
-                        if (match == char) break :matches true;
-                    } else break :matches false;
-                };
+            for (display_text) |char, char_idx| {
+                const is_highlight = std.mem.indexOfScalar(usize, highlight_indices, char_idx) != null;
                 var font = if (is_highlight) &ui.font_bold else &ui.font;
                 var text_color = if (is_highlight) draw_ctx.highlight_color else node.text_color;
 
