@@ -273,6 +273,7 @@ pub fn main() !void {
                         &ui,
                         "filepath_chooser",
                         .{ .top_left = text_input_node.rect.min },
+                        false,
                     );
                     if (choice) |file_ctx| {
                         std.debug.print("TODO: switch input buffer to {s}\n", .{file_ctx.name});
@@ -537,6 +538,7 @@ pub fn main() !void {
                         &ui,
                         "var_table_chooser",
                         .{ .top_left = text_input_node.rect.min },
+                        false,
                     );
                     if (choice) |var_ctx| {
                         try session_cmds.append(.{ .add_watched_variable = var_ctx.variable });
@@ -601,17 +603,47 @@ pub fn main() !void {
             const set_break_func_parent = ui.pushLayoutParent("set_break_func_parent", [2]Size{ Size.percent(1, 1), Size.by_children(1) }, .x);
             {
                 const button_sig = ui.button("Set Breakpoint###set_func_breakpoint");
+                _ = button_sig;
 
                 const func_input_size = [2]Size{ Size.percent(1, 0), Size.text_dim(1) };
                 ui.labelBox("Function");
                 ui.pushStyle(.{ .bg_color = vec4{ 0.75, 0.75, 0.75, 1 } });
                 ui.pushStyle(.{ .pref_size = func_input_size });
-                const func_sig = ui.textInput("src_funcname", &func_buf.buffer, &func_buf.len);
+                const text_input_sig = ui.textInput("src_funcname", &func_buf.buffer, &func_buf.len);
                 _ = ui.popStyle();
                 _ = ui.popStyle();
 
-                if (button_sig.clicked or func_sig.enter_pressed) {
-                    std.debug.print("TODO: set break at function '{s}'\n", .{func_buf.slice()});
+                //if (button_sig.clicked or func_sig.enter_pressed) {
+                if (text_input_sig.focused and func_buf.len > 0) {
+                    const text_input_node = ui.topParent().last.?;
+
+                    if (!std.mem.eql(u8, func_buf.slice(), func_search.target)) {
+                        try func_search.resetSearch(func_buf.slice());
+                        for (session.elf.dwarf.units) |unit, unit_idx| {
+                            for (unit.functions) |func, func_idx| {
+                                if (func.name == null) continue;
+                                func_search.addEntry(func.name.?, .{
+                                    .name = func.name.?,
+                                    .loc = if (func.decl_coords) |coords|
+                                        coords.toSrcLoc(session.elf.dwarf.line_progs[unit_idx])
+                                    else
+                                        null,
+                                    .unit_idx = unit_idx,
+                                    .func_idx = func_idx,
+                                });
+                            }
+                        }
+                    }
+                    const choice = try func_search.present(
+                        &frame_arena,
+                        &ui,
+                        "break_func_chooser",
+                        .{ .btm_left = vec2{ text_input_node.rect.min[0], text_input_node.rect.max[1] } },
+                        true,
+                    );
+                    if (choice) |func_ctx| {
+                        std.debug.print("TODO: set break at func_ctx={}\n", .{func_ctx});
+                    }
                 }
             }
             ui.popParentAssert(set_break_func_parent);
@@ -759,9 +791,20 @@ pub fn main() !void {
                     defer dbg_ui.popParentAssert(right_bg_node);
 
                     const node = selected_nodes.items[dbg_ui_node_list_idx];
+                    inline for ([_][]const u8{ "first", "last", "next", "prev", "parent" }) |node_link| {
+                        if (@field(node, node_link)) |link| {
+                            const hash_str = link.hash_string;
+                            if (hash_str.len > 30) {
+                                dbg_ui.labelF(node_link ++ ".hash_string=\"{s}...\"", .{hash_str[0..27]});
+                            } else {
+                                dbg_ui.labelF(node_link ++ ".hash_string=\"{s}\"", .{hash_str});
+                            }
+                        }
+                    }
+                    if (node.child_count > 0) dbg_ui.labelF("child_count={d}", .{node.child_count});
                     if (node.flags.draw_text) {
-                        if (node.display_string.len > 20) {
-                            dbg_ui.labelF("display_string=\"{s}...\"", .{node.display_string[0..17]});
+                        if (node.display_string.len > 30) {
+                            dbg_ui.labelF("display_string=\"{s}...\"", .{node.display_string[0..27]});
                         } else {
                             dbg_ui.labelF("display_string=\"{s}\"", .{node.display_string});
                         }
@@ -1444,7 +1487,21 @@ const VarSearchCtx = struct {
     }
 };
 
-const FuncSearchCtx = struct {};
+const FuncSearchCtx = struct {
+    name: []const u8,
+    loc: ?Dwarf.SrcLoc,
+    unit_idx: usize,
+    func_idx: usize,
+    pub fn fmtName(self: @This(), fmt_allocator: Allocator) ![]const u8 {
+        _ = fmt_allocator;
+        return self.name;
+    }
+    pub fn fmtExtra(self: @This(), fmt_allocator: Allocator) ![]const u8 {
+        return if (self.loc) |loc| blk: {
+            break :blk std.fmt.allocPrint(fmt_allocator, "{s}:{d}", .{ loc.file, loc.line });
+        } else "";
+    }
+};
 
 /// higher score means better match
 fn fuzzyScore(pattern: []const u8, test_str: []const u8) f32 {
@@ -1474,10 +1531,7 @@ fn fuzzyScore(pattern: []const u8, test_str: []const u8) f32 {
         }
     }
 
-    // TODO: make matches at the beginning score better then at the end
-
-    const substr_matches = std.mem.count(u8, test_str, pattern);
-    score *= @intToFloat(f32, @as(u64, 1) << @intCast(u6, substr_matches * 2));
+    if (std.mem.indexOf(u8, test_str, pattern)) |idx| score = (score * 5) - @intToFloat(f32, idx);
 
     return score;
 }
@@ -1545,6 +1599,7 @@ fn FuzzySearchOptions(comptime Ctx: type, comptime max_slots: usize) type {
             ui: *UiContext,
             label: []const u8,
             placement: UiContext.Placement,
+            reverse_order: bool,
         ) !?Ctx {
             const trace = tracy.Zone(@src());
             defer trace.End();
@@ -1558,11 +1613,13 @@ fn FuzzySearchOptions(comptime Ctx: type, comptime max_slots: usize) type {
             while (sort_idx < filled_slots.len) : (sort_idx += 1) {
                 var cmp_idx: usize = sort_idx;
                 cmp_loop: while (cmp_idx > 0) : (cmp_idx -= 1) {
-                    if (filled_slots[cmp_idx].score > filled_slots[cmp_idx - 1].score) {
+                    if (filled_slots[cmp_idx].score >= filled_slots[cmp_idx - 1].score) {
                         std.mem.swap(Entry, &filled_slots[cmp_idx], &filled_slots[cmp_idx - 1]);
                     } else break :cmp_loop;
                 }
             }
+
+            if (reverse_order) std.mem.reverse(Entry, filled_slots);
 
             ui.startCtxMenu(placement); // TODO: use the new ui "windows"
             defer ui.endCtxMenu();
@@ -1665,8 +1722,9 @@ fn FuzzySearchOptions(comptime Ctx: type, comptime max_slots: usize) type {
                 const is_highlight = matches: {
                     for (draw_ctx.match_pattern) |match| {
                         if (match == char) break :matches true;
-                        if (match >= 'A' and char >= 'A' and (match & 0x0f) == (char & 0x0f)) break :matches true;
-                    } else break :matches false;
+                        if (match >= 'A' and char >= 'A' and (match & 0x1f) == (char & 0x1f)) break :matches true;
+                    }
+                    break :matches false;
                 };
                 var font = if (is_highlight) &ui.font_bold else &ui.font;
                 var text_color = if (is_highlight) draw_ctx.highlight_color else node.text_color;
