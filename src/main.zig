@@ -659,29 +659,14 @@ pub fn main() !void {
 
         // special debug commands
         if (window.event_queue.searchAndRemove(.KeyUp, .{
+            .mods = .{ .control = true, .shift = true },
             .key = c.GLFW_KEY_T,
-            .mods = .{ .shift = true, .control = true },
         })) {
             try session_cmds.append(.{ .dump_ui_tree = "ui_main_tree.dot" });
         }
         if (window.event_queue.searchAndRemove(.KeyUp, .{
-            .key = c.GLFW_KEY_ESCAPE,
-            .mods = .{ .shift = true, .control = true },
-        })) {
-            std.debug.print("all nodes that contain the mouse @ {d}\n", .{mouse_pos});
-            var node_iter = ui.node_table.valueIterator();
-            while (node_iter.next()) |node| {
-                if (!node.rect.contains(mouse_pos)) continue;
-                std.debug.print("{*}: {s}\n", .{ node, node.hash_string });
-            }
-            if (ui.hot_node_key) |key| std.debug.print("hot node: {s}\n", .{ui.node_table.getFromHash(key).?.hash_string});
-            if (ui.active_node_key) |key| std.debug.print("active node: {s}\n", .{ui.node_table.getFromHash(key).?.hash_string});
-            if (ui.focused_node_key) |key| std.debug.print("focused node: {s}\n", .{ui.node_table.getFromHash(key).?.hash_string});
-            try session_cmds.append(.{ .dump_ui_tree = "ui_main_tree.dot" });
-        }
-        if (window.event_queue.searchAndRemove(.KeyUp, .{
+            .mods = .{ .control = true, .shift = true },
             .key = c.GLFW_KEY_D,
-            .mods = .{ .shift = true, .control = true },
         })) dbg_ui_active = !dbg_ui_active;
         if (dbg_ui_active) dbg_ui_blk: {
             var select_mouse_pos = if (dbg_ui_frozen_mouse_pos) |pos| pos else mouse_pos;
@@ -861,7 +846,6 @@ pub fn main() !void {
         if (session_cmds.items.len > 0) std.debug.print("commands in buffer @ frame idx {}\n", .{frame_idx});
         for (session_cmds.items) |cmd| {
             std.debug.print("  - cmd: {s}\n", .{@tagName(std.meta.activeTag(cmd))});
-
             switch (cmd) {
                 .open_src_file => |file| case_blk: {
                     if (file.len == 0) break :case_blk;
