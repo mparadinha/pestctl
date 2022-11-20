@@ -106,6 +106,7 @@ pub fn pause(self: *Session) !void {
 
 pub fn unpause(self: *Session) !void {
     if (self.status != .Stopped) return;
+    std.debug.print("Session.unpause\n", .{});
 
     // invalidate all the data that is only valid while .Stopped
     self.src_loc = null;

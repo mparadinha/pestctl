@@ -156,9 +156,6 @@ pub fn main() !void {
     var func_buf = try std.BoundedArray(u8, 0x1000).init(0);
     var func_search = FuzzySearchOptions(FuncSearchCtx, 10).init(allocator);
     defer func_search.deinit();
-    // @debug
-    try num_buf.appendSlice("106");
-    try file_buf.appendSlice("main.zig");
 
     var disasm_texts = std.ArrayList(AsmTextInfo).init(allocator);
     defer {
@@ -168,9 +165,6 @@ pub fn main() !void {
 
     var file_tab = FileTab.init(allocator);
     defer file_tab.deinit();
-    // @debug
-    try file_tab.addFile("src/main.zig");
-    file_tab.active_file = 0;
 
     var last_src_loc = @as(?SrcLoc, null);
 
@@ -642,7 +636,16 @@ pub fn main() !void {
                         true,
                     );
                     if (choice) |func_ctx| {
-                        std.debug.print("TODO: set break at func_ctx={}\n", .{func_ctx});
+                        const func = session.elf.dwarf.units[func_ctx.unit_idx].functions[func_ctx.func_idx];
+                        if (func.low_pc) |addr| {
+                            try session_cmds.append(.{ .set_break_at_addr = addr });
+                        } else if (func.decl_coords) |coords| {
+                            const src = coords.toSrcLoc(session.elf.dwarf.line_progs[func_ctx.unit_idx]);
+                            try session_cmds.append(.{ .set_break_at_src = src });
+                        } else {
+                            // TODO: search the ELF symbol table, might have the function addr
+                            std.debug.print("couldn't find enough information to set a breakpoint on function '{s}'\n", .{func.name.?});
+                        }
                     }
                 }
             }
