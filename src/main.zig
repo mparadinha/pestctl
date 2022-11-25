@@ -249,6 +249,7 @@ pub fn main() !void {
                         const full_dir_path = try std.fs.path.join(frame_arena.allocator(), &.{ cwd, inner_dir });
 
                         var dir = try std.fs.openDirAbsolute(full_dir_path, .{ .iterate = true });
+                        defer dir.close();
                         var dir_iter = dir.iterate();
                         while (try dir_iter.next()) |entry| {
                             const file_ctx = SrcFileSearchCtx{
