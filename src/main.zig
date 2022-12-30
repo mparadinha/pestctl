@@ -130,18 +130,20 @@ pub fn main() !void {
     var session_opt = if (cmdline_args.exec_path) |path| try Session.init(allocator, path) else null;
     defer if (session_opt) |*session| session.deinit();
     var totals = [4]usize{ 0, 0, 0, 0 };
-    for (session_opt.?.elf.dwarf.units) |unit, unit_idx| {
-        std.debug.print("debug unit #{} has: {} variables ({} globals), {} types, {} functions\n", .{
-            unit_idx, unit.variables.len, unit.global_vars.len, unit.types.len, unit.functions.len,
+    if (session_opt) |session| {
+        for (session.elf.dwarf.units) |unit, unit_idx| {
+            std.debug.print("debug unit #{} has: {} variables ({} globals), {} types, {} functions\n", .{
+                unit_idx, unit.variables.len, unit.global_vars.len, unit.types.len, unit.functions.len,
+            });
+            totals[0] += unit.variables.len;
+            totals[1] += unit.global_vars.len;
+            totals[2] += unit.types.len;
+            totals[3] += unit.functions.len;
+        }
+        std.debug.print("totals: {} variables ({} globals), {} types, {} functions\n", .{
+            totals[0], totals[1], totals[2], totals[3],
         });
-        totals[0] += unit.variables.len;
-        totals[1] += unit.global_vars.len;
-        totals[2] += unit.types.len;
-        totals[3] += unit.functions.len;
     }
-    std.debug.print("totals: {} variables ({} globals), {} types, {} functions\n", .{
-        totals[0], totals[1], totals[2], totals[3],
-    });
 
     var last_time = @floatCast(f32, c.glfwGetTime());
 
