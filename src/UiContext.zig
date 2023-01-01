@@ -61,7 +61,7 @@ pub fn init(allocator: Allocator, font_path: []const u8, font_bold_path: []const
         .allocator = allocator,
         .generic_shader = gfx.Shader.from_srcs(allocator, "ui_generic", .{
             .vertex = vertex_shader_src,
-            .geometry = geometry_shader_src,
+            .geometry = null,
             .fragment = fragment_shader_src,
         }),
         .font = try Font.from_ttf(allocator, font_path),
@@ -189,7 +189,7 @@ pub const Node = struct {
 
 pub const CustomDrawFn = fn (
     ui: *UiContext,
-    shader_inputs: *std.ArrayList(ShaderInput),
+    quads: *std.ArrayList(Quad),
     node: *Node,
 ) error{OutOfMemory}!void;
 
@@ -789,55 +789,79 @@ pub fn computeNodeSignal(self: *UiContext, node: *Node) Signal {
 }
 
 pub fn render(self: *UiContext) !void {
-    var shader_inputs = std.ArrayList(ShaderInput).init(self.allocator);
-    defer shader_inputs.deinit();
+    var quads = std.ArrayList(Quad).init(self.allocator);
+    defer quads.deinit();
 
-    try self.setupTreeForRender(&shader_inputs, self.root_node.?);
-    for (self.window_roots.items) |node| try self.setupTreeForRender(&shader_inputs, node);
-    if (self.ctx_menu_root_node) |node| try self.setupTreeForRender(&shader_inputs, node);
-    if (self.tooltip_root_node) |node| try self.setupTreeForRender(&shader_inputs, node);
+    try self.setupTreeForRender(&quads, self.root_node.?);
+    for (self.window_roots.items) |node| try self.setupTreeForRender(&quads, node);
+    if (self.ctx_menu_root_node) |node| try self.setupTreeForRender(&quads, node);
+    if (self.tooltip_root_node) |node| try self.setupTreeForRender(&quads, node);
+
+    const vertex_data = try self.allocator.alloc(VertexData, quads.items.len * 4);
+    defer self.allocator.free(vertex_data);
+    const indices = try self.allocator.alloc(u16, quads.items.len * 6);
+    defer self.allocator.free(indices);
+    for (quads.items) |quad, i| {
+        try self.addRenderDataForInput(vertex_data, indices, quad, i);
+    }
 
     // create vertex buffer
     var inputs_vao: u32 = 0;
     gl.genVertexArrays(1, &inputs_vao);
     defer gl.deleteVertexArrays(1, &inputs_vao);
     gl.bindVertexArray(inputs_vao);
+
     var inputs_vbo: u32 = 0;
     gl.genBuffers(1, &inputs_vbo);
     defer gl.deleteBuffers(1, &inputs_vbo);
     gl.bindBuffer(gl.ARRAY_BUFFER, inputs_vbo);
-    const stride = @sizeOf(ShaderInput);
-    gl.bufferData(gl.ARRAY_BUFFER, @intCast(isize, shader_inputs.items.len * stride), shader_inputs.items.ptr, gl.STATIC_DRAW);
+    gl.bufferData(
+        gl.ARRAY_BUFFER,
+        @intCast(isize, vertex_data.len * @sizeOf(VertexData)),
+        vertex_data.ptr,
+        gl.STATIC_DRAW,
+    );
+
     var field_offset: usize = 0;
-    inline for (@typeInfo(ShaderInput).Struct.fields) |field, i| {
-        const elems = switch (@typeInfo(field.field_type)) {
+    inline for (@typeInfo(VertexData).Struct.fields) |field, i| {
+        const field_type = field.field_type;
+        const elems = switch (@typeInfo(field_type)) {
             .Float, .Int => 1,
             .Array => |array| array.len,
-            else => @compileError("new type in ShaderInput struct: " ++ @typeName(field.field_type)),
+            else => @compileError("implement " ++ @typeName(field_type)),
         };
-        const child_type = switch (@typeInfo(field.field_type)) {
+        const data_type = switch (@typeInfo(field_type)) {
+            .Float, .Int => field_type,
             .Array => |array| array.child,
-            else => field.field_type,
+            else => @compileError("implement " ++ @typeName(field_type)),
         };
+        const stride = @sizeOf(VertexData);
+        const offset_ptr = if (field_offset == 0) null else @intToPtr(*anyopaque, field_offset);
 
-        const offset_ptr = if (field_offset == 0) null else @intToPtr(*const anyopaque, field_offset);
-        switch (@typeInfo(child_type)) {
-            .Float => {
-                const gl_type = gl.FLOAT;
-                gl.vertexAttribPointer(i, elems, gl_type, gl.FALSE, stride, offset_ptr);
-            },
-            .Int => {
-                const type_info = @typeInfo(child_type).Int;
-                std.debug.assert(type_info.signedness == .unsigned);
-                std.debug.assert(type_info.bits == 32);
-                const gl_type = gl.UNSIGNED_INT;
-                gl.vertexAttribIPointer(i, elems, gl_type, stride, offset_ptr);
-            },
-            else => @compileError("new type in ShaderInput struct: " ++ @typeName(child_type)),
-        }
         gl.enableVertexAttribArray(i);
+        switch (@typeInfo(data_type)) {
+            .Float => gl.vertexAttribPointer(i, elems, gl.FLOAT, gl.FALSE, stride, offset_ptr),
+            .Int => {
+                std.debug.assert(@typeInfo(data_type).Int.signedness == .unsigned);
+                std.debug.assert(@typeInfo(data_type).Int.bits == 32);
+                gl.vertexAttribIPointer(i, elems, gl.UNSIGNED_INT, stride, offset_ptr);
+            },
+            else => @compileError("implement " ++ @typeName(data_type)),
+        }
+
         field_offset += @sizeOf(field.field_type);
     }
+
+    var inputs_ebo: u32 = 0;
+    gl.genBuffers(1, &inputs_ebo);
+    defer gl.deleteBuffers(1, &inputs_ebo);
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, inputs_ebo);
+    gl.bufferData(
+        gl.ELEMENT_ARRAY_BUFFER,
+        @intCast(isize, indices.len * @sizeOf(u16)),
+        indices.ptr,
+        gl.STATIC_DRAW,
+    );
 
     // always draw on top of whatever was on screen, no matter what
     var saved_depth_func: c_int = undefined;
@@ -854,10 +878,60 @@ pub fn render(self: *UiContext) !void {
     self.generic_shader.set("icon_atlas", @as(i32, 2));
     self.icon_font.texture.bind(2);
     gl.bindVertexArray(inputs_vao);
-    gl.drawArrays(gl.POINTS, 0, @intCast(i32, shader_inputs.items.len));
+    gl.drawElements(gl.TRIANGLES, @intCast(c_int, indices.len), gl.UNSIGNED_SHORT, null);
 }
 
-fn setupTreeForRender(self: *UiContext, shader_inputs: *std.ArrayList(ShaderInput), root: *Node) !void {
+fn addRenderDataForInput(self: *UiContext, vertex_data: []VertexData, indices: []u16, quad: Quad, quad_idx: usize) !void {
+    _ = self;
+
+    // data that is the same for all verts
+    const base_data = VertexData{
+        .pos = undefined,
+        .rect_min = quad.bottom_left_pos,
+        .rect_max = quad.top_right_pos,
+        .uv = undefined,
+        .color = undefined,
+        .clip_rect_min = quad.clip_rect_min,
+        .clip_rect_max = quad.clip_rect_max,
+        .border_thickness = quad.border_thickness,
+        .which_font = if (quad.which_font) |font_type| @enumToInt(font_type) + 1 else 0,
+    };
+
+    vertex_data[quad_idx * 4 + 0] = blk: {
+        var data = base_data;
+        data.pos = [2]f32{ quad.bottom_left_pos[0], quad.top_right_pos[1] };
+        data.uv = [2]f32{ quad.bottom_left_uv[0], quad.top_right_uv[1] };
+        data.color = quad.top_color;
+        break :blk data;
+    };
+    vertex_data[quad_idx * 4 + 1] = blk: {
+        var data = base_data;
+        data.pos = [2]f32{ quad.top_right_pos[0], quad.top_right_pos[1] };
+        data.uv = [2]f32{ quad.top_right_uv[0], quad.top_right_uv[1] };
+        data.color = quad.top_color;
+        break :blk data;
+    };
+    vertex_data[quad_idx * 4 + 2] = blk: {
+        var data = base_data;
+        data.pos = [2]f32{ quad.top_right_pos[0], quad.bottom_left_pos[1] };
+        data.uv = [2]f32{ quad.top_right_uv[0], quad.bottom_left_uv[1] };
+        data.color = quad.bottom_color;
+        break :blk data;
+    };
+    vertex_data[quad_idx * 4 + 3] = blk: {
+        var data = base_data;
+        data.pos = [2]f32{ quad.bottom_left_pos[0], quad.bottom_left_pos[1] };
+        data.uv = [2]f32{ quad.bottom_left_uv[0], quad.bottom_left_uv[1] };
+        data.color = quad.bottom_color;
+        break :blk data;
+    };
+
+    for ([6]u16{ 0, 3, 1, 1, 3, 2 }) |idx, i| {
+        indices[quad_idx * 6 + i] = @intCast(u16, quad_idx * 4) + idx;
+    }
+}
+
+fn setupTreeForRender(self: *UiContext, quads: *std.ArrayList(Quad), root: *Node) !void {
     // do the whole layout right before rendering
     self.solveIndependentSizes(root);
     self.solveDownwardDependent(root);
@@ -867,15 +941,15 @@ fn setupTreeForRender(self: *UiContext, shader_inputs: *std.ArrayList(ShaderInpu
 
     var node_iterator = DepthFirstNodeIterator{ .cur_node = root };
     while (node_iterator.next()) |node| {
-        try self.addShaderInputsForNode(shader_inputs, node);
+        try self.addQuadsForNode(quads, node);
     }
 }
 
 // small helper for `UiContext.render`
-fn addShaderInputsForNode(self: *UiContext, shader_inputs: *std.ArrayList(ShaderInput), node: *Node) !void {
-    if (node.custom_draw_fn) |draw_fn| return draw_fn(self, shader_inputs, node);
+fn addQuadsForNode(self: *UiContext, quads: *std.ArrayList(Quad), node: *Node) !void {
+    if (node.custom_draw_fn) |draw_fn| return draw_fn(self, quads, node);
 
-    const base_rect = ShaderInput{
+    const base_rect = Quad{
         .bottom_left_pos = node.rect.min,
         .top_right_pos = node.rect.max,
         .bottom_left_uv = vec2{ 0, 0 },
@@ -886,7 +960,7 @@ fn addShaderInputsForNode(self: *UiContext, shader_inputs: *std.ArrayList(Shader
         .border_thickness = node.border_thickness,
         .clip_rect_min = node.clip_rect.min,
         .clip_rect_max = node.clip_rect.max,
-        .which_font = @enumToInt(node.font_type),
+        .which_font = null,
     };
 
     // draw background
@@ -895,7 +969,7 @@ fn addShaderInputsForNode(self: *UiContext, shader_inputs: *std.ArrayList(Shader
         rect.top_color = node.bg_color;
         rect.bottom_color = node.bg_color;
         rect.border_thickness = 0;
-        try shader_inputs.append(rect);
+        try quads.append(rect);
 
         const hot_remove_factor = if (node.flags.draw_active_effects) node.active_trans else 0;
         const effective_hot_trans = node.hot_trans * (1 - hot_remove_factor);
@@ -904,13 +978,13 @@ fn addShaderInputsForNode(self: *UiContext, shader_inputs: *std.ArrayList(Shader
             rect = base_rect;
             rect.border_thickness = 0;
             rect.top_color = vec4{ 1, 1, 1, 0.1 * effective_hot_trans };
-            try shader_inputs.append(rect);
+            try quads.append(rect);
         }
         if (node.flags.draw_active_effects) {
             rect = base_rect;
             rect.border_thickness = 0;
             rect.bottom_color = vec4{ 1, 1, 1, 0.1 * node.active_trans };
-            try shader_inputs.append(rect);
+            try quads.append(rect);
         }
     }
 
@@ -919,13 +993,13 @@ fn addShaderInputsForNode(self: *UiContext, shader_inputs: *std.ArrayList(Shader
         var rect = base_rect;
         rect.top_color = node.border_color;
         rect.bottom_color = node.border_color;
-        try shader_inputs.append(rect);
+        try quads.append(rect);
 
         if (node.flags.draw_hot_effects) {
             rect = base_rect;
             rect.top_color = vec4{ 1, 1, 1, 0.2 * node.hot_trans };
             rect.bottom_color = vec4{ 1, 1, 1, 0.2 * node.hot_trans };
-            try shader_inputs.append(rect);
+            try quads.append(rect);
         }
     }
 
@@ -944,14 +1018,14 @@ fn addShaderInputsForNode(self: *UiContext, shader_inputs: *std.ArrayList(Shader
 
         const display_text = node.display_string;
 
-        const quads = try font.buildQuads(self.allocator, display_text, node.font_size);
-        defer self.allocator.free(quads);
-        for (quads) |quad| {
+        const text_quads = try font.buildQuads(self.allocator, display_text, node.font_size);
+        defer self.allocator.free(text_quads);
+        for (text_quads) |quad| {
             var quad_rect = Rect{ .min = quad.points[0].pos, .max = quad.points[2].pos };
             quad_rect.min += text_pos;
             quad_rect.max += text_pos;
 
-            try shader_inputs.append(.{
+            try quads.append(.{
                 .bottom_left_pos = quad_rect.min,
                 .top_right_pos = quad_rect.max,
                 .bottom_left_uv = quad.points[0].uv,
@@ -962,21 +1036,33 @@ fn addShaderInputsForNode(self: *UiContext, shader_inputs: *std.ArrayList(Shader
                 .border_thickness = 0,
                 .clip_rect_min = base_rect.clip_rect_min,
                 .clip_rect_max = base_rect.clip_rect_max,
-                .which_font = base_rect.which_font,
+                .which_font = node.font_type,
             });
         }
     }
 }
 
-// this struct must have the exact layout expected by the shader
-pub const ShaderInput = extern struct {
-    bottom_left_pos: [2]f32,
-    top_right_pos: [2]f32,
-    bottom_left_uv: [2]f32,
-    top_right_uv: [2]f32,
-    top_color: [4]f32,
-    bottom_color: [4]f32,
+pub const Quad = struct {
+    bottom_left_pos: vec2,
+    top_right_pos: vec2,
+    bottom_left_uv: vec2,
+    top_right_uv: vec2,
+    top_color: vec4,
+    bottom_color: vec4,
     corner_roundness: f32,
+    border_thickness: f32,
+    clip_rect_min: vec2,
+    clip_rect_max: vec2,
+    which_font: ?FontType,
+};
+
+// this struct must have the exact layout expected by the shader
+pub const VertexData = extern struct {
+    pos: [2]f32,
+    rect_min: [2]f32,
+    rect_max: [2]f32,
+    uv: [2]f32,
+    color: [4]f32,
     border_thickness: f32,
     clip_rect_min: [2]f32,
     clip_rect_max: [2]f32,
@@ -986,145 +1072,40 @@ pub const ShaderInput = extern struct {
 const vertex_shader_src =
     \\#version 330 core
     \\
-    \\layout (location = 0) in vec2 attrib_bottom_left_pos;
-    \\layout (location = 1) in vec2 attrib_top_right_pos;
-    \\layout (location = 2) in vec2 attrib_bottom_left_uv;
-    \\layout (location = 3) in vec2 attrib_top_right_uv;
-    \\layout (location = 4) in vec4 attrib_top_color;
-    \\layout (location = 5) in vec4 attrib_bottom_color;
-    \\layout (location = 6) in float attrib_corner_roundness;
-    \\layout (location = 7) in float attrib_border_thickness;
-    \\layout (location = 8) in vec2 attrib_clip_rect_min;
-    \\layout (location = 9) in vec2 attrib_clip_rect_max;
-    \\layout (location = 10) in uint attrib_which_font;
+    \\layout (location = 0) in vec2 attrib_pos;
+    \\layout (location = 1) in vec2 attrib_rect_min;
+    \\layout (location = 2) in vec2 attrib_rect_max;
+    \\layout (location = 3) in vec2 attrib_uv;
+    \\layout (location = 4) in vec4 attrib_color;
+    \\layout (location = 5) in float attrib_border_thickness; // in pixels
+    \\layout (location = 6) in vec2 attrib_clip_rect_min;
+    \\layout (location = 7) in vec2 attrib_clip_rect_max;
+    \\layout (location = 8) in uint attrib_which_font;
     \\
     \\uniform vec2 screen_size; // in pixels
     \\
     \\out VS_Out {
-    \\    vec2 bottom_left_pos;
-    \\    vec2 top_right_pos;
-    \\    vec2 bottom_left_uv;
-    \\    vec2 top_right_uv;
-    \\    vec4 top_color;
-    \\    vec4 bottom_color;
-    \\    float corner_roundness;
-    \\    float border_thickness;
-    \\    vec2 rect_size;
-    \\    vec2 clip_rect_min;
-    \\    vec2 clip_rect_max;
-    \\    uint which_font;
+    \\    flat vec2 rect_min;
+    \\    flat vec2 rect_max;
+    \\    vec2 uv;
+    \\    vec4 color;
+    \\    flat float border_thickness;
+    \\    flat vec2 clip_rect_min;
+    \\    flat vec2 clip_rect_max;
+    \\    flat uint which_font;
     \\} vs_out;
     \\
     \\void main() {
-    \\    // the input position coordinates come in pixel screen space (which goes from
-    \\    // (0, 0) at the bottom left of the screen, to (screen_size.x, screen_size.y) at
-    \\    // the top right of the screen) so we need to transform them into NDC (which goes
-    \\    // from (-1, -1) to (1, 1))
-    \\    vs_out.bottom_left_pos = (attrib_bottom_left_pos / screen_size) * 2 - vec2(1);
-    \\    vs_out.top_right_pos = (attrib_top_right_pos / screen_size) * 2 - vec2(1);
-    \\    vs_out.bottom_left_uv = attrib_bottom_left_uv;
-    \\    vs_out.top_right_uv = attrib_top_right_uv;
-    \\    vs_out.top_color = attrib_top_color;
-    \\    vs_out.bottom_color = attrib_bottom_color;
-    \\    vs_out.corner_roundness = attrib_corner_roundness;
+    \\    gl_Position = vec4(2 * (attrib_pos / screen_size) - vec2(1), 0, 1);
+    \\
+    \\    vs_out.rect_min         = attrib_rect_min;
+    \\    vs_out.rect_max         = attrib_rect_max;
+    \\    vs_out.uv               = attrib_uv;
+    \\    vs_out.color            = attrib_color;
     \\    vs_out.border_thickness = attrib_border_thickness;
-    \\    vs_out.rect_size = attrib_top_right_pos - attrib_bottom_left_pos;
-    \\    vs_out.clip_rect_min = attrib_clip_rect_min;
-    \\    vs_out.clip_rect_max = attrib_clip_rect_max;
-    \\    vs_out.which_font = attrib_which_font;
-    \\}
-    \\
-;
-const geometry_shader_src =
-    \\#version 330 core
-    \\
-    \\layout (points) in;
-    \\layout (triangle_strip, max_vertices = 6) out;
-    \\
-    \\uniform vec2 screen_size; // in pixels
-    \\
-    \\in VS_Out {
-    \\    vec2 bottom_left_pos;
-    \\    vec2 top_right_pos;
-    \\    vec2 bottom_left_uv;
-    \\    vec2 top_right_uv;
-    \\    vec4 top_color;
-    \\    vec4 bottom_color;
-    \\    float corner_roundness;
-    \\    float border_thickness;
-    \\    vec2 rect_size;
-    \\    vec2 clip_rect_min;
-    \\    vec2 clip_rect_max;
-    \\    uint which_font;
-    \\} gs_in[];
-    \\
-    \\out GS_Out {
-    \\    vec2 uv;
-    \\    vec4 color;
-    \\    vec2 quad_coords;
-    \\    float quad_size_ratio;
-    \\    float corner_roundness;
-    \\    float border_thickness;
-    \\    vec2 rect_size;
-    \\    vec2 clip_rect_min;
-    \\    vec2 clip_rect_max;
-    \\    flat uint which_font;
-    \\} gs_out;
-    \\
-    \\void main() {
-    \\    vec4 bottom_left_pos  = vec4(gs_in[0].bottom_left_pos, 0, 1);
-    \\    vec2 bottom_left_uv   = gs_in[0].bottom_left_uv;
-    \\    vec4 top_right_pos    = vec4(gs_in[0].top_right_pos, 0, 1);
-    \\    vec2 top_right_uv     = gs_in[0].top_right_uv;
-    \\    vec4 bottom_right_pos = vec4(top_right_pos.x, bottom_left_pos.y, 0, 1);
-    \\    vec2 bottom_right_uv  = vec2(top_right_uv.x,  bottom_left_uv.y);
-    \\    vec4 top_left_pos     = vec4(bottom_left_pos.x, top_right_pos.y, 0, 1);
-    \\    vec2 top_left_uv      = vec2(bottom_left_uv.x,  top_right_uv.y);
-    \\
-    \\    vec2 quad_size = gs_in[0].top_right_pos - gs_in[0].bottom_left_pos;
-    \\
-    \\    // some things are the same for all verts of the quad
-    \\    gs_out.corner_roundness = gs_in[0].corner_roundness;
-    \\    gs_out.border_thickness = gs_in[0].border_thickness;
-    \\    gs_out.rect_size = gs_in[0].rect_size;
-    \\    gs_out.quad_size_ratio = (quad_size.x / quad_size.y) * (screen_size.x / screen_size.y);
-    \\    gs_out.clip_rect_min = gs_in[0].clip_rect_min;
-    \\    gs_out.clip_rect_max = gs_in[0].clip_rect_max;
-    \\    gs_out.which_font = gs_in[0].which_font;
-    \\
-    \\    gl_Position        = bottom_left_pos;
-    \\    gs_out.uv          = bottom_left_uv;
-    \\    gs_out.color       = gs_in[0].bottom_color;
-    \\    gs_out.quad_coords = vec2(0, 0);
-    \\    EmitVertex();
-    \\    gl_Position        = bottom_right_pos;
-    \\    gs_out.uv          = bottom_right_uv;
-    \\    gs_out.color       = gs_in[0].bottom_color;
-    \\    gs_out.quad_coords = vec2(1, 0);
-    \\    EmitVertex();
-    \\    gl_Position        = top_right_pos;
-    \\    gs_out.uv          = top_right_uv;
-    \\    gs_out.color       = gs_in[0].top_color;
-    \\    gs_out.quad_coords = vec2(1, 1);
-    \\    EmitVertex();
-    \\    EndPrimitive();
-    \\
-    \\    gl_Position        = bottom_left_pos;
-    \\    gs_out.uv          = bottom_left_uv;
-    \\    gs_out.color       = gs_in[0].bottom_color;
-    \\    gs_out.quad_coords = vec2(0, 0);
-    \\    EmitVertex();
-    \\    gl_Position        = top_right_pos;
-    \\    gs_out.uv          = top_right_uv;
-    \\    gs_out.color       = gs_in[0].top_color;
-    \\    gs_out.quad_coords = vec2(1, 1);
-    \\    EmitVertex();
-    \\    gl_Position        = top_left_pos;
-    \\    gs_out.uv          = top_left_uv;
-    \\    gs_out.color       = gs_in[0].top_color;
-    \\    gs_out.quad_coords = vec2(0, 1);
-    \\    EmitVertex();
-    \\    EndPrimitive();
+    \\    vs_out.clip_rect_min    = attrib_clip_rect_min;
+    \\    vs_out.clip_rect_max    = attrib_clip_rect_max;
+    \\    vs_out.which_font       = attrib_which_font;
     \\}
     \\
 ;
@@ -1133,20 +1114,14 @@ const fragment_shader_src =
     \\
     \\in vec4 gl_FragCoord;
     \\
-    \\in GS_Out {
+    \\in VS_Out {
+    \\    flat vec2 rect_min;
+    \\    flat vec2 rect_max;
     \\    vec2 uv;
     \\    vec4 color;
-    \\    vec2 quad_coords;
-    \\
-    \\    float quad_size_ratio;
-    \\    float corner_roundness; // 0 is square quad, 1 is full circle
-    \\
-    \\    // these are all in pixels
-    \\    float border_thickness;
-    \\    vec2 rect_size;
-    \\    vec2 clip_rect_min;
-    \\    vec2 clip_rect_max;
-    \\
+    \\    flat float border_thickness;
+    \\    flat vec2 clip_rect_min;
+    \\    flat vec2 clip_rect_max;
     \\    flat uint which_font;
     \\} fs_in;
     \\
@@ -1162,36 +1137,29 @@ const fragment_shader_src =
     \\           (rect_min.y <= point.y && point.y <= rect_max.y);
     \\}
     \\
-    \\bool insideBorder(vec2 quad_coords) {
-    \\    if (fs_in.border_thickness == 0) return true;
-    \\
-    \\    vec2 coords = abs((quad_coords * 2) - vec2(1));
-    \\    vec2 side_dist = (fs_in.rect_size / 2) * (vec2(1) - coords);
-    \\    return side_dist.x <= fs_in.border_thickness || side_dist.y <= fs_in.border_thickness;
+    \\bool insideBorder() {
+    \\    vec2 pixel_coord = gl_FragCoord.xy - vec2(0.5);
+    \\    vec2 rect_min = fs_in.rect_min + vec2(fs_in.border_thickness);
+    \\    vec2 rect_max = fs_in.rect_max - vec2(fs_in.border_thickness);
+    \\    return !rectContains(rect_min, rect_max, pixel_coord);
     \\}
     \\
     \\void main() {
     \\    vec2 pixel_coord = gl_FragCoord.xy - vec2(0.5);
-    \\    if (!rectContains(fs_in.clip_rect_min, fs_in.clip_rect_max, pixel_coord)) {
-    \\        FragColor = vec4(0);
-    \\        return;
-    \\    }
-    \\
-    \\    vec2 uv = fs_in.uv;
-    \\    vec4 color = fs_in.color;
-    \\    vec2 quad_coords = fs_in.quad_coords;
+    \\    if (!rectContains(fs_in.clip_rect_min, fs_in.clip_rect_max, pixel_coord)) discard;
     \\
     \\    float alpha = 1;
+    \\    vec2 uv = fs_in.uv;
     \\    switch (fs_in.which_font) {
-    \\        case 0u: alpha = texture(text_atlas, uv).r; break;
-    \\        case 1u: alpha = texture(text_bold_atlas, uv).r; break;
-    \\        case 2u: alpha = texture(icon_atlas, uv).r; break;
+    \\        case 0u: alpha = 1; break;
+    \\        case 1u: alpha = texture(text_atlas, uv).r; break;
+    \\        case 2u: alpha = texture(text_bold_atlas, uv).r; break;
+    \\        case 3u: alpha = texture(icon_atlas, uv).r; break;
     \\    }
-    \\    if (uv == vec2(0, 0)) alpha = 1;
     \\
-    \\    if (!insideBorder(quad_coords)) alpha = 0;
+    \\    if (fs_in.border_thickness != 0.0f && !insideBorder()) discard;
     \\
-    \\    FragColor = color * vec4(1, 1, 1, alpha);
+    \\    FragColor = fs_in.color * vec4(1, 1, 1, alpha);
     \\}
     \\
 ;

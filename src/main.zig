@@ -1688,7 +1688,7 @@ fn FuzzySearchOptions(comptime Ctx: type, comptime max_slots: usize) type {
         };
         pub fn CustomDrawMatchHighlight(
             ui: *UiContext,
-            shader_inputs: *std.ArrayList(UiContext.ShaderInput),
+            quads: *std.ArrayList(UiContext.Quad),
             node: *UiContext.Node,
         ) error{OutOfMemory}!void {
             const trace = tracy.Zone(@src());
@@ -1727,7 +1727,7 @@ fn FuzzySearchOptions(comptime Ctx: type, comptime max_slots: usize) type {
                 quad_rect.min += text_pos;
                 quad_rect.max += text_pos;
 
-                try shader_inputs.append(.{
+                try quads.append(.{
                     .bottom_left_pos = quad_rect.min,
                     .top_right_pos = quad_rect.max,
                     .bottom_left_uv = quad.points[0].uv,
@@ -1738,10 +1738,7 @@ fn FuzzySearchOptions(comptime Ctx: type, comptime max_slots: usize) type {
                     .border_thickness = 0,
                     .clip_rect_min = node.clip_rect.min,
                     .clip_rect_max = node.clip_rect.max,
-                    .which_font = if (is_highlight)
-                        @enumToInt(UiContext.FontType.text_bold)
-                    else
-                        @enumToInt(UiContext.FontType.text),
+                    .which_font = if (is_highlight) .text_bold else .text,
                 });
             }
         }
