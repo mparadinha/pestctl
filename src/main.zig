@@ -1,7 +1,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const c = @import("c.zig");
-const Window = @import("window.zig").Window;
+const Window = @import("Window.zig");
 const gl = @import("gl_4v3.zig");
 const gfx = @import("graphics.zig");
 const math = @import("math.zig");
@@ -104,7 +104,7 @@ pub fn main() !void {
     var width: u32 = 1600;
     var height: u32 = 900;
     var window = try Window.init(allocator, width, height, "pestctl");
-    window.finish_setup();
+    window.finishSetup();
     defer window.deinit();
 
     // GL state that we never change
@@ -180,13 +180,13 @@ pub fn main() !void {
 
     var frame_idx: u64 = 0;
 
-    while (!window.should_close()) {
+    while (!window.shouldClose()) {
         //std.debug.print("frame_idx={}\n", .{frame_idx});
 
         var frame_arena = std.heap.ArenaAllocator.init(allocator);
         defer frame_arena.deinit();
 
-        const framebuf_size = window.get_framebuffer_size();
+        const framebuf_size = try window.getFramebufferSize();
         width = framebuf_size[0];
         height = framebuf_size[1];
         gl.viewport(0, 0, @intCast(i32, width), @intCast(i32, height));
@@ -196,7 +196,7 @@ pub fn main() !void {
         const dt = cur_time - last_time;
         last_time = cur_time;
 
-        const mouse_pos = window.get_mouse_pos();
+        const mouse_pos = try window.getMousePos();
 
         try ui.startBuild(width, height, mouse_pos, &window.event_queue);
 
@@ -698,7 +698,7 @@ pub fn main() !void {
             dbg_ui_node_list_idx = std.math.clamp(dbg_ui_node_list_idx, 0, selected_nodes.items.len - 1);
 
             if (window.event_queue.find(.MouseUp, c.GLFW_MOUSE_BUTTON_MIDDLE)) |ev_idx| blk: {
-                const mods = window.get_modifiers();
+                const mods = window.getModifiers();
                 if (!(mods.shift and mods.control)) break :blk;
                 if (dbg_ui_node_info_top_left != null) {
                     dbg_ui_node_info_top_left = null;

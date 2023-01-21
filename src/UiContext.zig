@@ -9,7 +9,7 @@ const vec3 = math.vec3;
 const vec4 = math.vec4;
 const mat4 = math.mat4;
 const Font = @import("Font.zig");
-const window = @import("window.zig");
+const Window = @import("Window.zig");
 const UiContext = @This();
 pub usingnamespace @import("ui_widgets.zig");
 
@@ -22,7 +22,7 @@ build_arena: std.heap.ArenaAllocator,
 node_table: NodeTable,
 prng: PRNG,
 
-window_ptr: *window.Window, // only used for setting the cursor
+window_ptr: *Window, // only used for setting the cursor
 
 // if we accidentally create two nodes with the same hash in the one frame this
 // might lead to the node tree having cycles (which hangs whenever we traverse it)
@@ -45,7 +45,7 @@ tooltip_root_node: ?*Node,
 window_roots: std.ArrayList(*Node),
 screen_size: vec2,
 mouse_pos: vec2, // in pixels
-events: *window.EventQueue,
+events: *Window.EventQueue,
 
 // cross-frame data
 frame_idx: usize,
@@ -56,7 +56,7 @@ focused_node_key: ?NodeKey,
 const NodeKey = NodeTable.Hash;
 
 // call `deinit` to cleanup resources
-pub fn init(allocator: Allocator, font_path: []const u8, font_bold_path: []const u8, icon_font_path: []const u8, window_ptr: *window.Window) !UiContext {
+pub fn init(allocator: Allocator, font_path: []const u8, font_bold_path: []const u8, icon_font_path: []const u8, window_ptr: *Window) !UiContext {
     return UiContext{
         .allocator = allocator,
         .generic_shader = gfx.Shader.from_srcs(allocator, "ui_generic", .{
@@ -148,7 +148,7 @@ pub const Node = struct {
     border_thickness: f32,
     pref_size: [2]Size,
     child_layout_axis: Axis,
-    cursor_type: window.CursorType,
+    cursor_type: Window.CursorType,
     font_type: FontType,
     font_size: f32,
     text_align: TextAlign,
@@ -205,7 +205,7 @@ pub const Style = struct {
     border_thickness: f32 = 2,
     pref_size: [2]Size = .{ Size.text_dim(1), Size.text_dim(1) },
     child_layout_axis: Axis = .y,
-    cursor_type: window.CursorType = .arrow,
+    cursor_type: Window.CursorType = .arrow,
     font_type: FontType = .text,
     font_size: f32 = 18,
     text_align: TextAlign = .left,
@@ -471,7 +471,7 @@ pub fn addNodeRawStrings(self: *UiContext, flags: Flags, display_string_in: []co
     // update cross-frame (persistant) data
     node.last_frame_touched = self.frame_idx;
     if (!lookup_result.found_existing) {
-        node.signal = self.computeNodeSignal(node);
+        node.signal = try self.computeNodeSignal(node);
         node.first_frame_touched = self.frame_idx;
         node.rel_pos = vec2{ 0, 0 };
         node.rel_pos_placement = .btm_left;
@@ -565,14 +565,14 @@ pub fn setFocusedNode(self: *UiContext, node: *Node) void {
     self.focused_node_key = self.keyFromNode(node);
 }
 
-pub fn startBuild(self: *UiContext, screen_w: u32, screen_h: u32, mouse_pos: vec2, events: *window.EventQueue) !void {
+pub fn startBuild(self: *UiContext, screen_w: u32, screen_h: u32, mouse_pos: vec2, events: *Window.EventQueue) !void {
     self.hot_node_key = null;
     // get the signal in the reverse order that we render in (if a node is on top
     // of another, the top one should get the inputs, no the bottom one)
-    if (self.tooltip_root_node) |node| self.computeSignalsForTree(node);
-    if (self.ctx_menu_root_node) |node| self.computeSignalsForTree(node);
-    for (self.window_roots.items) |node| self.computeSignalsForTree(node);
-    if (self.root_node) |node| self.computeSignalsForTree(node);
+    if (self.tooltip_root_node) |node| try self.computeSignalsForTree(node);
+    if (self.ctx_menu_root_node) |node| try self.computeSignalsForTree(node);
+    for (self.window_roots.items) |node| try self.computeSignalsForTree(node);
+    if (self.root_node) |node| try self.computeSignalsForTree(node);
 
     // clear out the whole arena
     self.build_arena.deinit();
@@ -612,11 +612,11 @@ pub fn startBuild(self: *UiContext, screen_w: u32, screen_h: u32, mouse_pos: vec
 
     self.first_error_trace = null;
 
-    var mouse_cursor = window.CursorType.arrow;
+    var mouse_cursor = Window.CursorType.arrow;
     if (self.focused_node_key) |key| mouse_cursor = self.node_table.getFromHash(key).?.cursor_type;
     if (self.hot_node_key) |key| mouse_cursor = self.node_table.getFromHash(key).?.cursor_type;
     if (self.active_node_key) |key| mouse_cursor = self.node_table.getFromHash(key).?.cursor_type;
-    self.window_ptr.set_cursor(mouse_cursor);
+    self.window_ptr.setCursor(mouse_cursor);
 }
 
 pub fn endBuild(self: *UiContext, dt: f32) void {
@@ -660,21 +660,21 @@ pub fn endBuild(self: *UiContext, dt: f32) void {
     self.frame_idx += 1;
 }
 
-fn computeSignalsForTree(self: *UiContext, root: *Node) void {
+fn computeSignalsForTree(self: *UiContext, root: *Node) !void {
     var node_iterator = ReverseRenderOrderNodeIterator.init(root);
     while (node_iterator.next()) |node| {
-        node.signal = self.computeNodeSignal(node);
+        node.signal = try self.computeNodeSignal(node);
     }
 }
 
-pub fn computeNodeSignal(self: *UiContext, node: *Node) Signal {
+pub fn computeNodeSignal(self: *UiContext, node: *Node) !Signal {
     var signal = Signal{
         .clicked = false,
         .pressed = false,
         .released = false,
         .double_clicked = false,
         .triple_clicked = false,
-        .mouse_pos = self.window_ptr.get_mouse_pos() - node.rect.min,
+        .mouse_pos = (try self.window_ptr.getMousePos()) - node.rect.min,
         .hovering = false,
         .held_down = false,
         .enter_pressed = false,
