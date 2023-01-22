@@ -9,6 +9,7 @@ const vec2 = math.vec2;
 const vec4 = math.vec4;
 const Font = @import("Font.zig");
 const UiContext = @import("UiContext.zig");
+const Icons = UiContext.Icons;
 const Size = UiContext.Size;
 const Session = @import("Session.zig");
 const Elf = @import("Elf.zig");
@@ -35,38 +36,6 @@ fn parseCmdlineArgs(arg_slices: [][:0]const u8) CmdlineArgs {
 
     return args;
 }
-
-// icon font (and this mapping) was generated using fontello.com
-pub const Icons = struct {
-    // zig fmt: off
-    pub const cancel        = utf8LitFromCodepoint(59392);
-    pub const th_list       = utf8LitFromCodepoint(59393);
-    pub const search        = utf8LitFromCodepoint(59394);
-    pub const plus_circled  = utf8LitFromCodepoint(59395);
-    pub const cog           = utf8LitFromCodepoint(59396);
-    pub const ok            = utf8LitFromCodepoint(59397);
-    pub const circle        = utf8LitFromCodepoint(61713);
-    pub const up_open       = utf8LitFromCodepoint(59398);
-    pub const right_open    = utf8LitFromCodepoint(59399);
-    pub const left_open     = utf8LitFromCodepoint(59400);
-    pub const down_open     = utf8LitFromCodepoint(59401);
-    pub const plus_squared  = utf8LitFromCodepoint(61694);
-    pub const minus_squared = utf8LitFromCodepoint(61766);
-    pub const plus          = utf8LitFromCodepoint(59402);
-    // zig fmt: on
-
-    fn utf8Len(comptime codepoint: u21) u3 {
-        return std.unicode.utf8CodepointSequenceLength(codepoint) catch unreachable;
-    }
-    fn utf8LitFromCodepoint(comptime codepoint: u21) *const [utf8Len(codepoint):0]u8 {
-        comptime {
-            var buf: [utf8Len(codepoint):0]u8 = undefined;
-            _ = std.unicode.utf8Encode(codepoint, &buf) catch unreachable;
-            buf[buf.len] = 0;
-            return &buf;
-        }
-    }
-};
 
 pub const SessionCmd = union(enum) {
     open_src_file: []const u8, // could be relative or absolute path
@@ -116,11 +85,11 @@ pub fn main() !void {
     gl.depthFunc(gl.LEQUAL);
     gl.enable(gl.LINE_SMOOTH);
 
-    var ui = try UiContext.init(allocator, "VictorMono-Regular.ttf", "VictorMono-Bold.ttf", "icons.ttf", &window);
+    var ui = try UiContext.init(allocator, .{}, &window);
     defer ui.deinit();
 
     // this second UiContext is meant to use for debugging the normal ui (but who debugs this one? 🤔)
-    var dbg_ui = try UiContext.init(allocator, "VictorMono-Regular.ttf", "VictorMono-Bold.ttf", "icons.ttf", &window);
+    var dbg_ui = try UiContext.init(allocator, .{}, &window);
     defer dbg_ui.deinit();
     var dbg_ui_active = false;
     var dbg_ui_node_list_idx: usize = 0;

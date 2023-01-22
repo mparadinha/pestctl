@@ -13,6 +13,8 @@ const Window = @import("Window.zig");
 const UiContext = @This();
 pub usingnamespace @import("ui_widgets.zig");
 
+const build_opts = @import("build_opts");
+
 allocator: Allocator,
 generic_shader: gfx.Shader,
 font: Font,
@@ -55,8 +57,45 @@ focused_node_key: ?NodeKey,
 
 const NodeKey = NodeTable.Hash;
 
+pub const FontOptions = struct {
+    font_path: []const u8 = build_opts.resource_dir ++ "/VictorMono-Regular.ttf",
+    bold_font_path: []const u8 = build_opts.resource_dir ++ "/VictorMono-Bold.ttf",
+    icon_font_path: []const u8 = build_opts.resource_dir ++ "/icons.ttf",
+};
+// icon font (and this mapping) was generated using fontello.com
+pub const Icons = struct {
+    // zig fmt: off
+    pub const cancel        = utf8LitFromCodepoint(59392);
+    pub const th_list       = utf8LitFromCodepoint(59393);
+    pub const search        = utf8LitFromCodepoint(59394);
+    pub const plus_circled  = utf8LitFromCodepoint(59395);
+    pub const cog           = utf8LitFromCodepoint(59396);
+    pub const ok            = utf8LitFromCodepoint(59397);
+    pub const circle        = utf8LitFromCodepoint(61713);
+    pub const up_open       = utf8LitFromCodepoint(59398);
+    pub const right_open    = utf8LitFromCodepoint(59399);
+    pub const left_open     = utf8LitFromCodepoint(59400);
+    pub const down_open     = utf8LitFromCodepoint(59401);
+    pub const plus_squared  = utf8LitFromCodepoint(61694);
+    pub const minus_squared = utf8LitFromCodepoint(61766);
+    pub const plus          = utf8LitFromCodepoint(59402);
+    // zig fmt: on
+
+    fn utf8Len(comptime codepoint: u21) u3 {
+        return std.unicode.utf8CodepointSequenceLength(codepoint) catch unreachable;
+    }
+    fn utf8LitFromCodepoint(comptime codepoint: u21) *const [utf8Len(codepoint):0]u8 {
+        comptime {
+            var buf: [utf8Len(codepoint):0]u8 = undefined;
+            _ = std.unicode.utf8Encode(codepoint, &buf) catch unreachable;
+            buf[buf.len] = 0;
+            return &buf;
+        }
+    }
+};
+
 // call `deinit` to cleanup resources
-pub fn init(allocator: Allocator, font_path: []const u8, font_bold_path: []const u8, icon_font_path: []const u8, window_ptr: *Window) !UiContext {
+pub fn init(allocator: Allocator, font_opts: FontOptions, window_ptr: *Window) !UiContext {
     return UiContext{
         .allocator = allocator,
         .generic_shader = gfx.Shader.from_srcs(allocator, "ui_generic", .{
@@ -64,9 +103,9 @@ pub fn init(allocator: Allocator, font_path: []const u8, font_bold_path: []const
             .geometry = geometry_shader_src,
             .fragment = fragment_shader_src,
         }),
-        .font = try Font.from_ttf(allocator, font_path),
-        .font_bold = try Font.from_ttf(allocator, font_bold_path),
-        .icon_font = try Font.from_ttf(allocator, icon_font_path),
+        .font = try Font.from_ttf(allocator, font_opts.font_path),
+        .font_bold = try Font.from_ttf(allocator, font_opts.bold_font_path),
+        .icon_font = try Font.from_ttf(allocator, font_opts.icon_font_path),
         .build_arena = std.heap.ArenaAllocator.init(allocator),
         .node_table = NodeTable.init(allocator),
         .prng = PRNG.init(0),

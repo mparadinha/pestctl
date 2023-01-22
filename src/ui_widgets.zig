@@ -13,6 +13,7 @@ const Rect = UiContext.Rect;
 const Size = UiContext.Size;
 const Axis = UiContext.Axis;
 const Placement = UiContext.Placement;
+const Icons = UiContext.Icons;
 const text_hpadding = UiContext.text_hpadding;
 const text_vpadding = UiContext.text_vpadding;
 
@@ -236,7 +237,6 @@ pub fn startScrollRegion(self: *UiContext, hash_string: []const u8) *Node {
 }
 
 pub fn endScrollRegion(self: *UiContext, parent: *Node, start_scroll: f32, end_scroll: f32) void {
-    const Icons = @import("main.zig").Icons;
     const hash_string = parent.hash_string;
 
     const bar_node = self.addNode(.{ .draw_background = true, .no_id = true, .floating_x = true }, "", .{});
@@ -297,8 +297,6 @@ pub fn endScrollRegion(self: *UiContext, parent: *Node, start_scroll: f32, end_s
 
 // TODO
 pub fn dropDownList(self: *UiContext, hash_string: []const u8, options: []const []const u8, chosen_idx: *usize, is_open: *bool) void {
-    const Icons = @import("main.zig").Icons;
-
     const choice_parent_size = [2]Size{ Size.by_children(1), Size.text_dim(1) };
     const choice_parent = self.addNodeF(.{}, "###{s}:choice_parent", .{hash_string}, .{ .pref_size = choice_parent_size, .child_layout_axis = .x });
     self.pushParent(choice_parent);
