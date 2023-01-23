@@ -33,14 +33,6 @@ pub fn label(self: *UiContext, string: []const u8) void {
     }, string, .{});
 }
 
-pub fn labelF(self: *UiContext, comptime fmt: []const u8, args: anytype) void {
-    const str = std.fmt.allocPrint(self.build_arena.allocator(), fmt, args) catch |e| blk: {
-        self.setErrorInfo(@errorReturnTrace(), @errorName(e));
-        break :blk "";
-    };
-    self.label(str);
-}
-
 pub fn labelBox(self: *UiContext, string: []const u8) void {
     _ = self.addNode(.{
         .no_id = true,
@@ -51,27 +43,11 @@ pub fn labelBox(self: *UiContext, string: []const u8) void {
     }, string, .{});
 }
 
-pub fn labelBoxF(self: *UiContext, comptime fmt: []const u8, args: anytype) void {
-    const str = std.fmt.allocPrint(self.build_arena.allocator(), fmt, args) catch |e| blk: {
-        self.setErrorInfo(@errorReturnTrace(), @errorName(e));
-        break :blk "";
-    };
-    self.labelBox(str);
-}
-
 pub fn text(self: *UiContext, string: []const u8) Signal {
     const node = self.addNode(.{
         .draw_text = true,
     }, string, .{});
     return node.signal;
-}
-
-pub fn textF(self: *UiContext, comptime fmt: []const u8, args: anytype) Signal {
-    const str = std.fmt.allocPrint(self.build_arena.allocator(), fmt, args) catch |e| blk: {
-        self.setErrorInfo(@errorReturnTrace(), @errorName(e));
-        break :blk "";
-    };
-    return self.text(str);
 }
 
 pub fn textBox(self: *UiContext, string: []const u8) Signal {
@@ -81,14 +57,6 @@ pub fn textBox(self: *UiContext, string: []const u8) Signal {
         .draw_background = true,
     }, string, .{});
     return node.signal;
-}
-
-pub fn textBoxF(self: *UiContext, comptime fmt: []const u8, args: anytype) Signal {
-    const str = std.fmt.allocPrint(self.build_arena.allocator(), fmt, args) catch |e| blk: {
-        self.setErrorInfo(@errorReturnTrace(), @errorName(e));
-        break :blk "";
-    };
-    return self.textBox(str);
 }
 
 pub fn button(self: *UiContext, string: []const u8) Signal {
@@ -103,14 +71,6 @@ pub fn button(self: *UiContext, string: []const u8) Signal {
         .cursor_type = .hand,
     });
     return node.signal;
-}
-
-pub fn buttonF(self: *UiContext, comptime fmt: []const u8, args: anytype) Signal {
-    const str = std.fmt.allocPrint(self.build_arena.allocator(), fmt, args) catch |e| blk: {
-        self.setErrorInfo(@errorReturnTrace(), @errorName(e));
-        break :blk "";
-    };
-    return self.button(str);
 }
 
 pub fn iconButton(self: *UiContext, string: []const u8) Signal {
@@ -130,16 +90,19 @@ pub fn subtleIconButton(self: *UiContext, string: []const u8) Signal {
     return node.signal;
 }
 
-pub fn subtleIconButtonF(self: *UiContext, comptime fmt: []const u8, args: anytype) Signal {
-    const node = self.addNodeF(.{
-        .clickable = true,
-        .draw_text = true,
-        .draw_active_effects = true,
-    }, fmt, args, .{
-        .cursor_type = .hand,
-        .font_type = .icon,
-    });
-    return node.signal;
+pub fn checkBox(self: *UiContext, string: []const u8, value: *bool) Signal {
+    const parent_size = [2]Size{ Size.by_children(1), Size.by_children(1) };
+    const layout_parent = self.pushLayoutParentF("{s}_layout_parent", .{string}, parent_size, .x);
+    layout_parent.flags.draw_background = true;
+    defer self.popParentAssert(layout_parent);
+
+    const box_icon = if (value.*) Icons.ok else " ";
+    const box_signal = self.iconButtonF("{s}###{s}_button", .{ box_icon, string });
+    if (box_signal.clicked) value.* = !value.*;
+
+    self.label(string);
+
+    return box_signal;
 }
 
 pub fn pushLayoutParentF(self: *UiContext, comptime fmt: []const u8, args: anytype, size: [2]Size, layout_axis: Axis) *Node {
@@ -844,3 +807,67 @@ const Utf8Viewer = struct {
         return self.bytes[start_byte_idx..end_byte_idx];
     }
 };
+
+pub fn labelF(self: *UiContext, comptime fmt: []const u8, args: anytype) void {
+    const str = std.fmt.allocPrint(self.build_arena.allocator(), fmt, args) catch |e| blk: {
+        self.setErrorInfo(@errorReturnTrace(), @errorName(e));
+        break :blk "";
+    };
+    self.label(str);
+}
+
+pub fn labelBoxF(self: *UiContext, comptime fmt: []const u8, args: anytype) void {
+    const str = std.fmt.allocPrint(self.build_arena.allocator(), fmt, args) catch |e| blk: {
+        self.setErrorInfo(@errorReturnTrace(), @errorName(e));
+        break :blk "";
+    };
+    self.labelBox(str);
+}
+
+pub fn textF(self: *UiContext, comptime fmt: []const u8, args: anytype) Signal {
+    const str = std.fmt.allocPrint(self.build_arena.allocator(), fmt, args) catch |e| blk: {
+        self.setErrorInfo(@errorReturnTrace(), @errorName(e));
+        break :blk "";
+    };
+    return self.text(str);
+}
+
+pub fn textBoxF(self: *UiContext, comptime fmt: []const u8, args: anytype) Signal {
+    const str = std.fmt.allocPrint(self.build_arena.allocator(), fmt, args) catch |e| blk: {
+        self.setErrorInfo(@errorReturnTrace(), @errorName(e));
+        break :blk "";
+    };
+    return self.textBox(str);
+}
+
+pub fn buttonF(self: *UiContext, comptime fmt: []const u8, args: anytype) Signal {
+    const str = std.fmt.allocPrint(self.build_arena.allocator(), fmt, args) catch |e| blk: {
+        self.setErrorInfo(@errorReturnTrace(), @errorName(e));
+        break :blk "";
+    };
+    return self.button(str);
+}
+
+pub fn iconButtonF(self: *UiContext, comptime fmt: []const u8, args: anytype) Signal {
+    const str = std.fmt.allocPrint(self.build_arena.allocator(), fmt, args) catch |e| blk: {
+        self.setErrorInfo(@errorReturnTrace(), @errorName(e));
+        break :blk "";
+    };
+    return self.iconButton(str);
+}
+
+pub fn subtleIconButtonF(self: *UiContext, comptime fmt: []const u8, args: anytype) Signal {
+    const str = std.fmt.allocPrint(self.build_arena.allocator(), fmt, args) catch |e| blk: {
+        self.setErrorInfo(@errorReturnTrace(), @errorName(e));
+        break :blk "";
+    };
+    return self.subtleIconButton(str);
+}
+
+pub fn checkBoxF(self: *UiContext, comptime fmt: []const u8, args: anytype, value: *bool) Signal {
+    const str = std.fmt.allocPrint(self.string_arena.allocator(), fmt, args) catch |e| blk: {
+        self.setErrorInfo(@errorReturnTrace(), @errorName(e));
+        break :blk "";
+    };
+    return self.checkBox(str, value);
+}
