@@ -280,6 +280,11 @@ pub const Size = union(enum) {
         };
     }
 
+    pub fn fromRect(rect: Rect) [2]Size {
+        const size = rect.size();
+        return [2]Size{ pixels(size[0], 1), pixels(size[1], 1) };
+    }
+
     pub fn format(value: Size, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
         _ = options;
         _ = fmt;
@@ -1874,3 +1879,145 @@ pub fn dumpNodeTreeGraph(self: *UiContext, root: *Node, save_path: []const u8) !
 
     _ = root;
 }
+
+pub const DebugView = struct {
+    allocator: Allocator,
+    ui: UiContext,
+    active: bool,
+    node_list_idx: usize,
+    node_query_pos: ?vec2,
+
+    pub fn init(allocator: Allocator, window_ptr: *Window) !DebugView {
+        return DebugView{
+            .allocator = allocator,
+            .ui = try UiContext.init(allocator, .{}, window_ptr),
+            .active = false,
+            .node_list_idx = 0,
+            .node_query_pos = null,
+        };
+    }
+
+    pub fn deinit(self: *DebugView) void {
+        self.ui.deinit();
+    }
+
+    pub fn show(self: *DebugView, ui: *UiContext, width: u32, height: u32, mouse_pos: vec2, events: *Window.EventQueue, dt: f32) !void {
+        // grab a list of all the nodes that overlap with the query position
+        const query_pos = if (self.node_query_pos) |pos| pos else mouse_pos;
+        var selected_nodes = std.ArrayList(*UiContext.Node).init(self.allocator);
+        defer selected_nodes.deinit();
+        var node_iter = ui.node_table.valueIterator();
+        while (node_iter.next()) |node| {
+            if (node.rect.contains(query_pos)) try selected_nodes.append(node);
+        }
+        if (selected_nodes.items.len == 0) return;
+
+        self.node_list_idx = std.math.clamp(self.node_list_idx, 0, selected_nodes.items.len - 1);
+        const active_node = selected_nodes.items[self.node_list_idx];
+
+        try self.ui.startBuild(width, height, mouse_pos, events);
+
+        // red border around the selected nodes
+        const border_node_flags = Flags{
+            .no_id = true,
+            .draw_border = true,
+            .floating_x = true,
+            .floating_y = true,
+        };
+        for (selected_nodes.items) |node| {
+            _ = self.ui.addNode(border_node_flags, "", .{
+                .border_color = vec4{ 1, 0, 0, 0.5 },
+                .rel_pos = node.rect.min,
+                .pref_size = Size.fromRect(node.rect),
+            });
+        }
+        // green border for the node selected from the list (separated so it always draws on top)
+        _ = self.ui.addNode(border_node_flags, "", .{
+            .border_color = vec4{ 0, 1, 0, 0.5 },
+            .rel_pos = active_node.rect.min,
+            .pref_size = Size.fromRect(active_node.rect),
+        });
+
+        self.ui.pushStyle(.{ .font_size = 16 });
+        self.ui.root_node.?.child_layout_axis = .x;
+        {
+            const left_bg_node = self.ui.addNode(.{
+                .no_id = true,
+                .draw_background = true,
+                .clip_children = true,
+            }, "", .{
+                .child_layout_axis = .y,
+                .bg_color = vec4{ 0, 0, 0, 0.75 },
+                .pref_size = [2]Size{ Size.percent(0.15, 1), Size.by_children(1) },
+            });
+            self.ui.pushParent(left_bg_node);
+            defer self.ui.popParentAssert(left_bg_node);
+
+            self.ui.pushStyle(.{ .pref_size = [2]Size{ Size.percent(1, 1), Size.text_dim(1) } });
+            defer _ = self.ui.popStyle();
+            for (selected_nodes.items) |node, idx| {
+                if (idx == self.node_list_idx) {
+                    self.ui.labelBoxF("hash=\"{s}\"", .{node.hash_string});
+                } else {
+                    self.ui.labelF("hash=\"{s}\"", .{node.hash_string});
+                }
+            }
+        }
+        {
+            const right_bg_node = self.ui.addNode(.{
+                .no_id = true,
+                .draw_background = true,
+                .clip_children = true,
+            }, "", .{
+                .child_layout_axis = .y,
+                .bg_color = vec4{ 0, 0, 0, 0.75 },
+                .pref_size = [2]Size{ Size.percent(0.5, 1), Size.by_children(1) },
+            });
+            self.ui.pushParent(right_bg_node);
+            defer self.ui.popParentAssert(right_bg_node);
+
+            inline for (@typeInfo(Node).Struct.fields) |field| {
+                const name = field.name;
+                const value = @field(active_node, name);
+
+                // const skips = [_][]const u8{};
+
+                if (@typeInfo(field.type) == .Enum) {
+                    self.ui.labelF("{s}=.{s}\n", .{ name, @tagName(value) });
+                    continue;
+                }
+                switch (field.type) {
+                    ?*Node => if (value) |link| {
+                        self.ui.labelF("{s}.hash_string=\"{s}\"", .{ name, link.hash_string });
+                    },
+                    Flags => {
+                        var buf = std.BoundedArray(u8, 1024){};
+                        inline for (@typeInfo(Flags).Struct.fields) |flag_field| {
+                            if (@field(value, flag_field.name)) {
+                                _ = try buf.writer().write(flag_field.name ++ ", ");
+                            }
+                        }
+                        self.ui.labelF("flags={s}", .{buf.slice()});
+                    },
+                    Signal => {
+                        var buf = std.BoundedArray(u8, 1024){};
+                        inline for (@typeInfo(Signal).Struct.fields) |signal_field| {
+                            if (signal_field.type == bool and @field(value, signal_field.name)) {
+                                _ = try buf.writer().write(signal_field.name ++ ", ");
+                            }
+                        }
+                        self.ui.labelF("{s}={{{s}.mouse_pos={d}, .mouse_drag={?d}, .scroll_offset={d}}}", .{
+                            name, buf.slice(), value.mouse_pos, value.mouse_drag, value.scroll_offset,
+                        });
+                    },
+                    []const u8 => self.ui.labelF("{s}=\"{s}\"", .{ name, value }),
+                    f32, vec2, vec4 => self.ui.labelF("{s}={d}", .{ name, value }),
+                    else => self.ui.labelF("{s}={any}", .{ name, value }),
+                }
+            }
+        }
+
+        self.ui.endBuild(dt);
+        try self.ui.render();
+    }
+};

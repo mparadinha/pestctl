@@ -26,14 +26,11 @@ pub fn spacer(self: *UiContext, axis: Axis, size: Size) void {
 }
 
 pub fn label(self: *UiContext, string: []const u8) void {
-    const label_size = [2]Size{ Size.text_dim(1), Size.text_dim(1) };
     _ = self.addNode(.{
         .no_id = true,
         .ignore_hash_sep = true,
         .draw_text = true,
-    }, string, .{
-        .pref_size = label_size,
-    });
+    }, string, .{});
 }
 
 pub fn labelF(self: *UiContext, comptime fmt: []const u8, args: anytype) void {
