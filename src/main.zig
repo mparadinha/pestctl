@@ -1423,13 +1423,17 @@ fn FuzzySearchOptions(comptime Ctx: type, comptime max_slots: usize) type {
             while (sort_idx < filled_slots.len) : (sort_idx += 1) {
                 var cmp_idx: usize = sort_idx;
                 cmp_loop: while (cmp_idx > 0) : (cmp_idx -= 1) {
-                    if (filled_slots[cmp_idx].score > filled_slots[cmp_idx - 1].score) {
+                    const left_score = filled_slots[cmp_idx - 1].score;
+                    const right_score = filled_slots[cmp_idx].score;
+                    const should_swap = if (reverse_order)
+                        right_score < left_score
+                    else
+                        right_score > left_score;
+                    if (should_swap) {
                         std.mem.swap(Entry, &filled_slots[cmp_idx], &filled_slots[cmp_idx - 1]);
                     } else break :cmp_loop;
                 }
             }
-
-            if (reverse_order) std.mem.reverse(Entry, filled_slots);
 
             ui.startCtxMenu(placement); // TODO: use the new ui "windows"
             defer ui.endCtxMenu();
