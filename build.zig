@@ -3,13 +3,16 @@ const tracy = @import("build_tracy.zig");
 
 pub fn build(b: *std.build.Builder) void {
     const target = b.standardTargetOptions(.{});
-    const mode = b.standardReleaseOptions();
+    const optimize = b.standardOptimizeOption(.{});
 
     const use_tracy = b.option(bool, "tracy", "Enable Tracy profiling") orelse false;
 
-    var exe = b.addExecutable("pestctl", "src/main.zig");
-    exe.setTarget(target);
-    exe.setBuildMode(mode);
+    var exe = b.addExecutable(.{
+        .name = "pestctl",
+        .root_source_file = .{ .path = "src/main.zig" },
+        .target = target,
+        .optimize = optimize,
+    });
     exe.linkLibC();
     { // glfw
         exe.linkSystemLibrary("glfw");
@@ -23,11 +26,12 @@ pub fn build(b: *std.build.Builder) void {
     { // stb libs
         exe.addIncludePath("src");
         exe.addCSourceFile("src/stb_impls.c", &[_][]u8{""});
-        exe.install();
     }
     { // tracy
         _ = tracy.link(b, exe, if (use_tracy) "tracy-0.8.2" else null);
     }
+    exe.install();
+
     const options = b.addOptions();
     const this_dir = comptime std.fs.path.dirname(@src().file) orelse ".";
     options.addOption([]const u8, "resource_dir", this_dir ++ "/resources");
@@ -43,8 +47,10 @@ pub fn build(b: *std.build.Builder) void {
     run_step.dependOn(&run_cmd.step);
 
     const test_step = b.step("test", "Run unit tests");
-    const exe_tests = b.addTest("src/main.zig");
-    exe_tests.setTarget(target);
-    exe_tests.setBuildMode(mode);
+    const exe_tests = b.addTest(.{
+        .root_source_file = .{ .path = "src/main.zig" },
+        .target = target,
+        .optimize = optimize,
+    });
     test_step.dependOn(&exe_tests.step);
 }

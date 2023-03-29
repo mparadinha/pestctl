@@ -285,7 +285,7 @@ pub fn dropDownList(self: *UiContext, hash_string: []const u8, options: []const 
         self.pushParent(opts_parent);
         defer std.debug.assert(self.popParent() == opts_parent);
 
-        for (options) |option, idx| {
+        for (options, 0..) |option, idx| {
             const opt_node = self.addNodeStringsF(.{
                 .clickable = true,
                 .draw_border = true,
@@ -712,14 +712,14 @@ fn replaceRange(buffer: []u8, buf_len: *usize, range: struct { start: usize, end
     // move contents after the range backward to fill empty space
     const space_shrink = if (range_len > new.len) range_len - new.len else 0;
     if (space_shrink > 0) {
-        for (buffer[range.start + new.len .. buf_len.* - space_shrink]) |*byte, i| {
+        for (buffer[range.start + new.len .. buf_len.* - space_shrink], 0..) |*byte, i| {
             byte.* = buffer[range.end + i];
         }
         buf_len.* -= space_shrink;
     }
 
     // copy the new contents in
-    for (new) |byte, i| buffer[range.start + i] = byte;
+    for (new, 0..) |byte, i| buffer[range.start + i] = byte;
 }
 
 // I can't believe this isn't in the std lib

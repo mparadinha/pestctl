@@ -156,7 +156,7 @@ pub fn fullUpdate(self: *Session) !void {
     // calculate address range for the current src location
     if (self.src_loc) |src| {
         for (self.elf.dwarf.line_progs) |prog| {
-            for (prog.files) |file, i| {
+            for (prog.files, 0..) |file, i| {
                 if (std.mem.eql(u8, file.name, src.file) and
                     std.mem.eql(u8, prog.include_dirs[file.dir], src.dir))
                 {
@@ -212,7 +212,7 @@ pub fn fullUpdate(self: *Session) !void {
     if (!(self.call_stack.len == call_stack.len and self.call_stack[0].addr == call_stack[0])) {
         if (self.call_stack.len > 0) self.allocator.free(self.call_stack);
         self.call_stack = try self.allocator.alloc(CallFrame, call_stack.len);
-        for (call_stack) |addr, i| {
+        for (call_stack, 0..) |addr, i| {
             var frame = CallFrame{ .addr = addr, .src = null, .function = null };
             frame.src = try self.elf.translateAddrToSrcSpecial(addr);
             frame.function = self.elf.findFunctionAtAddr(addr);
@@ -268,7 +268,7 @@ pub fn getVariableValue(self: *Session, variable: Dwarf.Variable) !Value {
 
     // TODO: if we don't have type information assume u64
 
-    if (variable.@"type") |ty| {
+    if (variable.type) |ty| {
         //std.debug.print("ty for {s} is {s}\n", .{ variable.name, ty.name });
         switch (ty.*) {
             .Base => |base| {
@@ -467,7 +467,7 @@ pub fn getMemMaps(self: Session, allocator: Allocator) ![]MemMapInfo {
 fn findAddrForThisLineOrNextOne(self: *Session, src: SrcLoc) !?usize {
     prog_blk: for (self.elf.dwarf.line_progs) |prog| {
         var file_idx: usize = 0;
-        for (prog.files) |file, i| {
+        for (prog.files, 0..) |file, i| {
             file_idx = i;
             if (std.mem.eql(u8, src.file, file.name)) break;
         } else continue :prog_blk;

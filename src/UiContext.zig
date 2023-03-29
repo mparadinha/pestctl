@@ -853,7 +853,7 @@ pub fn render(self: *UiContext) !void {
     const stride = @sizeOf(ShaderInput);
     gl.bufferData(gl.ARRAY_BUFFER, @intCast(isize, shader_inputs.items.len * stride), shader_inputs.items.ptr, gl.STATIC_DRAW);
     var field_offset: usize = 0;
-    inline for (@typeInfo(ShaderInput).Struct.fields) |field, i| {
+    inline for (@typeInfo(ShaderInput).Struct.fields, 0..) |field, i| {
         const elems = switch (@typeInfo(field.type)) {
             .Float, .Int => 1,
             .Array => |array| array.len,
@@ -1741,7 +1741,7 @@ pub const NodeTable = struct {
     /// does nothing if the key doesn't exist
     pub fn remove(self: *NodeTable, key: K) void {
         const key_hash = self.ctx.hash(key);
-        for (self.key_mappings.items) |key_map, i| {
+        for (self.key_mappings.items, 0..) |key_map, i| {
             if (key_map.key_hash == key_hash) {
                 self.allocator.destroy(key_map.value_ptr);
                 _ = self.key_mappings.swapRemove(i);
@@ -1955,7 +1955,7 @@ pub const DebugView = struct {
 
             self.ui.pushStyle(.{ .pref_size = [2]Size{ Size.percent(1, 1), Size.text_dim(1) } });
             defer _ = self.ui.popStyle();
-            for (selected_nodes.items) |node, idx| {
+            for (selected_nodes.items, 0..) |node, idx| {
                 if (idx == self.node_list_idx) {
                     self.ui.labelBoxF("hash=\"{s}\"", .{node.hash_string});
                 } else {

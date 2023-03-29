@@ -215,7 +215,7 @@ pub fn callStackAddrs(
         };
 
         addr = ret_addr;
-        for (rules.regs) |reg, i| {
+        for (rules.regs, 0..) |reg, i| {
             if (i == frame.return_address_register) continue;
             switch (reg) {
                 .undefined => {},
@@ -331,7 +331,7 @@ fn loadAllFrames(allocator: Allocator, debug_frame: []const u8, eh_frame: []cons
     }
 
     // make sure the frames are sorted by address
-    for (frames.items[1..]) |frame, i| {
+    for (frames.items[1..], 0..) |frame, i| {
         const last_frame = frames.items[i];
         std.debug.assert(frame.pc_begin >= last_frame.pc_end);
     }

@@ -138,7 +138,7 @@ pub fn translateAddrToSrcSpecial(self: Elf, addr: usize) !?SrcLoc {
 
 pub fn translateSrcToAddr(self: Elf, src: SrcLoc) !?usize {
     for (self.dwarf.line_progs) |prog| {
-        for (prog.files) |file_info, i| {
+        for (prog.files, 0..) |file_info, i| {
             if (std.mem.eql(u8, file_info.name, src.file)) {
                 const file_idx = @intCast(u32, i);
                 const state = (try prog.findAddrForSrc(file_idx, src.line)) orelse continue;

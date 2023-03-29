@@ -421,7 +421,7 @@ pub const EventQueue = struct {
         comptime ev_type: EventTag,
         match_ev_content: ?EventPayload(ev_type),
     ) ?usize {
-        for (self.events.items) |ev, i| {
+        for (self.events.items, 0..) |ev, i| {
             if (std.meta.activeTag(ev) != ev_type) continue;
             if (match_ev_content) |match_ev| {
                 if (!std.meta.eql(match_ev, ev.payload(ev_type))) continue;
@@ -453,7 +453,7 @@ pub const EventQueue = struct {
                 @compileError(@tagName(ev_type) ++ " has type " ++ @typeName(Payload) ++ " not " ++ @typeName(T));
         }
 
-        ev_loop: for (self.events.items) |ev, i| {
+        ev_loop: for (self.events.items, 0..) |ev, i| {
             if (std.meta.activeTag(ev) != ev_type) continue;
             if (T == void) return i;
 

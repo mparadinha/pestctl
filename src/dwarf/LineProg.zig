@@ -149,7 +149,7 @@ pub fn init(allocator: Allocator, debug_line: []const u8, offset: usize, debug_l
 
         const dirs_count = try reader.readByte();
         self.include_dirs = try self.allocator.alloc([]const u8, dirs_count);
-        for (self.include_dirs) |*dir, i| {
+        for (self.include_dirs, 0..) |*dir, i| {
             for (dir_entry_formats) |format| {
                 // TODO: use the readXXX for these forms
                 if (format.content_type == DW.LNCT.path and format.form == DW.FORM.line_strp) {
@@ -422,9 +422,9 @@ pub fn dump(self: LineProg) !void {
     std.debug.print("opcode_base: {}\n", .{self.opcode_base});
     std.debug.print("standard_opcode_lens: {d}\n", .{self.standard_opcode_lens});
     std.debug.print("include_dirs:\n", .{});
-    for (self.include_dirs) |dir, i| std.debug.print("[{:0>2}] {s}\n", .{ i, dir });
+    for (self.include_dirs, 0..) |dir, i| std.debug.print("[{:0>2}] {s}\n", .{ i, dir });
     std.debug.print("files:\n", .{});
-    for (self.files) |file, i| {
+    for (self.files, 0..) |file, i| {
         std.debug.print("[{:0>3}] dir={:0>2} | {s}\n", .{ i, file.dir, file.name });
     }
 

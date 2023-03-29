@@ -27,7 +27,7 @@ pub const Mesh = struct {
         var stride: u32 = 0;
         for (attribs) |attrib| stride += attrib.n_elems;
         var offset: u32 = 0;
-        for (attribs) |attrib, i| {
+        for (attribs, 0..) |attrib, i| {
             gl.vertexAttribPointer(
                 @intCast(u32, i),
                 @intCast(i32, attrib.n_elems),
@@ -346,7 +346,7 @@ pub fn make_cube_mesh(size: f32) Mesh {
         -size, -size, -size, 0,  0,  -1, 1, 0,
     };
     var indices: [6 * 6]u32 = undefined;
-    for (indices) |*idx, i| {
+    for (indices, 0..) |*idx, i| {
         const face_idxs = [6]u32{ 0, 1, 2, 0, 2, 3 };
         idx.* = face_idxs[i % 6] + @intCast(u32, 4 * (i / 6));
     }

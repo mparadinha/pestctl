@@ -318,7 +318,7 @@ fn readAbbrevTable(self: *DebugUnit, debug_abbrev: []const u8) !void {
     // because we're placing the abbrevs into the array using their code (and because
     // these codes have no obligations as to size or order of declaration) some items
     // in the abbrev list will be garbage that we need to init to null entries
-    for (self.abbrevs) |*abbrev, i| {
+    for (self.abbrevs, 0..) |*abbrev, i| {
         var is_undef = std.mem.indexOfScalar(usize, valid_codes.items, i) == null;
         if (is_undef) abbrev.* = .{
             .tag = undefined,
@@ -1283,7 +1283,7 @@ fn genericReadAttribsHelperSingleRead(
 /// };
 fn StructFromFieldInfos(comptime field_infos: []const FieldInfo) type {
     var inner_fields: [field_infos.len]std.builtin.Type.StructField = undefined;
-    inline for (field_infos) |info, idx| {
+    inline for (field_infos, 0..) |info, idx| {
         const field_name = DW.dwarfShortString(DW.AT, info.attrib);
         inner_fields[idx] = .{
             .name = field_name,
@@ -1301,7 +1301,7 @@ fn StructFromFieldInfos(comptime field_infos: []const FieldInfo) type {
     } });
 
     var fields: [field_infos.len + 1]std.builtin.Type.StructField = undefined;
-    inline for (field_infos) |info, idx| {
+    inline for (field_infos, 0..) |info, idx| {
         const field_name = DW.dwarfShortString(DW.AT, info.attrib);
         fields[idx] = .{
             .name = field_name,

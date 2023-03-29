@@ -29,7 +29,7 @@ pub const CmdlineArgs = struct {
 fn parseCmdlineArgs(arg_slices: [][:0]const u8) CmdlineArgs {
     var args = CmdlineArgs{};
 
-    for (arg_slices) |arg, i| {
+    for (arg_slices, 0..) |arg, i| {
         if (i == 0) continue;
         args.exec_path = arg;
     }
@@ -94,7 +94,7 @@ pub fn main() !void {
     defer if (session_opt) |*session| session.deinit();
     var totals = [4]usize{ 0, 0, 0, 0 };
     if (session_opt) |session| {
-        for (session.elf.dwarf.units) |unit, unit_idx| {
+        for (session.elf.dwarf.units, 0..) |unit, unit_idx| {
             std.debug.print("debug unit #{} has: {} variables ({} globals), {} types, {} functions\n", .{
                 unit_idx, unit.variables.len, unit.global_vars.len, unit.types.len, unit.functions.len,
             });
@@ -247,7 +247,7 @@ pub fn main() !void {
             if (session_opt) |session| disasm_blk: {
                 const rip = session.regs.rip;
 
-                const disasm_text_idx = blk: for (disasm_texts.items) |text, i| {
+                const disasm_text_idx = blk: for (disasm_texts.items, 0..) |text, i| {
                     if (text.addr_range[0] <= rip and rip < text.addr_range[1])
                         break :blk i;
                 } else null;
@@ -299,7 +299,7 @@ pub fn main() !void {
                     break :text_blk text_info;
                 };
 
-                const line_idx = loop: for (disasm_text.line_addrs) |addr, i| {
+                const line_idx = loop: for (disasm_text.line_addrs, 0..) |addr, i| {
                     if (addr == rip) break :loop i;
                 } else unreachable;
 
@@ -344,7 +344,7 @@ pub fn main() !void {
                 defer ui.popParentAssert(right_side_tabs_parent);
 
                 const widget_buttons_parent = ui.pushLayoutParent("widget_buttons_parent", [2]Size{ Size.percent(1, 0), Size.by_children(1) }, .x);
-                for (widget_tabs) |widget_name, idx| {
+                for (widget_tabs, 0..) |widget_name, idx| {
                     const is_active = widget_tab_active_idx == idx;
                     if (is_active) ui.pushTmpStyle(.{ .bg_color = app_style.highlight_color });
                     const btn_sig = ui.button(widget_name);
@@ -452,7 +452,7 @@ pub fn main() !void {
                         // here we only shows/score variables that would be possible to choose
                         // (why? a debug build of the zig compiler has ~700k variables)
                         // always add all the globals
-                        for (session.elf.dwarf.units) |unit, unit_idx| {
+                        for (session.elf.dwarf.units, 0..) |unit, unit_idx| {
                             for (unit.global_vars) |var_idx| {
                                 const variable = unit.variables[var_idx];
                                 if (variable.name == null) continue;
@@ -464,8 +464,8 @@ pub fn main() !void {
                             }
                         }
                         // and if we're in a function add the locals/parameters too
-                        for (session.elf.dwarf.units) |unit, unit_idx| {
-                            for (unit.functions) |func, func_idx| {
+                        for (session.elf.dwarf.units, 0..) |unit, unit_idx| {
+                            for (unit.functions, 0..) |func, func_idx| {
                                 if (func.low_pc == null or func.high_pc == null) continue;
                                 const addr = session.regs.rip;
                                 if (!(addr <= func.low_pc.? and addr < func.high_pc.?)) continue;
@@ -579,8 +579,8 @@ pub fn main() !void {
 
                     if (!std.mem.eql(u8, func_buf.slice(), func_search.target)) {
                         try func_search.resetSearch(func_buf.slice());
-                        for (session.elf.dwarf.units) |unit, unit_idx| {
-                            for (unit.functions) |func, func_idx| {
+                        for (session.elf.dwarf.units, 0..) |unit, unit_idx| {
+                            for (unit.functions, 0..) |func, func_idx| {
                                 if (func.name == null) continue;
                                 func_search.addEntry(func.name.?, .{
                                     .name = func.name.?,
@@ -798,7 +798,7 @@ const FileTab = struct {
 
         var line_offsets = std.ArrayList(usize).init(self.allocator);
         try line_offsets.append(0);
-        for (content) |char, i| {
+        for (content, 0..) |char, i| {
             if (char != '\n') continue;
             try line_offsets.append(i);
         }
@@ -839,7 +839,7 @@ const FileTab = struct {
     }
 
     pub fn findFile(self: FileTab, path: []const u8) ?usize {
-        for (self.files.items) |file_info, i| {
+        for (self.files.items, 0..) |file_info, i| {
             if (std.mem.eql(u8, path, file_info.path)) return i;
         }
         return null;
@@ -862,7 +862,7 @@ const FileTab = struct {
 
         const buttons_parent_size = [2]Size{ Size.percent(1, 0), Size.by_children(1) };
         const buttons_parent = ui.pushLayoutParent("FileTab:buttons_parent", buttons_parent_size, .x);
-        for (self.files.items) |file_info, i| {
+        for (self.files.items, 0..) |file_info, i| {
             const filename = std.fs.path.basename(file_info.path);
             const highlight_color = if (file_info.focus_box) |_| app_style.highlight_color else vec4{ 1, 0, 0, 1 };
             const is_active = self.active_file != null and self.active_file.? == i;
@@ -1146,7 +1146,7 @@ fn generateTextInfoForDisassembly(allocator: Allocator, data: []const u8, data_s
         try writer.print("0x{x:0>12}: ", .{asm_addr});
         const byte_hex_strs = comptime blk: {
             var str_bufs = @as([256][2]u8, undefined);
-            for (str_bufs) |*buf, idx| _ = std.fmt.bufPrint(buf, "{x:0>2}", .{idx}) catch unreachable;
+            for (&str_bufs, 0..) |*buf, idx| _ = std.fmt.bufPrint(buf, "{x:0>2}", .{idx}) catch unreachable;
             break :blk str_bufs;
         };
         var idx: usize = 0;
@@ -1226,7 +1226,7 @@ const CallStackViewer = struct {
 
     pub fn display(self: *CallStackViewer, ui: *UiContext, call_stack: []Session.CallFrame, session: Session) !void {
         _ = session;
-        for (call_stack) |frame, idx| {
+        for (call_stack, 0..) |frame, idx| {
             const result = try self.show_vars.getOrPut(frame);
             if (!result.found_existing) result.value_ptr.* = false;
             const is_open_ptr = result.value_ptr;
@@ -1322,14 +1322,14 @@ fn fuzzyScore(pattern: []const u8, test_str: []const u8) f32 {
 
     const to_lower_lut = comptime lut: {
         var table: [128]u8 = undefined;
-        for (table) |*entry, char| {
+        for (&table, 0..) |*entry, char| {
             entry.* = if ('A' <= char and char <= 'Z') char + 32 else char;
         }
         break :lut table;
     };
 
-    for (pattern) |pat_char, pat_idx| {
-        for (test_str) |test_char, test_idx| {
+    for (pattern, 0..) |pat_char, pat_idx| {
+        for (test_str, 0..) |test_char, test_idx| {
             var char_score: f32 = 0;
             const case_sensitive_match = (pat_char == test_char);
             const case_insensitive_match = to_lower_lut[pat_char] == to_lower_lut[test_char];
@@ -1395,7 +1395,7 @@ fn FuzzySearchOptions(comptime Ctx: type, comptime max_slots: usize) type {
                 return;
             } else {
                 var worst_idx: usize = 0;
-                for (self.slots) |entry, idx| {
+                for (self.slots, 0..) |entry, idx| {
                     if (entry.score < self.slots[worst_idx].score) worst_idx = idx;
                 }
                 if (@hasDecl(Ctx, "free")) self.slots[worst_idx].ctx.free(self.allocator);
@@ -1447,7 +1447,7 @@ fn FuzzySearchOptions(comptime Ctx: type, comptime max_slots: usize) type {
             ui.pushParent(bg_node);
             defer ui.popParentAssert(bg_node);
 
-            for (self.slots[0..self.slots_filled]) |entry, idx| {
+            for (self.slots[0..self.slots_filled], 0..) |entry, idx| {
                 const entry_trace = tracy.Zone(@src());
                 defer entry_trace.End();
 
@@ -1608,7 +1608,7 @@ pub fn getMemoryStats(allocator: Allocator) !MemoryStats {
 
     var tokenizer = std.mem.tokenize(u8, data, " ");
     var values: [3]u64 = undefined;
-    for (values) |*value| {
+    for (&values) |*value| {
         value.* = try std.fmt.parseInt(u64, tokenizer.next().?, 0);
     }
 
