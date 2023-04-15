@@ -7,6 +7,8 @@ pub fn build(b: *std.build.Builder) void {
 
     const use_tracy = b.option(bool, "tracy", "Enable Tracy profiling") orelse false;
 
+    const glfw_dep = b.dependency("libglfw3", .{ .target = target, .optimize = optimize });
+
     var exe = b.addExecutable(.{
         .name = "pestctl",
         .root_source_file = .{ .path = "src/main.zig" },
@@ -14,9 +16,7 @@ pub fn build(b: *std.build.Builder) void {
         .optimize = optimize,
     });
     exe.linkLibC();
-    { // glfw
-        exe.linkSystemLibrary("glfw");
-    }
+    exe.linkLibrary(glfw_dep.artifact("glfw3"));
     { // intelXED
         exe.addObjectFile("xed/obj/libxed.a");
         exe.addIncludePath("xed/obj");
@@ -30,19 +30,16 @@ pub fn build(b: *std.build.Builder) void {
     { // tracy
         _ = tracy.link(b, exe, if (use_tracy) "tracy-0.8.2" else null);
     }
-    exe.install();
+    b.installArtifact(exe);
 
     const options = b.addOptions();
     const this_dir = comptime std.fs.path.dirname(@src().file) orelse ".";
     options.addOption([]const u8, "resource_dir", this_dir ++ "/resources");
     exe.addOptions("build_opts", options);
 
-    const run_cmd = exe.run();
+    const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
-    if (b.args) |args| {
-        run_cmd.addArgs(args);
-    }
-
+    if (b.args) |args| run_cmd.addArgs(args);
     const run_step = b.step("run", "Run the app");
     run_step.dependOn(&run_cmd.step);
 

@@ -1,0 +1,11 @@
+.{
+	.name = "pestctl",
+	.version = "0.0.1",
+
+	.dependencies = .{
+		.libglfw3 = .{
+			.url = "https://github.com/mparadinha/glfw/archive/e284c837fbc484ba9db98e4753f47526c7f1dbd7.tar.gz",
+			.hash = "122066b80bdb3d47353dd5add88c9a9a579a975b6e4f7314dbf19f1049745bc80afc",
+		},
+	},
+}
