@@ -7,5 +7,9 @@
 			.url = "https://github.com/mparadinha/glfw/archive/e284c837fbc484ba9db98e4753f47526c7f1dbd7.tar.gz",
 			.hash = "122066b80bdb3d47353dd5add88c9a9a579a975b6e4f7314dbf19f1049745bc80afc",
 		},
+		.Zydis = .{
+			.url = "https://github.com/mparadinha/Zydis/archive/46777c875c3440c8a5d93312ea35c4e3f8e6e730.tar.gz",
+			.hash = "1220a91b55edc671b2327cff8b5f107b7e8def50c8778e821230a5c6fc04a8216a2a",
+		},
 	},
 }

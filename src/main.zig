@@ -68,8 +68,6 @@ pub fn main() !void {
     defer std.process.argsFree(allocator, arg_slices);
     const cmdline_args = parseCmdlineArgs(arg_slices);
 
-    c.xed_tables_init();
-
     var width: u32 = 1600;
     var height: u32 = 900;
     var window = try Window.init(allocator, width, height, "pestctl");
@@ -1120,19 +1118,36 @@ fn generateTextInfoForDisassembly(allocator: Allocator, data: []const u8, data_s
         const asm_addr = data_idx + data_start_addr;
         const inst_bytes = data[data_idx..std.math.min(data_idx + 15, data.len)];
 
-        var decoded_inst: c.xed_decoded_inst_t = undefined;
-        c.xed_decoded_inst_zero(&decoded_inst);
-        c.xed_decoded_inst_set_mode(&decoded_inst, c.XED_MACHINE_MODE_LONG_64, c.XED_ADDRESS_WIDTH_64b);
-        const decode_zone = tracy.ZoneN(@src(), "xed_decode");
-        const decode_result = c.xed_decode(&decoded_inst, &inst_bytes[0], @intCast(c_uint, inst_bytes.len));
-        decode_zone.End();
-        switch (decode_result) {
-            c.XED_ERROR_NONE => {},
-            c.XED_ERROR_BUFFER_TOO_SHORT => break :asm_loop,
-            else => |err| std.debug.panic("data_idx=0x{x}, xed_error: {s}\n", .{ data_idx, c.xed_error_enum_t2str(err) }),
+        var instruction: c.ZydisDisassembledInstruction = undefined;
+        const disassemble_result = c.ZydisDisassembleIntel(
+            c.ZYDIS_MACHINE_MODE_LONG_64,
+            asm_addr,
+            inst_bytes.ptr,
+            inst_bytes.len,
+            &instruction,
+        );
+        if (!c.ZYAN_SUCCESS(disassemble_result)) {
+            const error_str = switch (disassemble_result) {
+                c.ZYDIS_STATUS_NO_MORE_DATA => "ZYDIS_STATUS_NO_MORE_DATA",
+                c.ZYDIS_STATUS_DECODING_ERROR => "ZYDIS_STATUS_DECODING_ERROR",
+                c.ZYDIS_STATUS_INSTRUCTION_TOO_LONG => "ZYDIS_STATUS_INSTRUCTION_TOO_LONG",
+                c.ZYDIS_STATUS_BAD_REGISTER => "ZYDIS_STATUS_BAD_REGISTER",
+                c.ZYDIS_STATUS_ILLEGAL_LOCK => "ZYDIS_STATUS_ILLEGAL_LOCK",
+                c.ZYDIS_STATUS_ILLEGAL_LEGACY_PFX => "ZYDIS_STATUS_ILLEGAL_LEGACY_PFX",
+                c.ZYDIS_STATUS_ILLEGAL_REX => "ZYDIS_STATUS_ILLEGAL_REX",
+                c.ZYDIS_STATUS_INVALID_MAP => "ZYDIS_STATUS_INVALID_MAP",
+                c.ZYDIS_STATUS_MALFORMED_EVEX => "ZYDIS_STATUS_MALFORMED_EVEX",
+                c.ZYDIS_STATUS_MALFORMED_MVEX => "ZYDIS_STATUS_MALFORMED_MVEX",
+                c.ZYDIS_STATUS_INVALID_MASK => "ZYDIS_STATUS_INVALID_MASK",
+                c.ZYDIS_STATUS_SKIP_TOKEN => "ZYDIS_STATUS_SKIP_TOKEN",
+                c.ZYDIS_STATUS_IMPOSSIBLE_INSTRUCTION => "ZYDIS_STATUS_IMPOSSIBLE_INSTRUCTION",
+                else => std.debug.panic("unknown error code: 0x{x}\n", .{disassemble_result}),
+            };
+            if (disassemble_result == c.ZYDIS_STATUS_NO_MORE_DATA) break :asm_loop;
+            std.debug.panic("zyan status code 0x{x}: {s}\n", .{ disassemble_result, error_str });
         }
 
-        const inst_len = c.xed_decoded_inst_get_length(&decoded_inst);
+        const inst_len = instruction.info.length;
         data_idx += inst_len;
 
         try text_bytes.ensureUnusedCapacity(0x1000);
@@ -1152,21 +1167,11 @@ fn generateTextInfoForDisassembly(allocator: Allocator, data: []const u8, data_s
         var idx: usize = 0;
         while (idx < std.math.max(10, inst_len)) : (idx += 1) {
             const byte_str = if (idx < inst_len) &byte_hex_strs[inst_bytes[idx]] else "  ";
-            stream.buffer[stream.pos + 0] = byte_str[0];
-            stream.buffer[stream.pos + 1] = byte_str[1];
-            stream.buffer[stream.pos + 2] = ' ';
-            stream.pos += 3;
+            try writer.print("{s} ", .{byte_str});
         }
+        const instruction_text = std.mem.span(@ptrCast([*c]u8, &instruction.text[0]));
+        try writer.print("{s}\n", .{instruction_text});
         fmt_zone.End();
-
-        const buffer = stream.buffer[stream.pos..];
-        const format_zone = tracy.ZoneN(@src(), "xed_format_context");
-        const format_res = c.xed_format_context(c.XED_SYNTAX_INTEL, &decoded_inst, &buffer[0], @intCast(c_int, buffer.len), asm_addr, null, null);
-        format_zone.End();
-        std.debug.assert(format_res == 1);
-        const format_str = std.mem.sliceTo(@ptrCast([*c]const u8, &buffer[0]), 0);
-        stream.pos += format_str.len;
-        _ = try writer.write("\n");
 
         text_bytes.items.len += stream.pos;
         try line_offsets.append(line_offset);

@@ -8,6 +8,7 @@ pub fn build(b: *std.build.Builder) void {
     const use_tracy = b.option(bool, "tracy", "Enable Tracy profiling") orelse false;
 
     const glfw_dep = b.dependency("libglfw3", .{ .target = target, .optimize = optimize });
+    const zydis_dep = b.dependency("Zydis", .{ .target = target, .optimize = optimize });
 
     var exe = b.addExecutable(.{
         .name = "pestctl",
@@ -17,12 +18,11 @@ pub fn build(b: *std.build.Builder) void {
     });
     exe.linkLibC();
     exe.linkLibrary(glfw_dep.artifact("glfw3"));
-    { // intelXED
-        exe.addObjectFile("xed/obj/libxed.a");
-        exe.addIncludePath("xed/obj");
-        exe.addIncludePath("xed/include/public");
-        exe.addIncludePath("xed/include/public/xed");
-    }
+    // hack: Zydis depends on the headers of Zycore (and builds fine on
+    // its own), but because *we* don't explicitly depend on Zycore the build
+    // system doesn't include this path in the `-I` options
+    exe.addIncludePath("zig-cache/i/5ee76773ecd672df5c2a451f45bf8661/include");
+    exe.linkLibrary(zydis_dep.artifact("Zydis"));
     { // stb libs
         exe.addIncludePath("src");
         exe.addCSourceFile("src/stb_impls.c", &[_][]u8{""});
