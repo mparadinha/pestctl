@@ -567,7 +567,7 @@ pub const Registers = struct {
 
     mxcsr: u32,
     mxcr_mask: u32,
-    st: [8]u64,
+    st: [16]u64,
     xmm: [16]u128,
     // the fp_regs struct in <sys/user.h> also had some other things I don't the meaning of
     // unsigned short int	cwd
@@ -665,14 +665,12 @@ pub fn getRegisters(self: Session) !Registers {
         .xmm = undefined,
     };
     @memcpy(
-        @ptrCast([*]u8, &registers.st[0]),
-        @ptrCast([*]u8, &fp_regs.st_space[0]),
-        @sizeOf(@TypeOf(registers.st)),
+        std.mem.asBytes(&registers.st),
+        std.mem.asBytes(&fp_regs.st_space),
     );
     @memcpy(
-        @ptrCast([*]u8, &registers.xmm[0]),
-        @ptrCast([*]u8, &fp_regs.xmm_space[0]),
-        @sizeOf(@TypeOf(registers.xmm)),
+        std.mem.asBytes(&registers.xmm),
+        std.mem.asBytes(&fp_regs.xmm_space),
     );
     return registers;
 }
@@ -722,14 +720,12 @@ fn setRegisters(self: *Session, registers: Registers) !void {
         .padding = undefined,
     };
     @memcpy(
-        @ptrCast([*]u8, &fp_regs.st_space[0]),
-        @ptrCast([*]const u8, &registers.st[0]),
-        @sizeOf(@TypeOf(registers.st)),
+        std.mem.asBytes(&fp_regs.st_space),
+        std.mem.asBytes(&registers.st),
     );
     @memcpy(
-        @ptrCast([*]u8, &fp_regs.xmm_space[0]),
-        @ptrCast([*]const u8, &registers.xmm[0]),
-        @sizeOf(@TypeOf(registers.xmm)),
+        std.mem.asBytes(&fp_regs.xmm_space),
+        std.mem.asBytes(&registers.xmm),
     );
     try ptrace(.SETFPREGS, self.pid, &fp_regs);
 }
