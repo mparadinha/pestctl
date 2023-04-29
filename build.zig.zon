@@ -4,8 +4,8 @@
 
 	.dependencies = .{
 		.libglfw3 = .{
-			.url = "https://github.com/mparadinha/glfw/archive/e284c837fbc484ba9db98e4753f47526c7f1dbd7.tar.gz",
-			.hash = "122066b80bdb3d47353dd5add88c9a9a579a975b6e4f7314dbf19f1049745bc80afc",
+			.url = "https://github.com/mparadinha/glfw/archive/0d7f577f228aabecdd40f04cb0bcd106961db03c.tar.gz",
+			.hash = "12201f249b14973ab24301a7c612620bbe89484cffcbb349d9ab2ce08d54c7b136ee",
 		},
 		.Zydis = .{
 			.url = "https://github.com/mparadinha/Zydis/archive/46777c875c3440c8a5d93312ea35c4e3f8e6e730.tar.gz",
