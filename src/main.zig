@@ -21,21 +21,25 @@ const tracy = @import("tracy.zig");
 const app_style = .{
     .highlight_color = vec4{ 0, 0, 0.5, 1 },
 };
+const text_input_style = .{
+    .pref_size = [2]Size{ Size.percent(1, 0), Size.text_dim(1) },
+    .bg_color = vec4{ 0.75, 0.75, 0.75, 1 },
+};
 
 pub const CmdlineArgs = struct {
     exec_path: ?[]const u8 = null,
-};
 
-fn parseCmdlineArgs(arg_slices: [][:0]const u8) CmdlineArgs {
-    var args = CmdlineArgs{};
+    pub fn parse(arg_slices: [][:0]const u8) CmdlineArgs {
+        var args = CmdlineArgs{};
 
-    for (arg_slices, 0..) |arg, i| {
-        if (i == 0) continue;
-        args.exec_path = arg;
+        for (arg_slices, 0..) |arg, i| {
+            if (i == 0) continue;
+            args.exec_path = arg;
+        }
+
+        return args;
     }
-
-    return args;
-}
+};
 
 pub const SessionCmd = union(enum) {
     open_src_file: []const u8, // could be relative or absolute path
@@ -52,6 +56,8 @@ pub const SessionCmd = union(enum) {
 var show_ctx_menu = false;
 var ctx_menu_top_left = @as(vec2, undefined);
 
+const InputBuf = std.BoundedArray(u8, 0x1000);
+
 pub fn main() !void {
     var general_purpose_allocator = std.heap.GeneralPurposeAllocator(.{
         .stack_trace_frames = 8,
@@ -66,14 +72,13 @@ pub fn main() !void {
 
     const arg_slices = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, arg_slices);
-    const cmdline_args = parseCmdlineArgs(arg_slices);
+    const cmdline_args = CmdlineArgs.parse(arg_slices);
 
     var width: u32 = 1600;
     var height: u32 = 900;
     var window = try Window.init(allocator, width, height, "pestctl");
     window.finishSetup();
     defer window.deinit();
-
     // GL state that we never change
     gl.clearColor(0.75, 0.36, 0.38, 1);
     gl.enable(gl.CULL_FACE);
@@ -87,10 +92,6 @@ pub fn main() !void {
     defer ui.deinit();
     var dbg_ui_view = try UiContext.DebugView.init(allocator, &window);
     defer dbg_ui_view.deinit();
-    const text_input_style = .{
-        .pref_size = [2]Size{ Size.percent(1, 0), Size.text_dim(1) },
-        .bg_color = vec4{ 0.75, 0.75, 0.75, 1 },
-    };
 
     var session_opt = if (cmdline_args.exec_path) |path| try Session.init(allocator, path) else null;
     defer if (session_opt) |*session| session.deinit();
@@ -112,15 +113,15 @@ pub fn main() !void {
 
     var last_time = @floatCast(f32, c.glfwGetTime());
 
-    var src_file_buf = try std.BoundedArray(u8, 0x1000).init(0);
+    var src_file_buf = try InputBuf.init(0);
     var src_file_search = FuzzySearchOptions(SrcFileSearchCtx, 20).init(allocator);
     defer src_file_search.deinit();
-    var num_buf = try std.BoundedArray(u8, 0x1000).init(0);
-    var file_buf = try std.BoundedArray(u8, 0x1000).init(0);
-    var var_buf = try std.BoundedArray(u8, 0x1000).init(0);
+    var num_buf = try InputBuf.init(0);
+    var file_buf = try InputBuf.init(0);
+    var var_buf = try InputBuf.init(0);
     var var_search = FuzzySearchOptions(VarSearchCtx, 10).init(allocator);
     defer var_search.deinit();
-    var func_buf = try std.BoundedArray(u8, 0x1000).init(0);
+    var func_buf = try InputBuf.init(0);
     var func_search = FuzzySearchOptions(FuncSearchCtx, 10).init(allocator);
     defer func_search.deinit();
 
@@ -178,152 +179,36 @@ pub fn main() !void {
             std.fmt.fmtIntSizeBin(general_purpose_allocator.total_requested_bytes),
         });
 
-        const tabs_parent = ui.addNode(.{}, "###tabs_parent", .{ .child_layout_axis = .x });
-        tabs_parent.pref_size = [2]Size{ Size.percent(1, 0), Size.percent(1, 0) };
-        ui.pushParent(tabs_parent);
+        const tabs_parent = ui.pushLayoutParent("tabs_parent", Size.fill(1, 1), .x);
 
-        const left_side_parent = ui.addNode(.{
+        const left_side_parent = ui.pushLayoutParentFlags(.{
             .draw_border = true,
             .draw_background = true,
-        }, "###left_side_parent", .{ .child_layout_axis = .y });
-        left_side_parent.pref_size = [2]Size{ Size.percent(0.5, 1), Size.percent(1, 0) };
-        ui.pushParent(left_side_parent);
+        }, "left_side_parent", Size.fill(0.5, 1), .y);
         {
-            const open_file_parent = ui.pushLayoutParent("open_file_parent", [2]Size{ Size.percent(1, 1), Size.by_children(1) }, .x);
-            {
-                const open_button_sig = ui.button("Open Source File");
-                ui.pushStyle(text_input_style);
-                const text_input_sig = ui.textInput("textinput", &src_file_buf.buffer, &src_file_buf.len);
-                _ = ui.popStyle();
-                if (open_button_sig.clicked or text_input_sig.enter_pressed) {
-                    try session_cmds.append(.{ .open_src_file = src_file_buf.slice() });
-                }
-                if (text_input_sig.focused and src_file_buf.len > 0) {
-                    const text_input_node = ui.topParent().last.?;
-                    const input = src_file_buf.slice();
-
-                    if (!std.mem.eql(u8, input, src_file_search.target)) {
-                        try src_file_search.resetSearch(input);
-
-                        //const input_path = try std.fs.path.join(frame_arena.allocator(), &.{ cwd, input });
-                        // TODO: don't crash if user writes "tmp/dir////"
-                        const inner_dir = if (std.mem.lastIndexOfScalar(u8, input, '/')) |idx| blk: {
-                            break :blk input[0 .. idx + 1];
-                        } else "";
-                        const full_dir_path = try std.fs.path.join(frame_arena.allocator(), &.{ cwd, inner_dir });
-
-                        var dir = try std.fs.openIterableDirAbsolute(full_dir_path, .{ .access_sub_paths = true });
-                        defer dir.close();
-                        var dir_iter = dir.iterate();
-                        while (try dir_iter.next()) |entry| {
-                            const file_ctx = SrcFileSearchCtx{
-                                // these strings get release by the search list
-                                .name = try src_file_search.allocator.dupe(u8, entry.name),
-                                .inner_dir = inner_dir,
-                                .path = try std.fs.path.join(src_file_search.allocator, &.{ cwd, inner_dir, entry.name }),
-                                .kind = entry.kind,
-                            };
-                            src_file_search.addEntry(file_ctx.path, file_ctx);
-                        }
-                    }
-
-                    const choice = try src_file_search.present(
-                        &frame_arena,
-                        &ui,
-                        "filepath_chooser",
-                        .{ .top_left = text_input_node.rect.min },
-                        false,
-                    );
-                    if (choice) |file_ctx| {
-                        std.debug.print("TODO: switch input buffer to {s}\n", .{file_ctx.name});
-                    }
-                }
-            }
-            ui.popParentAssert(open_file_parent);
-
+            try doOpenFileBox(&frame_arena, &ui, &session_cmds, cwd, &src_file_buf, &src_file_search);
             try file_tab.display(&ui, &session_cmds);
-
-            if (session_opt) |session| disasm_blk: {
-                const rip = session.regs.rip;
-
-                const disasm_text_idx = blk: for (disasm_texts.items, 0..) |text, i| {
-                    if (text.addr_range[0] <= rip and rip < text.addr_range[1])
-                        break :blk i;
-                } else null;
-
-                const disasm_text = if (disasm_text_idx) |idx| disasm_texts.items[idx] else text_blk: {
-                    const function_addr_range = if (session.elf.findFunctionAtAddr(rip)) |func| blk: {
-                        if (func.low_pc == null or func.high_pc == null) break :blk null;
-                        break :blk [2]usize{ func.low_pc.?, func.high_pc.? };
-                    } else null;
-
-                    const section_addr_range: ?[2]usize = blk: {
-                        var file = try std.fs.cwd().openFile(cmdline_args.exec_path.?, .{});
-                        defer file.close();
-                        const header = try std.elf.Header.read(file);
-                        std.debug.assert(header.is_64);
-                        var sh_iter = header.section_header_iterator(file);
-                        while (try sh_iter.next()) |shdr| {
-                            const addr_range = [2]usize{ shdr.sh_addr, shdr.sh_addr + shdr.sh_size };
-                            if (addr_range[0] <= rip and rip < addr_range[1]) break :blk addr_range;
-                        }
-                        break :blk null;
-                    };
-
-                    const block_addr_range = if (function_addr_range) |func_range|
-                        func_range
-                    else if (section_addr_range) |section_range|
-                        section_range
-                    else blk: {
-                        const mem_map = (try session.getMemMapAtAddr(allocator, rip)) orelse break :disasm_blk;
-                        defer mem_map.deinit(allocator);
-                        break :blk mem_map.addr_range;
-                    };
-
-                    const proc_mem = try session.procMemFile();
-                    defer proc_mem.close();
-
-                    try proc_mem.seekTo(block_addr_range[0]);
-                    var mem_block = try allocator.alloc(u8, block_addr_range[1] - block_addr_range[0]);
-                    defer allocator.free(mem_block);
-                    std.debug.assert((try proc_mem.read(mem_block)) == mem_block.len);
-
-                    //std.debug.print("generating disasm (@ rip=0x{x}) for addr_range: 0x{x}-0x{x} (~{} instructions)...", .{
-                    //    rip, block_addr_range[0], block_addr_range[1], @intToFloat(f32, block_addr_range[1] - block_addr_range[0]) / 4.5,
-                    //});
-                    //const start_time = c.glfwGetTime();
-                    const text_info = try generateTextInfoForDisassembly(allocator, mem_block, block_addr_range[0]);
-                    //std.debug.print("done. (took {d}s)\n", .{c.glfwGetTime() - start_time});
-                    try disasm_texts.append(text_info);
-                    break :text_blk text_info;
-                };
-
-                const line_idx = loop: for (disasm_text.line_addrs, 0..) |addr, i| {
-                    if (addr == rip) break :loop i;
-                } else unreachable;
-
-                _ = try showDisassemblyWindow(&ui, "main_disasm_window", disasm_text, @intToFloat(f32, line_idx + 1));
-            }
+            if (session_opt) |session| try doDisassemblyWindow(allocator, &ui, session, &disasm_texts, cmdline_args.exec_path);
         }
         ui.popParentAssert(left_side_parent);
 
-        const right_side_parent = ui.pushLayoutParent("right_side_parent", [2]Size{ Size.percent(0.5, 1), Size.percent(1, 0) }, .y);
-        right_side_parent.flags.draw_background = true;
+        const right_side_parent = ui.pushLayoutParentFlags(.{
+            .draw_background = true,
+        }, "right_side_parent", Size.fill(0.5, 1), .y);
         if (session_opt) |*session| {
+            ui.pushStyle(.{ .pref_size = [2]Size{ Size.percent(1, 1), Size.text_dim(1) } });
             ui.labelBoxF("Child pid: {}", .{session.pid});
-            ui.topParent().last.?.pref_size[0] = Size.percent(1, 1);
             switch (session.status) {
                 .Stopped => {
+                    ui.pushTmpStyle(.{ .text_color = vec4{ 1, 0.5, 0, 1 } });
                     ui.labelBox("Child Status: Stopped");
-                    ui.topParent().last.?.text_color = vec4{ 1, 0.5, 0, 1 };
                 },
                 .Running => ui.labelBox("Child Status: Running"),
             }
-            ui.topParent().last.?.pref_size[0] = Size.percent(1, 1);
             if (session.src_loc) |loc| {
                 ui.labelBoxF("src_loc: {s}:{}", .{ loc.file, loc.line });
             } else ui.labelBox("src_loc: null");
-            ui.topParent().last.?.pref_size[0] = Size.percent(1, 1);
+            _ = ui.popStyle();
 
             if (ui.button("Wait for Signal").clicked) {
                 std.debug.print("wait status: {any}\n", .{Session.getWaitStatus(session.pid)});
@@ -339,17 +224,14 @@ pub fn main() !void {
             }
 
             {
-                const right_side_tabs_parent = ui.pushLayoutParent("right_side_tabs_parent", [2]Size{ Size.percent(1, 0), Size.by_children(1) }, .y);
+                const right_side_tabs_parent = ui.pushLayoutParent("right_side_tabs_parent", Size.fillByChildren(.x), .y);
                 defer ui.popParentAssert(right_side_tabs_parent);
 
-                const widget_buttons_parent = ui.pushLayoutParent("widget_buttons_parent", [2]Size{ Size.percent(1, 0), Size.by_children(1) }, .x);
+                const widget_buttons_parent = ui.pushLayoutParent("widget_buttons_parent", Size.fillByChildren(.x), .x);
                 for (widget_tabs, 0..) |widget_name, idx| {
                     const is_active = widget_tab_active_idx == idx;
                     if (is_active) ui.pushTmpStyle(.{ .bg_color = app_style.highlight_color });
                     const btn_sig = ui.button(widget_name);
-                    //std.debug.print("{s}: .hovering={}, .pressed={}, .clicked={}, .released={}\n", .{
-                    //    widget_name, btn_sig.hovering, btn_sig.pressed, btn_sig.clicked, btn_sig.released,
-                    //});
                     if (btn_sig.clicked) widget_tab_active_idx = idx;
                 }
                 ui.popParentAssert(widget_buttons_parent);
@@ -390,118 +272,7 @@ pub fn main() !void {
                 }
             }
 
-            const vars_parent = ui.pushLayoutParent("vars_parent", [2]Size{ Size.percent(1, 1), Size.by_children(1) }, .y);
-            {
-                const row_size = [2]Size{ Size.percent(1, 1), Size.by_children(1) };
-                const column_box_size = [2]Size{ Size.percent(1.0 / 3.0, 1), Size.text_dim(1) };
-                const table_header_row_parent = ui.pushLayoutParent("table_header_row_parent", row_size, .x);
-                {
-                    ui.pushStyle(.{ .pref_size = column_box_size });
-                    ui.labelBox("Variable Name");
-                    ui.labelBox("Type");
-                    ui.labelBox("Value");
-                    _ = ui.popStyle();
-                }
-                ui.popParentAssert(table_header_row_parent);
-
-                for (session.watched_vars.items) |var_info| {
-                    const var_name = var_info.name;
-                    const row_parent = ui.addNodeF(.{ .no_id = true }, "###row_parent_{?s}", .{var_name}, .{ .child_layout_axis = .x });
-                    row_parent.pref_size = row_size;
-                    ui.pushParent(row_parent);
-                    {
-                        ui.pushStyle(.{ .pref_size = column_box_size });
-                        ui.labelBoxF("{?s}", .{var_name});
-                        ui.labelBoxF("{s}", .{if (var_info.type) |ty| @tagName(std.meta.activeTag(ty.*)) else "???"});
-                        if (session.getVariableValue(var_info)) |value| switch (value) {
-                            .Float32 => |f| ui.labelBoxF("{d}\n", .{f}),
-                            .Uint32 => |uint| ui.labelBoxF("{}\n", .{uint}),
-                            .Int32 => |int| ui.labelBoxF("{}\n", .{int}),
-                        } else |err| switch (err) {
-                            Session.Error.VarNotAvailable => ui.labelBox("<not available>"),
-                            Session.Error.NoVarLocation => ui.labelBox("<no location>"),
-                            Session.Error.NotStopped => ui.labelBox("<not stopped>"),
-                            else => return err,
-                        }
-                        _ = ui.popStyle();
-                    }
-                    ui.popParentAssert(row_parent);
-                }
-            }
-            ui.popParentAssert(vars_parent);
-
-            const add_var_parent = ui.pushLayoutParent("add_var_parent", [2]Size{ Size.percent(1, 1), Size.by_children(1) }, .x);
-            {
-                //const button_sig = ui.button("Add Variable");
-                ui.labelBox("Add Variable");
-                ui.pushStyle(text_input_style);
-                const text_input_sig = ui.textInput("add_var_textinput", &var_buf.buffer, &var_buf.len);
-                _ = ui.popStyle();
-                //if (button_sig.clicked or text_input_sig.enter_pressed) {
-                //    try session_cmds.append(.{ .add_watched_variable = var_buf.slice() });
-                //}
-                if (text_input_sig.focused and var_buf.len > 0) {
-                    const text_input_node = ui.topParent().last.?;
-
-                    if (!std.mem.eql(u8, var_buf.slice(), var_search.target)) {
-                        try var_search.resetSearch(var_buf.slice());
-                        // here we only shows/score variables that would be possible to choose
-                        // (why? a debug build of the zig compiler has ~700k variables)
-                        // always add all the globals
-                        for (session.elf.dwarf.units, 0..) |unit, unit_idx| {
-                            for (unit.global_vars) |var_idx| {
-                                const variable = unit.variables[var_idx];
-                                if (variable.name == null) continue;
-                                var_search.addEntry(variable.name.?, .{
-                                    .variable = variable,
-                                    .line_progs = session.elf.dwarf.line_progs,
-                                    .unit_idx = unit_idx,
-                                });
-                            }
-                        }
-                        // and if we're in a function add the locals/parameters too
-                        for (session.elf.dwarf.units, 0..) |unit, unit_idx| {
-                            for (unit.functions, 0..) |func, func_idx| {
-                                if (func.low_pc == null or func.high_pc == null) continue;
-                                const addr = session.regs.rip;
-                                if (!(addr <= func.low_pc.? and addr < func.high_pc.?)) continue;
-                                // params
-                                for (func.params) |variable| {
-                                    if (variable.name == null) continue;
-                                    var_search.addEntry(variable.name.?, .{
-                                        .variable = variable.*,
-                                        .line_progs = session.elf.dwarf.line_progs,
-                                        .unit_idx = unit_idx,
-                                    });
-                                }
-                                // locals
-                                for (unit.variables) |variable| {
-                                    if (variable.function == null) continue;
-                                    if (variable.function.? != &unit.functions[func_idx]) continue;
-                                    if (variable.name == null) continue;
-                                    var_search.addEntry(variable.name.?, .{
-                                        .variable = variable,
-                                        .line_progs = session.elf.dwarf.line_progs,
-                                        .unit_idx = unit_idx,
-                                    });
-                                }
-                            }
-                        }
-                    }
-
-                    const choice = try var_search.present(
-                        &frame_arena,
-                        &ui,
-                        "var_table_chooser",
-                        .{ .top_left = text_input_node.rect.min },
-                        false,
-                    );
-                    if (choice) |var_ctx| {
-                        try session_cmds.append(.{ .add_watched_variable = var_ctx.variable });
-                    }
-                }
-            }
-            ui.popParentAssert(add_var_parent);
+            try doVarTable(&frame_arena, &ui, &session_cmds, session, &var_buf, &var_search);
 
             ui.spacer(.y, Size.percent(1, 0));
 
@@ -520,89 +291,9 @@ pub fn main() !void {
             }
             _ = ui.popStyle();
 
-            const set_break_parent = ui.pushLayoutParent("set_break_parent", [2]Size{ Size.percent(1, 1), Size.by_children(1) }, .x);
-            {
-                const button_sig = ui.button("Set Breakpoint");
-
-                ui.labelBox("Line Number");
-                ui.pushStyle(text_input_style);
-                const line_sig = ui.textInput("src_linenum_textinput", &num_buf.buffer, &num_buf.len);
-                _ = ui.popStyle();
-
-                ui.labelBox("File Name");
-                ui.pushStyle(text_input_style);
-                const file_sig = ui.textInput("src_filename_textinput", &file_buf.buffer, &file_buf.len);
-                _ = ui.popStyle();
-
-                if (button_sig.clicked or line_sig.enter_pressed or file_sig.enter_pressed) blk: {
-                    const line = std.fmt.parseUnsigned(u32, num_buf.slice(), 0) catch |err| {
-                        std.debug.print("{s}: couldn't parse break line number: '{s}'\n", .{ @errorName(err), num_buf.slice() });
-                        break :blk;
-                    };
-                    try session_cmds.append(.{ .set_break_at_src = .{
-                        .dir = try std.fs.path.join(frame_arena.allocator(), &.{ cwd, "src" }),
-                        .file = file_buf.slice(),
-                        .line = line,
-                        .column = 0,
-                    } });
-                }
-            }
-            ui.popParentAssert(set_break_parent);
-
-            const set_break_func_parent = ui.pushLayoutParent("set_break_func_parent", [2]Size{ Size.percent(1, 1), Size.by_children(1) }, .x);
-            {
-                const button_sig = ui.button("Set Breakpoint###set_func_breakpoint");
-                _ = button_sig;
-
-                ui.labelBox("Function");
-                ui.pushStyle(text_input_style);
-                const text_input_sig = ui.textInput("src_funcname", &func_buf.buffer, &func_buf.len);
-                _ = ui.popStyle();
-
-                //if (button_sig.clicked or func_sig.enter_pressed) {
-                if (text_input_sig.focused and func_buf.len > 0) {
-                    const text_input_node = ui.topParent().last.?;
-
-                    if (!std.mem.eql(u8, func_buf.slice(), func_search.target)) {
-                        try func_search.resetSearch(func_buf.slice());
-                        for (session.elf.dwarf.units, 0..) |unit, unit_idx| {
-                            for (unit.functions, 0..) |func, func_idx| {
-                                if (func.name == null) continue;
-                                func_search.addEntry(func.name.?, .{
-                                    .name = func.name.?,
-                                    .loc = if (func.decl_coords) |coords|
-                                        coords.toSrcLoc(session.elf.dwarf.line_progs[unit_idx])
-                                    else
-                                        null,
-                                    .unit_idx = unit_idx,
-                                    .func_idx = func_idx,
-                                });
-                            }
-                        }
-                    }
-                    const choice = try func_search.present(
-                        &frame_arena,
-                        &ui,
-                        "break_func_chooser",
-                        .{ .btm_left = vec2{ text_input_node.rect.min[0], text_input_node.rect.max[1] } },
-                        true,
-                    );
-                    if (choice) |func_ctx| {
-                        const func = session.elf.dwarf.units[func_ctx.unit_idx].functions[func_ctx.func_idx];
-                        if (func.low_pc) |addr| {
-                            try session_cmds.append(.{ .set_break_at_addr = addr });
-                        } else if (func.decl_coords) |coords| {
-                            const src = coords.toSrcLoc(session.elf.dwarf.line_progs[func_ctx.unit_idx]);
-                            try session_cmds.append(.{ .set_break_at_src = src });
-                        } else {
-                            // TODO: search the ELF symbol table, might have the function addr
-                            std.debug.print("couldn't find enough information to set a breakpoint on function '{s}'\n", .{func.name.?});
-                        }
-                    }
-                }
-            }
-            ui.popParentAssert(set_break_func_parent);
+            try doBreakpointUI(&frame_arena, &ui, &session_cmds, session, cwd, &num_buf, &file_buf, &func_buf, &func_search);
         }
+
         ui.popParentAssert(right_side_parent);
 
         ui.popParentAssert(tabs_parent);
@@ -624,21 +315,6 @@ pub fn main() !void {
             .key = c.GLFW_KEY_D,
         })) dbg_ui_view.active = !dbg_ui_view.active;
         if (dbg_ui_view.active) {
-            // scroll up/down to change the highlighted node in the list
-            if (window.event_queue.fetchAndRemove(.MouseScroll, null)) |scroll_ev| {
-                if (scroll_ev.y < 0) dbg_ui_view.node_list_idx += 1;
-                if (scroll_ev.y > 0) {
-                    if (dbg_ui_view.node_list_idx > 0) dbg_ui_view.node_list_idx -= 1;
-                }
-            }
-            // ctrl+shift+scroll_click to freeze query position to current mouse_pos
-            if (window.event_queue.find(.MouseUp, c.GLFW_MOUSE_BUTTON_MIDDLE)) |ev_idx| blk: {
-                const mods = window.getModifiers();
-                if (!(mods.shift and mods.control)) break :blk;
-                dbg_ui_view.node_query_pos = if (dbg_ui_view.node_query_pos) |_| null else mouse_pos;
-                _ = window.event_queue.removeAt(ev_idx);
-            }
-            // TODO: change the top_left position for the dbg_ui_view?
             try dbg_ui_view.show(&ui, width, height, mouse_pos, &window.event_queue, dt);
         }
 
@@ -673,29 +349,14 @@ pub fn main() !void {
                 .set_break_at_addr => |addr| case_blk: {
                     const session = if (session_opt) |*s| s else break :case_blk;
                     try session.setBreakpointAtAddr(addr);
-                    //session.setBreakpointAtAddr(addr) catch |err| {
-                    //    std.debug.print("{s}: failed to set breakpoint at addr 0x{x}\n", .{
-                    //        @errorName(err), addr,
-                    //    });
-                    //};
                 },
                 .set_break_at_src => |src| case_blk: {
                     const session = if (session_opt) |*s| s else break :case_blk;
                     try session.setBreakpointAtSrc(src);
-                    //session.setBreakpointAtSrc(src) catch |err| {
-                    //    std.debug.print("{s}: failed to set breakpoint at src={{.dir={s}, .file={s}, .line={}, .column={}}}\n", .{
-                    //        @errorName(err), src.dir, src.file, src.line, src.column,
-                    //    });
-                    //};
                 },
                 .add_watched_variable => |variable| case_blk: {
                     const session = if (session_opt) |*s| s else break :case_blk;
                     try session.watched_vars.append(variable);
-                    //session.watched_vars.append(variable) catch |err| {
-                    //    std.debug.print("{s}: failed to add watched variable '{s}'\n", .{
-                    //        err, variable.name,
-                    //    });
-                    //};
                 },
                 .continue_execution => case_blk: {
                     const session = if (session_opt) |*s| s else break :case_blk;
@@ -840,14 +501,11 @@ const FileTab = struct {
     pub fn display(self: *FileTab, ui: *UiContext, session_cmds: *std.ArrayList(SessionCmd)) !void {
         const trace = tracy.Zone(@src());
         defer trace.End();
-        const file_tab_size = [2]Size{ Size.percent(1, 1), Size.percent(1, 0) };
-        const file_tab_node = ui.addNode(.{
+        const file_tab_node = ui.pushLayoutParentFlags(.{
             .draw_border = true,
-        }, "FileTab:top_node", .{ .pref_size = file_tab_size });
-        ui.pushParent(file_tab_node);
+        }, "FileTag:top_node", Size.fill(1, 1), .y);
 
-        const buttons_parent_size = [2]Size{ Size.percent(1, 0), Size.by_children(1) };
-        const buttons_parent = ui.pushLayoutParent("FileTab:buttons_parent", buttons_parent_size, .x);
+        const buttons_parent = ui.pushLayoutParent("FileTab:buttons_parent", Size.fillByChildren(.x), .x);
         for (self.files.items, 0..) |file_info, i| {
             const filename = std.fs.path.basename(file_info.path);
             const highlight_color = if (file_info.focus_box) |_| app_style.highlight_color else vec4{ 1, 0, 0, 1 };
@@ -862,22 +520,17 @@ const FileTab = struct {
             const file = &self.files.items[file_idx];
 
             // line + text parent
-            const file_box_parent_size = [2]Size{ Size.percent(1, 1), Size.percent(1, 0) };
-            const file_box_parent = ui.addNode(.{
+            const file_box_parent = ui.pushLayoutParentFlags(.{
                 .clip_children = true,
                 .draw_border = true,
-            }, "FileTab:text_box_parent", .{});
-            file_box_parent.pref_size = file_box_parent_size;
-            file_box_parent.child_layout_axis = .x;
-            ui.pushParent(file_box_parent);
+            }, "FileTab:text_box_parent", Size.fill(1, 1), .x);
 
             const line_scroll_size = [2]Size{ Size.by_children(1), Size.percent(1, 0) };
-            const line_scroll_parent = ui.addNodeF(.{
+            const line_scroll_parent = ui.pushLayoutParentFlagsF(.{
                 .scrollable = true,
                 .clip_children = true,
-            }, "###{s}::line_scroll_parent", .{file.path}, .{ .pref_size = line_scroll_size });
+            }, "{s}::line_scroll_parent", .{file.path}, line_scroll_size, .y);
             const line_sig = line_scroll_parent.signal;
-            ui.pushParent(line_scroll_parent);
             const line_text_node = blk: {
                 const n_lines = file.line_offsets.len;
                 const max_line_fmt_size = @floatToInt(usize, @ceil(@log10(@intToFloat(f32, n_lines)))) + 1;
@@ -984,6 +637,132 @@ const FileTab = struct {
         }
     }
 };
+
+fn doOpenFileBox(
+    frame_arena: *std.heap.ArenaAllocator,
+    ui: *UiContext,
+    session_cmds: *std.ArrayList(SessionCmd),
+    cwd: []const u8,
+    src_file_buf: *InputBuf,
+    src_file_search: *FuzzySearchOptions(SrcFileSearchCtx, 20),
+) !void {
+    const open_file_parent = ui.pushLayoutParent("open_file_parent", Size.fillByChildren(.x), .x);
+    defer ui.popParentAssert(open_file_parent);
+    {
+        const open_button_sig = ui.button("Open Source File");
+        ui.pushStyle(text_input_style);
+        const text_input_sig = ui.textInput("textinput", &src_file_buf.buffer, &src_file_buf.len);
+        _ = ui.popStyle();
+        if (open_button_sig.clicked or text_input_sig.enter_pressed) {
+            try session_cmds.append(.{ .open_src_file = src_file_buf.slice() });
+        }
+        if (text_input_sig.focused and src_file_buf.len > 0) {
+            const text_input_node = ui.topParent().last.?;
+            const input = src_file_buf.slice();
+
+            if (!std.mem.eql(u8, input, src_file_search.target)) {
+                try src_file_search.resetSearch(input);
+
+                //const input_path = try std.fs.path.join(frame_arena.allocator(), &.{ cwd, input });
+                // TODO: don't crash if user writes "tmp/dir////"
+                const inner_dir = if (std.mem.lastIndexOfScalar(u8, input, '/')) |idx| blk: {
+                    break :blk input[0 .. idx + 1];
+                } else "";
+                const full_dir_path = try std.fs.path.join(frame_arena.allocator(), &.{ cwd, inner_dir });
+
+                var dir = try std.fs.openIterableDirAbsolute(full_dir_path, .{ .access_sub_paths = true });
+                defer dir.close();
+                var dir_iter = dir.iterate();
+                while (try dir_iter.next()) |entry| {
+                    const file_ctx = SrcFileSearchCtx{
+                        // these strings get release by the search list
+                        .name = try src_file_search.allocator.dupe(u8, entry.name),
+                        .inner_dir = inner_dir,
+                        .path = try std.fs.path.join(src_file_search.allocator, &.{ cwd, inner_dir, entry.name }),
+                        .kind = entry.kind,
+                    };
+                    src_file_search.addEntry(file_ctx.path, file_ctx);
+                }
+            }
+
+            const choice = try src_file_search.present(
+                frame_arena,
+                ui,
+                "filepath_chooser",
+                .{ .top_left = text_input_node.rect.min },
+                false,
+            );
+            if (choice) |file_ctx| {
+                std.debug.print("TODO: switch input buffer to {s}\n", .{file_ctx.name});
+            }
+        }
+    }
+}
+
+fn doDisassemblyWindow(
+    allocator: std.mem.Allocator,
+    ui: *UiContext,
+    session: Session,
+    disasm_texts: *std.ArrayList(AsmTextInfo),
+    exec_path: ?[]const u8,
+) !void {
+    const rip = session.regs.rip;
+
+    const disasm_text_idx = blk: for (disasm_texts.items, 0..) |text, i| {
+        if (text.addr_range[0] <= rip and rip < text.addr_range[1])
+            break :blk i;
+    } else null;
+
+    const disasm_text = if (disasm_text_idx) |idx| disasm_texts.items[idx] else text_blk: {
+        const function_addr_range = if (session.elf.findFunctionAtAddr(rip)) |func| blk: {
+            if (func.low_pc == null or func.high_pc == null) break :blk null;
+            break :blk [2]usize{ func.low_pc.?, func.high_pc.? };
+        } else null;
+
+        const section_addr_range: ?[2]usize = blk: {
+            var file = try std.fs.cwd().openFile(exec_path.?, .{});
+            defer file.close();
+            const header = try std.elf.Header.read(file);
+            std.debug.assert(header.is_64);
+            var sh_iter = header.section_header_iterator(file);
+            while (try sh_iter.next()) |shdr| {
+                const addr_range = [2]usize{ shdr.sh_addr, shdr.sh_addr + shdr.sh_size };
+                if (addr_range[0] <= rip and rip < addr_range[1]) break :blk addr_range;
+            }
+            break :blk null;
+        };
+
+        const block_addr_range = if (function_addr_range) |func_range|
+            func_range
+        else if (section_addr_range) |section_range|
+            section_range
+        else blk: {
+            const mem_map = (try session.getMemMapAtAddr(allocator, rip)) orelse return;
+            defer mem_map.deinit(allocator);
+            break :blk mem_map.addr_range;
+        };
+
+        const proc_mem = try session.procMemFile();
+        defer proc_mem.close();
+
+        try proc_mem.seekTo(block_addr_range[0]);
+        var mem_block = try allocator.alloc(u8, block_addr_range[1] - block_addr_range[0]);
+        defer allocator.free(mem_block);
+        std.debug.assert((try proc_mem.read(mem_block)) == mem_block.len);
+
+        const start_time = c.glfwGetTime();
+        const text_info = try generateTextInfoForDisassembly(allocator, mem_block, block_addr_range[0]);
+        std.debug.print("done. (took {d}s)\n", .{c.glfwGetTime() - start_time});
+        try disasm_texts.append(text_info);
+        break :text_blk text_info;
+    };
+
+    const line_idx = loop: for (disasm_text.line_addrs, 0..) |addr, i| {
+        if (addr == rip) break :loop i;
+    } else unreachable;
+
+    _ = try showDisassemblyWindow(ui, "main_disasm_window", disasm_text, @intToFloat(f32, line_idx + 1));
+}
 
 fn showDisassemblyWindow(ui: *UiContext, label: []const u8, asm_text_info: AsmTextInfo, lock_line: ?f32) !UiContext.Signal {
     // TODO: hightlight box ranges
@@ -1250,6 +1029,223 @@ const CallStackViewer = struct {
     }
 };
 
+fn doVarTable(
+    frame_arena: *std.heap.ArenaAllocator,
+    ui: *UiContext,
+    session_cmds: *std.ArrayList(SessionCmd),
+    session: *Session,
+    var_buf: *InputBuf,
+    var_search: *FuzzySearchOptions(VarSearchCtx, 10),
+) !void {
+    const add_var_parent = ui.pushLayoutParent("add_var_parent", Size.fillByChildren(.x), .x);
+    {
+        //const button_sig = ui.button("Add Variable");
+        ui.labelBox("Add Variable");
+        ui.pushStyle(text_input_style);
+        const text_input_sig = ui.textInput("add_var_textinput", &var_buf.buffer, &var_buf.len);
+        _ = ui.popStyle();
+        //if (button_sig.clicked or text_input_sig.enter_pressed) {
+        //    try session_cmds.append(.{ .add_watched_variable = var_buf.slice() });
+        //}
+        if (text_input_sig.focused and var_buf.len > 0) {
+            const text_input_node = ui.topParent().last.?;
+
+            if (!std.mem.eql(u8, var_buf.slice(), var_search.target)) {
+                try var_search.resetSearch(var_buf.slice());
+                // here we only shows/score variables that would be possible to choose
+                // (why? a debug build of the zig compiler has ~700k variables)
+                // always add all the globals
+                for (session.elf.dwarf.units, 0..) |unit, unit_idx| {
+                    for (unit.global_vars) |var_idx| {
+                        const variable = unit.variables[var_idx];
+                        if (variable.name == null) continue;
+                        var_search.addEntry(variable.name.?, .{
+                            .variable = variable,
+                            .line_progs = session.elf.dwarf.line_progs,
+                            .unit_idx = unit_idx,
+                        });
+                    }
+                }
+                // and if we're in a function add the locals/parameters too
+                for (session.elf.dwarf.units, 0..) |unit, unit_idx| {
+                    for (unit.functions, 0..) |func, func_idx| {
+                        if (func.low_pc == null or func.high_pc == null) continue;
+                        const addr = session.regs.rip;
+                        if (!(addr <= func.low_pc.? and addr < func.high_pc.?)) continue;
+                        // params
+                        for (func.params) |variable| {
+                            if (variable.name == null) continue;
+                            var_search.addEntry(variable.name.?, .{
+                                .variable = variable.*,
+                                .line_progs = session.elf.dwarf.line_progs,
+                                .unit_idx = unit_idx,
+                            });
+                        }
+                        // locals
+                        for (unit.variables) |variable| {
+                            if (variable.function == null) continue;
+                            if (variable.function.? != &unit.functions[func_idx]) continue;
+                            if (variable.name == null) continue;
+                            var_search.addEntry(variable.name.?, .{
+                                .variable = variable,
+                                .line_progs = session.elf.dwarf.line_progs,
+                                .unit_idx = unit_idx,
+                            });
+                        }
+                    }
+                }
+            }
+
+            const choice = try var_search.present(
+                frame_arena,
+                ui,
+                "var_table_chooser",
+                .{ .top_left = text_input_node.rect.min },
+                false,
+            );
+            if (choice) |var_ctx| {
+                try session_cmds.append(.{ .add_watched_variable = var_ctx.variable });
+            }
+        }
+    }
+    ui.popParentAssert(add_var_parent);
+
+    const vars_parent = ui.pushLayoutParent("vars_parent", Size.fillByChildren(.x), .y);
+    {
+        const row_size = Size.fillByChildren(.x);
+        const column_box_size = [2]Size{ Size.percent(1.0 / 3.0, 1), Size.text_dim(1) };
+        const table_header_row_parent = ui.pushLayoutParent("table_header_row_parent", row_size, .x);
+        {
+            ui.pushStyle(.{ .pref_size = column_box_size });
+            ui.labelBox("Variable Name");
+            ui.labelBox("Type");
+            ui.labelBox("Value");
+            _ = ui.popStyle();
+        }
+        ui.popParentAssert(table_header_row_parent);
+
+        for (session.watched_vars.items) |var_info| {
+            const var_name = var_info.name;
+            const row_parent = ui.pushLayoutParentFlagsF(.{
+                .no_id = true,
+            }, "row_parent_{?s}", .{var_name}, row_size, .x);
+            {
+                ui.pushStyle(.{ .pref_size = column_box_size });
+                ui.labelBoxF("{?s}", .{var_name});
+                ui.labelBoxF("{s}", .{if (var_info.type) |ty| @tagName(std.meta.activeTag(ty.*)) else "???"});
+                if (session.getVariableValue(var_info)) |value| switch (value) {
+                    .Float32 => |f| ui.labelBoxF("{d}\n", .{f}),
+                    .Uint32 => |uint| ui.labelBoxF("{}\n", .{uint}),
+                    .Int32 => |int| ui.labelBoxF("{}\n", .{int}),
+                } else |err| switch (err) {
+                    Session.Error.VarNotAvailable => ui.labelBox("<not available>"),
+                    Session.Error.NoVarLocation => ui.labelBox("<no location>"),
+                    Session.Error.NotStopped => ui.labelBox("<not stopped>"),
+                    else => return err,
+                }
+                _ = ui.popStyle();
+            }
+            ui.popParentAssert(row_parent);
+        }
+    }
+    ui.popParentAssert(vars_parent);
+}
+
+fn doBreakpointUI(
+    frame_arena: *std.heap.ArenaAllocator,
+    ui: *UiContext,
+    session_cmds: *std.ArrayList(SessionCmd),
+    session: *Session,
+    cwd: []const u8,
+    num_buf: *InputBuf,
+    file_buf: *InputBuf,
+    func_buf: *InputBuf,
+    func_search: *FuzzySearchOptions(FuncSearchCtx, 10),
+) !void {
+    const set_break_parent = ui.pushLayoutParent("set_break_parent", Size.fillByChildren(.x), .x);
+    {
+        const button_sig = ui.button("Set Breakpoint");
+
+        ui.labelBox("Line Number");
+        ui.pushStyle(text_input_style);
+        const line_sig = ui.textInput("src_linenum_textinput", &num_buf.buffer, &num_buf.len);
+        _ = ui.popStyle();
+
+        ui.labelBox("File Name");
+        ui.pushStyle(text_input_style);
+        const file_sig = ui.textInput("src_filename_textinput", &file_buf.buffer, &file_buf.len);
+        _ = ui.popStyle();
+
+        if (button_sig.clicked or line_sig.enter_pressed or file_sig.enter_pressed) blk: {
+            const line = std.fmt.parseUnsigned(u32, num_buf.slice(), 0) catch |err| {
+                std.debug.print("{s}: couldn't parse break line number: '{s}'\n", .{ @errorName(err), num_buf.slice() });
+                break :blk;
+            };
+            try session_cmds.append(.{ .set_break_at_src = .{
+                .dir = try std.fs.path.join(frame_arena.allocator(), &.{ cwd, "src" }),
+                .file = file_buf.slice(),
+                .line = line,
+                .column = 0,
+            } });
+        }
+    }
+    ui.popParentAssert(set_break_parent);
+
+    const set_break_func_parent = ui.pushLayoutParent("set_break_func_parent", Size.fillByChildren(.x), .x);
+    {
+        const button_sig = ui.button("Set Breakpoint###set_func_breakpoint");
+        _ = button_sig;
+
+        ui.labelBox("Function");
+        ui.pushStyle(text_input_style);
+        const text_input_sig = ui.textInput("src_funcname", &func_buf.buffer, &func_buf.len);
+        _ = ui.popStyle();
+
+        //if (button_sig.clicked or func_sig.enter_pressed) {
+        if (text_input_sig.focused and func_buf.len > 0) {
+            const text_input_node = ui.topParent().last.?;
+
+            if (!std.mem.eql(u8, func_buf.slice(), func_search.target)) {
+                try func_search.resetSearch(func_buf.slice());
+                for (session.elf.dwarf.units, 0..) |unit, unit_idx| {
+                    for (unit.functions, 0..) |func, func_idx| {
+                        if (func.name == null) continue;
+                        func_search.addEntry(func.name.?, .{
+                            .name = func.name.?,
+                            .loc = if (func.decl_coords) |coords|
+                                coords.toSrcLoc(session.elf.dwarf.line_progs[unit_idx])
+                            else
+                                null,
+                            .unit_idx = unit_idx,
+                            .func_idx = func_idx,
+                        });
+                    }
+                }
+            }
+            const choice = try func_search.present(
+                frame_arena,
+                ui,
+                "break_func_chooser",
+                .{ .btm_left = vec2{ text_input_node.rect.min[0], text_input_node.rect.max[1] } },
+                true,
+            );
+            if (choice) |func_ctx| {
+                const func = session.elf.dwarf.units[func_ctx.unit_idx].functions[func_ctx.func_idx];
+                if (func.low_pc) |addr| {
+                    try session_cmds.append(.{ .set_break_at_addr = addr });
+                } else if (func.decl_coords) |coords| {
+                    const src = coords.toSrcLoc(session.elf.dwarf.line_progs[func_ctx.unit_idx]);
+                    try session_cmds.append(.{ .set_break_at_src = src });
+                } else {
+                    // TODO: search the ELF symbol table, might have the function addr
+                    std.debug.print("couldn't find enough information to set a breakpoint on function '{s}'\n", .{func.name.?});
+                }
+            }
+        }
+    }
+    ui.popParentAssert(set_break_func_parent);
+}
+
 const SrcFileSearchCtx = struct {
     name: []const u8,
     inner_dir: []const u8,
@@ -1454,8 +1450,8 @@ fn FuzzySearchOptions(comptime Ctx: type, comptime max_slots: usize) type {
                     .border_color = vec4{ 0, 0, 0, 0 },
                     .cursor_type = .hand,
                     .child_layout_axis = .x,
+                    .pref_size = Size.fillByChildren(.x),
                 });
-                button_node.pref_size = [2]Size{ Size.percent(1, 1), Size.by_children(1) };
                 ui.pushParent(button_node);
                 defer ui.popParentAssert(button_node);
 

@@ -11,7 +11,7 @@ const mat4 = math.mat4;
 const Font = @import("Font.zig");
 const Window = @import("Window.zig");
 const UiContext = @This();
-pub usingnamespace @import("ui_widgets.zig");
+pub usingnamespace @import("ui/widgets.zig");
 
 const build_opts = @import("build_opts");
 
@@ -277,6 +277,17 @@ pub const Size = union(enum) {
             .text_dim => |v| v.strictness,
             .percent => |v| v.strictness,
             .by_children => |v| v.strictness,
+        };
+    }
+
+    pub fn fill(x_percent: f32, y_percent: f32) [2]Size {
+        return [2]Size{ Size.percent(x_percent, 0), Size.percent(y_percent, 0) };
+    }
+
+    pub fn fillByChildren(axis: Axis) [2]Size {
+        return switch (axis) {
+            .x => [2]Size{ Size.percent(1, 0), Size.by_children(1) },
+            .y => [2]Size{ Size.by_children(1), Size.percent(1, 0) },
         };
     }
 
@@ -1882,6 +1893,7 @@ pub fn dumpNodeTreeGraph(self: *UiContext, root: *Node, save_path: []const u8) !
 
 pub const DebugView = struct {
     allocator: Allocator,
+    window_ptr: *Window, // use for `window.getModifiers()`
     ui: UiContext,
     active: bool,
     node_list_idx: usize,
@@ -1890,6 +1902,7 @@ pub const DebugView = struct {
     pub fn init(allocator: Allocator, window_ptr: *Window) !DebugView {
         return DebugView{
             .allocator = allocator,
+            .window_ptr = window_ptr,
             .ui = try UiContext.init(allocator, .{}, window_ptr),
             .active = false,
             .node_list_idx = 0,
@@ -1902,6 +1915,22 @@ pub const DebugView = struct {
     }
 
     pub fn show(self: *DebugView, ui: *UiContext, width: u32, height: u32, mouse_pos: vec2, events: *Window.EventQueue, dt: f32) !void {
+        // scroll up/down to change the highlighted node in the list
+        if (events.fetchAndRemove(.MouseScroll, null)) |scroll_ev| {
+            if (scroll_ev.y < 0) self.node_list_idx += 1;
+            if (scroll_ev.y > 0) {
+                if (self.node_list_idx > 0) self.node_list_idx -= 1;
+            }
+        }
+        // ctrl+shift+scroll_click to freeze query position to current mouse_pos
+        if (events.find(.MouseUp, c.GLFW_MOUSE_BUTTON_MIDDLE)) |ev_idx| blk: {
+            const mods = self.window_ptr.getModifiers();
+            if (!(mods.shift and mods.control)) break :blk;
+            self.node_query_pos = if (self.node_query_pos) |_| null else mouse_pos;
+            _ = events.removeAt(ev_idx);
+        }
+        // TODO: change the top_left position for the dbg_ui_view?
+
         // grab a list of all the nodes that overlap with the query position
         const query_pos = if (self.node_query_pos) |pos| pos else mouse_pos;
         var selected_nodes = std.ArrayList(*UiContext.Node).init(self.allocator);
