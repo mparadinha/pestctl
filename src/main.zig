@@ -87,6 +87,10 @@ pub fn main() !void {
     defer ui.deinit();
     var dbg_ui_view = try UiContext.DebugView.init(allocator, &window);
     defer dbg_ui_view.deinit();
+    const text_input_style = .{
+        .pref_size = [2]Size{ Size.percent(1, 0), Size.text_dim(1) },
+        .bg_color = vec4{ 0.75, 0.75, 0.75, 1 },
+    };
 
     var session_opt = if (cmdline_args.exec_path) |path| try Session.init(allocator, path) else null;
     defer if (session_opt) |*session| session.deinit();
@@ -188,11 +192,8 @@ pub fn main() !void {
             const open_file_parent = ui.pushLayoutParent("open_file_parent", [2]Size{ Size.percent(1, 1), Size.by_children(1) }, .x);
             {
                 const open_button_sig = ui.button("Open Source File");
-                const text_input_size = [2]Size{ Size.percent(1, 0), Size.text_dim(1) };
-                ui.pushStyle(.{ .pref_size = text_input_size });
-                ui.pushStyle(.{ .bg_color = vec4{ 0.75, 0.75, 0.75, 1 } });
+                ui.pushStyle(text_input_style);
                 const text_input_sig = ui.textInput("textinput", &src_file_buf.buffer, &src_file_buf.len);
-                _ = ui.popStyle();
                 _ = ui.popStyle();
                 if (open_button_sig.clicked or text_input_sig.enter_pressed) {
                     try session_cmds.append(.{ .open_src_file = src_file_buf.slice() });
@@ -431,13 +432,10 @@ pub fn main() !void {
 
             const add_var_parent = ui.pushLayoutParent("add_var_parent", [2]Size{ Size.percent(1, 1), Size.by_children(1) }, .x);
             {
-                const var_input_size = [2]Size{ Size.percent(1, 0), Size.text_dim(1) };
                 //const button_sig = ui.button("Add Variable");
                 ui.labelBox("Add Variable");
-                ui.pushStyle(.{ .bg_color = vec4{ 0.75, 0.75, 0.75, 1 } });
-                ui.pushStyle(.{ .pref_size = var_input_size });
+                ui.pushStyle(text_input_style);
                 const text_input_sig = ui.textInput("add_var_textinput", &var_buf.buffer, &var_buf.len);
-                _ = ui.popStyle();
                 _ = ui.popStyle();
                 //if (button_sig.clicked or text_input_sig.enter_pressed) {
                 //    try session_cmds.append(.{ .add_watched_variable = var_buf.slice() });
@@ -507,8 +505,7 @@ pub fn main() !void {
 
             ui.spacer(.y, Size.percent(1, 0));
 
-            const button_size = [2]Size{ Size.percent(0.5, 1), Size.text_dim(1) };
-            ui.pushStyle(.{ .pref_size = button_size });
+            ui.pushStyle(.{ .pref_size = [2]Size{ Size.percent(0.5, 1), Size.text_dim(1) } });
             if (ui.button("Continue Running").clicked) {
                 try session_cmds.append(.{ .continue_execution = {} });
             }
@@ -527,20 +524,14 @@ pub fn main() !void {
             {
                 const button_sig = ui.button("Set Breakpoint");
 
-                const line_input_size = [2]Size{ Size.percent(1, 0), Size.text_dim(1) };
                 ui.labelBox("Line Number");
-                ui.pushStyle(.{ .bg_color = vec4{ 0.75, 0.75, 0.75, 1 } });
-                ui.pushStyle(.{ .pref_size = line_input_size });
+                ui.pushStyle(text_input_style);
                 const line_sig = ui.textInput("src_linenum_textinput", &num_buf.buffer, &num_buf.len);
                 _ = ui.popStyle();
-                _ = ui.popStyle();
 
-                const file_input_size = [2]Size{ Size.percent(1, 0), Size.text_dim(1) };
                 ui.labelBox("File Name");
-                ui.pushStyle(.{ .bg_color = vec4{ 0.75, 0.75, 0.75, 1 } });
-                ui.pushStyle(.{ .pref_size = file_input_size });
+                ui.pushStyle(text_input_style);
                 const file_sig = ui.textInput("src_filename_textinput", &file_buf.buffer, &file_buf.len);
-                _ = ui.popStyle();
                 _ = ui.popStyle();
 
                 if (button_sig.clicked or line_sig.enter_pressed or file_sig.enter_pressed) blk: {
@@ -563,12 +554,9 @@ pub fn main() !void {
                 const button_sig = ui.button("Set Breakpoint###set_func_breakpoint");
                 _ = button_sig;
 
-                const func_input_size = [2]Size{ Size.percent(1, 0), Size.text_dim(1) };
                 ui.labelBox("Function");
-                ui.pushStyle(.{ .bg_color = vec4{ 0.75, 0.75, 0.75, 1 } });
-                ui.pushStyle(.{ .pref_size = func_input_size });
+                ui.pushStyle(text_input_style);
                 const text_input_sig = ui.textInput("src_funcname", &func_buf.buffer, &func_buf.len);
-                _ = ui.popStyle();
                 _ = ui.popStyle();
 
                 //if (button_sig.clicked or func_sig.enter_pressed) {
