@@ -765,7 +765,7 @@ fn loadAllVariables(self: *DebugUnit, debug_str: []const u8) !VarFixups {
     );
     defer read_ctx.deinit();
     while (try read_ctx.nextEntry()) |entry| {
-        if (std.meta.activeTag(entry) == .close_tag) {
+        if (entry == .close_tag) {
             switch (entry.close_tag) {
                 DW.TAG.subprogram, DW.TAG.inlined_subroutine, DW.TAG.subroutine_type => {
                     std.debug.assert(func_stack.pop() == entry.close_tag);

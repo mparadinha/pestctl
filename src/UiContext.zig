@@ -370,7 +370,7 @@ pub const Placement = union(enum) {
     }
 
     pub fn convertTo(self: Placement, new_tag: Tag, size: vec2) Placement {
-        if (std.meta.activeTag(self) == new_tag) return self;
+        if (self == new_tag) return self;
         const center = self.getCenter(size);
         const half_size = size / vec2{ 2, 2 };
         return switch (new_tag) {

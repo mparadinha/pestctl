@@ -422,7 +422,7 @@ pub const EventQueue = struct {
         match_ev_content: ?EventPayload(ev_type),
     ) ?usize {
         for (self.events.items, 0..) |ev, i| {
-            if (std.meta.activeTag(ev) != ev_type) continue;
+            if (ev != ev_type) continue;
             if (match_ev_content) |match_ev| {
                 if (!std.meta.eql(match_ev, ev.payload(ev_type))) continue;
             }
@@ -454,7 +454,7 @@ pub const EventQueue = struct {
         }
 
         ev_loop: for (self.events.items, 0..) |ev, i| {
-            if (std.meta.activeTag(ev) != ev_type) continue;
+            if (ev != ev_type) continue;
             if (T == void) return i;
 
             const ev_payload: Payload = ev.payload(ev_type);

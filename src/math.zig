@@ -46,14 +46,14 @@ pub fn dot(vec_a: anytype, vec_b: @TypeOf(vec_a)) std.meta.Child(@TypeOf(vec_a))
 
 pub fn size(vec: anytype) f32 {
     const info = @typeInfo(@TypeOf(vec));
-    std.debug.assert(std.meta.activeTag(info) == .Vector);
+    std.debug.assert(info == .Vector);
     std.debug.assert(info.Vector.child != f64);
     return std.math.sqrt(dot(vec, vec));
 }
 
 pub fn normalize(vec: anytype) @TypeOf(vec) {
     const info = @typeInfo(@TypeOf(vec));
-    std.debug.assert(std.meta.activeTag(info) == .Vector);
+    std.debug.assert(info == .Vector);
     const vec_size = size(vec);
     return if (vec_size == 0) vec else vec / splat(@TypeOf(vec), vec_size);
 }
@@ -245,13 +245,13 @@ pub fn look_at_roll(eye: vec3, target: vec3, roll: f32) mat4 {
 /// Return the sqrt of `x` or `null` if `x` is not a perfect square.
 fn perfect_sqrt(x: anytype) ?@TypeOf(x) {
     const info = @typeInfo(@TypeOf(x));
-    const sqrt: f32 = switch (std.meta.activeTag(info)) {
+    const sqrt: f32 = switch (info) {
         .Int, .ComptimeInt => @sqrt(@intToFloat(f32, x)),
         .Float, .ComptimeFloat => @sqrt(@floatCast(f32, x)),
         else => |tag| @compileError("can't calculate perfect for " ++ @tagName(tag)),
     };
     if (@floor(sqrt) != @ceil(sqrt)) return null;
-    return switch (std.meta.activeTag(info)) {
+    return switch (info) {
         .Int, .ComptimeInt => @floatToInt(@TypeOf(x), sqrt),
         .Float, .ComptimeFloat => @floatCast(@TypeOf(x), sqrt),
         else => |tag| @compileError("can't calculate perfect for " ++ @tagName(tag)),
