@@ -1,15 +1,20 @@
 .{
-	.name = "pestctl",
-	.version = "0.0.1",
+    .name = "pestctl",
+    .version = "0.0.1",
 
-	.dependencies = .{
-		.libglfw3 = .{
-			.url = "https://github.com/mparadinha/glfw/archive/0d7f577f228aabecdd40f04cb0bcd106961db03c.tar.gz",
-			.hash = "12201f249b14973ab24301a7c612620bbe89484cffcbb349d9ab2ce08d54c7b136ee",
-		},
-		.Zydis = .{
-			.url = "https://github.com/mparadinha/Zydis/archive/46777c875c3440c8a5d93312ea35c4e3f8e6e730.tar.gz",
-			.hash = "1220a91b55edc671b2327cff8b5f107b7e8def50c8778e821230a5c6fc04a8216a2a",
-		},
-	},
+    .dependencies = .{
+        .libglfw3 = .{
+            .url = "https://github.com/mparadinha/glfw/archive/0d7f577f228aabecdd40f04cb0bcd106961db03c.tar.gz",
+            .hash = "12201f249b14973ab24301a7c612620bbe89484cffcbb349d9ab2ce08d54c7b136ee",
+        },
+        .Zydis = .{
+            .url = "https://github.com/mparadinha/Zydis/archive/46777c875c3440c8a5d93312ea35c4e3f8e6e730.tar.gz",
+            .hash = "1220a91b55edc671b2327cff8b5f107b7e8def50c8778e821230a5c6fc04a8216a2a",
+        },
+        // I don't think we need this, see `build.zig` why
+        .Zycore = .{
+            .url = "https://github.com/mparadinha/zycore-c/archive/685632b40cbb9d4bc3419d95619630c0a3279396.tar.gz",
+            .hash = "1220c8ec226e6508c5e3a34587d3a283a2659290c44de2f01c9b45f4815127520fc2",
+        },
+    },
 }
