@@ -18,15 +18,6 @@ pub fn build(b: *std.build.Builder) void {
     });
     exe.linkLibC();
     exe.linkLibrary(glfw_dep.artifact("glfw3"));
-    // Zydis depends on the headers of Zycore (and builds fine on its own but, because
-    // *we* don't explicitly depend on Zycore, the build system doesn't put
-    // the `-I<path_to_zycore_includes>` on the build command.
-    // I'm not sure if this intended behavior (maybe one can't do what I want, in
-    // the general case) of it's just a bug. I should prob. file an issues for this
-    {
-        const zycore_dep = b.dependency("Zycore", .{ .target = target, .optimize = optimize });
-        exe.linkLibrary(zycore_dep.artifact("Zycore"));
-    }
     exe.linkLibrary(zydis_dep.artifact("Zydis"));
     { // stb libs
         exe.addIncludePath("src");
