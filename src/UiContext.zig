@@ -1364,7 +1364,7 @@ fn solveUpwardDependentWorkFn(self: *UiContext, node: *Node, axis: Axis) void {
     switch (node.pref_size[axis_idx]) {
         .percent => |percent| {
             if (node.parent) |parent| {
-                node.calc_size[axis_idx] = parent.calc_size[axis_idx] * percent.value;
+                node.calc_size[axis_idx] = @round(parent.calc_size[axis_idx] * percent.value);
             }
         },
         else => {},
@@ -1416,7 +1416,7 @@ fn solveViolationsWorkFn(self: *UiContext, node: *Node, axis: Axis) void {
     for (zero_strict_children.slice()) |z_child| {
         if (is_layout_axis) {
             const z_child_percent = z_child.calc_size[axis_idx] / zero_strict_take_budget;
-            z_child.calc_size[axis_idx] -= zero_strict_remove_amount * z_child_percent;
+            z_child.calc_size[axis_idx] -= @round(zero_strict_remove_amount * z_child_percent);
         } else {
             const extra_size = z_child.calc_size[axis_idx] - node.calc_size[axis_idx];
             z_child.calc_size[axis_idx] -= std.math.max(0, extra_size);
@@ -1434,7 +1434,7 @@ fn solveViolationsWorkFn(self: *UiContext, node: *Node, axis: Axis) void {
             const child_take_budget = child_size * strictness;
             const leeway_percent = (1 - strictness) / other_children_leeway;
             const remove_amount = if (is_layout_axis)
-                overflow * leeway_percent
+                @round(overflow * leeway_percent)
             else
                 std.math.max(0, child_size - node.calc_size[axis_idx]);
             child_node.calc_size[axis_idx] -= std.math.min(child_take_budget, remove_amount);
