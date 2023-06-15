@@ -227,7 +227,7 @@ pub const Shader = struct {
         return self.compile_src(src, shader_type);
     }
 
-    fn link(self: *Shader, ids: []u32) void {
+    fn link(self: *Shader, ids: []const u32) void {
         self.prog_id = gl.createProgram();
         for (ids) |shader_id| gl.attachShader(self.prog_id, shader_id);
 

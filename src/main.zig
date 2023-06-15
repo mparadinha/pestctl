@@ -1256,7 +1256,7 @@ const SrcFileSearchCtx = struct {
         allocator.free(self.path);
     }
     pub fn fmtName(self: @This(), fmt_allocator: Allocator) ![]const u8 {
-        return if (self.kind == .Directory)
+        return if (self.kind == .directory)
             try std.fmt.allocPrint(fmt_allocator, "{s}{s}/", .{ self.inner_dir, self.name })
         else
             try std.fmt.allocPrint(fmt_allocator, "{s}{s}", .{ self.inner_dir, self.name });
