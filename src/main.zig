@@ -28,13 +28,28 @@ const text_input_style = .{
 
 pub const CmdlineArgs = struct {
     exec_path: ?[]const u8 = null,
+    font_scale: ?f32 = null,
 
     pub fn parse(arg_slices: [][:0]const u8) CmdlineArgs {
         var args = CmdlineArgs{};
 
-        for (arg_slices, 0..) |arg, i| {
-            if (i == 0) continue;
-            args.exec_path = arg;
+        var arg_idx: usize = 1;
+        while (arg_idx < arg_slices.len) : (arg_idx += 1) {
+            const arg = arg_slices[arg_idx];
+
+            if (std.mem.eql(u8, arg, "--font-scale")) {
+                arg_idx += 1;
+                const scale_arg = arg_slices[arg_idx];
+                args.font_scale = std.fmt.parseFloat(f32, scale_arg) catch
+                    std.debug.panic("invalid float arg for `--font-scale`: '{s}'\n", .{scale_arg});
+            } else {
+                if (args.exec_path) |path| {
+                    std.debug.panic("multiple executable passed in arguments: '{s}' and '{s}'\n", .{
+                        path, arg,
+                    });
+                }
+                args.exec_path = arg;
+            }
         }
 
         return args;
@@ -92,6 +107,10 @@ pub fn main() !void {
     defer ui.deinit();
     var dbg_ui_view = try UiContext.DebugView.init(allocator, &window);
     defer dbg_ui_view.deinit();
+
+    if (cmdline_args.font_scale) |font_scale| {
+        ui.base_style.font_size *= font_scale;
+    }
 
     var session_opt = if (cmdline_args.exec_path) |path| try Session.init(allocator, path) else null;
     defer if (session_opt) |*session| session.deinit();

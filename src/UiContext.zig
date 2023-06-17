@@ -37,6 +37,8 @@ node_keys_this_frame: std.ArrayList(NodeKey),
 first_error_trace: ?*std.builtin.StackTrace,
 first_error_name: []const u8,
 
+base_style: Style,
+
 // per-frame data
 parent_stack: Stack(*Node),
 style_stack: Stack(Style),
@@ -116,6 +118,8 @@ pub fn init(allocator: Allocator, font_opts: FontOptions, window_ptr: *Window) !
 
         .first_error_trace = null,
         .first_error_name = "",
+
+        .base_style = Style{},
 
         .parent_stack = Stack(*Node).init(allocator),
         .style_stack = Stack(Style).init(allocator),
@@ -649,8 +653,7 @@ pub fn startBuild(self: *UiContext, screen_w: u32, screen_h: u32, mouse_pos: vec
     std.debug.assert(self.parent_stack.len() == 0);
 
     self.style_stack.clear();
-    const default_style = Style{};
-    try self.style_stack.push(default_style);
+    try self.style_stack.push(self.base_style);
 
     const root_pref_sizes = [2]Size{ Size.pixels(screen_size[0], 1), Size.pixels(screen_size[1], 1) };
     const whole_screen_rect = Rect{ .min = vec2{ 0, 0 }, .max = screen_size };
