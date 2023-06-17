@@ -118,6 +118,15 @@ pub const Type = union(enum) {
         type: ?*Type,
         parent_type: ?*Type,
     },
+    Function: struct {
+        name: ?[]const u8,
+        return_type: ?*Type,
+        args: []*Type,
+        // DWARF v5, sec. 5.10, pg.126: "In C there is a difference between the
+        // types of functions declared using function prototype style declarations
+        // and those declared using non-prototype declarations.
+        prototyped: bool,
+    },
 
     pub const NameAndType = struct {
         name: ?[]const u8,
@@ -621,6 +630,26 @@ fn loadAllTypes(self: *DebugUnit, debug_str: []const u8) ![]usize {
                     .type = null,
                 } });
             },
+            DW.TAG.subroutine_type => {
+                const attribs = try genericReadAttribs(&read_ctx, abbrev, &[_]FieldInfo{
+                    .{ .attrib = DW.AT.name, .type = []const u8 },
+                    .{ .attrib = DW.AT.type, .type = usize },
+                    .{ .attrib = DW.AT.prototyped, .type = bool },
+                });
+                if (attribs.type) |offset| {
+                    try offset_fixups.append(.{
+                        .idx = type_offset_list.items.len,
+                        .offset = offset,
+                    });
+                }
+                try types.append(.{ .Function = .{
+                    .name = attribs.name,
+                    .return_type = null,
+                    .args = &[0]*Type{},
+                    .prototyped = attribs.prototyped orelse false,
+                } });
+                // TODO: the list of argument types for this function type
+            },
             else => {
                 added_type = false;
                 try read_ctx.skipTag(abbrev);
@@ -634,9 +663,11 @@ fn loadAllTypes(self: *DebugUnit, debug_str: []const u8) ![]usize {
     self.types = try types.toOwnedSlice();
     for (offset_fixups.items) |fixup| {
         const type_idx = searchForOffset(fixup.offset, type_offsets) orelse {
-            //std.debug.panic("fixup={{.idx={}, .offset=0x{x}}}\n", .{fixup.idx, fixup.offset});
-            //@debug
-            std.debug.print("ignoring fixup={{.idx={}, .offset=0x{x}}}\n", .{ fixup.idx, fixup.offset });
+            const print_fn = comptime switch (@import("builtin").mode) {
+                .Debug => std.debug.print,
+                else => std.debug.panic,
+            };
+            print_fn("ignoring fixup={{.idx={}, .offset=0x{x}}}\n", .{ fixup.idx, fixup.offset });
             continue;
         };
         const referenced_type = &self.types[type_idx];
@@ -672,6 +703,9 @@ fn loadAllTypes(self: *DebugUnit, debug_str: []const u8) ![]usize {
             .PtrToMember => |*info| {
                 const type_ptr = if (fixup.is_parent_type) &info.parent_type else &info.type;
                 type_ptr.* = referenced_type;
+            },
+            .Function => |*info| {
+                info.return_type = referenced_type;
             },
         }
     }
