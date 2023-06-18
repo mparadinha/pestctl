@@ -12,7 +12,6 @@ const Session = @This();
 allocator: Allocator,
 exec_path: [:0]const u8,
 pid: pid_t,
-status: Status,
 elf: Elf,
 
 breakpoints: std.ArrayList(BreakPoint), // TODO: switch to linked list (removing items in the middle is needed, while iterating)
@@ -21,11 +20,6 @@ addr_range: ?[2]u64,
 call_stack: []CallFrame,
 regs: Registers,
 watched_vars: std.ArrayList(Dwarf.Variable),
-
-pub const Status = enum {
-    Running,
-    Stopped,
-};
 
 pub const CallFrame = struct {
     addr: usize,
@@ -44,7 +38,6 @@ pub fn init(allocator: Allocator, exec_path: []const u8) !Session {
         .allocator = allocator,
         .exec_path = try allocator.dupeZ(u8, exec_path),
         .pid = undefined,
-        .status = .Stopped,
         .elf = try Elf.init(allocator, exec_path),
         .breakpoints = std.ArrayList(BreakPoint).init(allocator),
         .src_loc = null,
@@ -97,15 +90,12 @@ pub fn startTracing(self: *Session) !void {
 }
 
 pub fn pause(self: *Session) !void {
-    if (self.status != .Running) return;
     try sendSignal(self.pid, .SIGSTOP);
     const wait_status = try getWaitStatus(self.pid);
     std.debug.print("[Session.pause] after sending SIGSTOP: {}\n", .{wait_status});
-    self.status = .Stopped;
 }
 
 pub fn unpause(self: *Session) !void {
-    if (self.status != .Stopped) return;
     std.debug.print("Session.unpause\n", .{});
 
     // invalidate all the data that is only valid while .Stopped
@@ -130,8 +120,6 @@ pub fn unpause(self: *Session) !void {
 
     // note: doing a ptrace(.CONT) does not produce a notification from waitpid
     try ptrace(.CONT, self.pid, 0);
-
-    self.status = .Running;
 }
 
 pub fn kill(self: *Session) void {
@@ -141,14 +129,9 @@ pub fn kill(self: *Session) void {
 /// checks if the child is stopped at a breakpoint (which we need to restore)
 /// some breakpoints need to be re-setup (in case we want to hit them again)
 pub fn fullUpdate(self: *Session) !void {
-    std.debug.print("fullUpdate, cur status: {}\n", .{self.status});
-
     while (try getWaitStatusNoHang(self.pid)) |status| {
         std.debug.print("[fullUpdate] {}\n", .{status});
-        self.status = .Stopped;
     }
-
-    if (self.status == .Running) return;
 
     self.regs = try self.getRegisters();
     self.src_loc = try self.elf.translateAddrToSrc(self.regs.rip);
@@ -222,10 +205,9 @@ pub fn fullUpdate(self: *Session) !void {
 }
 
 pub fn setBreakpointAtAddr(self: *Session, addr: usize) !void {
-    const was_running = (self.status == .Running);
+    const was_running = (try self.getState() != .stopped);
     if (was_running) try self.pause();
 
-    std.debug.print("status={}\n", .{self.status});
     std.debug.print("rip=0x{x} when setting breakpoint\n", .{(try self.getRegisters()).rip});
 
     //for (self.breakpoints.items) |breakpt| {
@@ -241,7 +223,7 @@ pub fn setBreakpointAtAddr(self: *Session, addr: usize) !void {
 
     std.debug.print("bytes @ addr=0x{x}: {}\n", .{ addr, std.fmt.fmtSliceHexLower(&(try self.getBytesAtAddr(addr, 4))) });
 
-    //if (was_running) try self.unpause();
+    if (was_running) try self.unpause();
 }
 
 pub fn setBreakpointAtSrc(self: *Session, src: SrcLoc) !void {
@@ -258,7 +240,7 @@ pub const Value = union(enum) {
 };
 
 pub fn getVariableValue(self: *Session, variable: Dwarf.Variable) !Value {
-    if (self.status == .Running) return Error.NotStopped;
+    if (try self.getState() != .stopped) return Error.NotStopped;
 
     if (variable.function) |function| {
         const low_pc = function.low_pc orelse return Error.NoVarLocation;
@@ -334,7 +316,7 @@ pub fn getVariableValue(self: *Session, variable: Dwarf.Variable) !Value {
 }
 
 pub fn stepInstructions(self: *Session, num_instrs: usize) !void {
-    if (self.status != .Stopped) return;
+    if (try self.getState() != .stopped) return;
 
     var instrs_done: usize = 0;
     while (instrs_done < num_instrs) : (instrs_done += 1) {
@@ -348,7 +330,7 @@ pub fn stepInstructions(self: *Session, num_instrs: usize) !void {
 
 /// note: this steps into functions
 pub fn stepLine(self: *Session) !void {
-    if (self.status != .Stopped) return;
+    if (try self.getState() != .stopped) return;
 
     //var src = self.src_loc orelse return;
     var addr_range = self.addr_range orelse return;
@@ -372,6 +354,43 @@ pub fn stepLine(self: *Session) !void {
         if (try self.elf.translateAddrToSrc(rip)) |_| return;
         try self.stepInstructions(1);
     }
+}
+
+pub const State = enum {
+    running,
+    sleep,
+    disk_sleep,
+    zombie,
+    stopped,
+};
+
+pub fn getState(self: *Session) !State {
+    const path = try std.fmt.allocPrint(self.allocator, "/proc/{}/status", .{self.pid});
+    defer self.allocator.free(path);
+
+    const file = try std.fs.openFileAbsolute(path, .{});
+    defer file.close();
+
+    const contents = try file.readToEndAlloc(self.allocator, std.math.maxInt(usize));
+    defer self.allocator.free(contents);
+
+    var line_iter = std.mem.tokenizeScalar(u8, contents, '\n');
+    while (line_iter.next()) |line| {
+        if (std.mem.startsWith(u8, line, "State:")) {
+            var idx: usize = std.mem.indexOfScalar(u8, line, ':').? + 1;
+            while (std.ascii.isWhitespace(line[idx])) : (idx += 1) {}
+            return switch (line[idx]) {
+                'R' => .running,
+                'S' => .sleep,
+                'D' => .disk_sleep,
+                'Z' => .zombie,
+                't', 'T' => .stopped,
+                else => std.debug.panic("invalid state char '{c}'\n", .{line[idx]}),
+            };
+        }
+    }
+
+    unreachable;
 }
 
 pub const MemMapInfo = struct {

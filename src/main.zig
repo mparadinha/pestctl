@@ -217,13 +217,7 @@ pub fn main() !void {
         if (session_opt) |*session| {
             ui.pushStyle(.{ .pref_size = [2]Size{ Size.percent(1, 1), Size.text_dim(1) } });
             ui.labelBoxF("Child pid: {}", .{session.pid});
-            switch (session.status) {
-                .Stopped => {
-                    ui.pushTmpStyle(.{ .text_color = vec4{ 1, 0.5, 0, 1 } });
-                    ui.labelBox("Child Status: Stopped");
-                },
-                .Running => ui.labelBox("Child Status: Running"),
-            }
+            ui.labelBoxF("Child Status: {s}", .{@tagName(try session.getState())});
             if (session.src_loc) |loc| {
                 ui.labelBoxF("src_loc: {s}:{}", .{ loc.file, loc.line });
             } else ui.labelBox("src_loc: null");
