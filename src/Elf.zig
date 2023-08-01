@@ -140,7 +140,7 @@ pub fn translateSrcToAddr(self: Elf, src: SrcLoc) !?usize {
     for (self.dwarf.line_progs) |prog| {
         for (prog.files, 0..) |file_info, i| {
             if (std.mem.eql(u8, file_info.name, src.file)) {
-                const file_idx = @intCast(u32, i);
+                const file_idx = @as(u32, @intCast(i));
                 const state = (try prog.findAddrForSrc(file_idx, src.line)) orelse continue;
                 return state.address;
             }
@@ -190,7 +190,7 @@ pub fn readSectionHeader(file: anytype, header: elf.Header, sh_idx: usize) !elf.
 }
 
 pub fn stringFromTable(table: []const u8, offset: usize) []const u8 {
-    const str_ptr = @ptrCast([*c]const u8, table.ptr + offset);
+    const str_ptr = @as([*c]const u8, @ptrCast(table.ptr + offset));
     return std.mem.sliceTo(str_ptr, 0);
 }
 

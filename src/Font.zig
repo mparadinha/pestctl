@@ -65,10 +65,10 @@ pub fn getScaledMetrics(self: Font, pixel_size: f32) struct {
     c.stbtt_GetFontVMetrics(&self.font_info, &ascent, &descent, &line_gap);
     const scale = c.stbtt_ScaleForPixelHeight(&self.font_info, pixel_size);
     return .{
-        .ascent = @intToFloat(f32, ascent) * scale,
-        .descent = @intToFloat(f32, descent) * scale,
-        .line_gap = @intToFloat(f32, line_gap) * scale,
-        .line_advance = @intToFloat(f32, ascent - descent + line_gap) * scale,
+        .ascent = @as(f32, @floatFromInt(ascent)) * scale,
+        .descent = @as(f32, @floatFromInt(descent)) * scale,
+        .line_gap = @as(f32, @floatFromInt(line_gap)) * scale,
+        .line_advance = @as(f32, @floatFromInt(ascent - descent + line_gap)) * scale,
     };
 }
 
@@ -112,8 +112,8 @@ pub fn buildQuad(self: *Font, codepoint: u21, pixel_size: f32, cursor: *[2]f32) 
     var stb_quad: c.stbtt_aligned_quad = undefined;
     c.stbtt_GetPackedQuad(
         &packed_char_data,
-        @intCast(i32, self.texture.width),
-        @intCast(i32, self.texture.height),
+        @as(i32, @intCast(self.texture.width)),
+        @as(i32, @intCast(self.texture.height)),
         0,
         &cursor[0],
         &cursor[1],
@@ -149,7 +149,7 @@ pub fn textRect(self: *Font, str: []const u8, pixel_size: f32) !Rect {
 
         if (codepoint == '\n') {
             if (next_codepoint != null) {
-                max_x = std.math.max(max_x, x_advance);
+                max_x = @max(max_x, x_advance);
                 x_advance = 0;
                 newlines += 1;
             }
@@ -157,7 +157,7 @@ pub fn textRect(self: *Font, str: []const u8, pixel_size: f32) !Rect {
         }
 
         const advance_width = (try self.getCharData(codepoint, pixel_size)).advance_width;
-        x_advance += @intToFloat(f32, advance_width);
+        x_advance += @as(f32, @floatFromInt(advance_width));
 
         //if (next_codepoint) |n_codepoint| {
         //    const kern = try self.getKerningAdvance([2]u21{ codepoint, n_codepoint });
@@ -165,13 +165,13 @@ pub fn textRect(self: *Font, str: []const u8, pixel_size: f32) !Rect {
         //}
     }
 
-    max_x = std.math.max(max_x, x_advance);
+    max_x = @max(max_x, x_advance);
 
     const metrics = self.getScaledMetrics(pixel_size);
     const scale = c.stbtt_ScaleForPixelHeight(&self.font_info, pixel_size);
 
     return Rect{
-        .min = vec2{ 0, @intToFloat(f32, newlines) * -metrics.line_advance + metrics.descent },
+        .min = vec2{ 0, @as(f32, @floatFromInt(newlines)) * -metrics.line_advance + metrics.descent },
         .max = vec2{ max_x * scale, metrics.ascent },
     };
 }
@@ -184,7 +184,7 @@ const CharData = struct {
 const CharMap = std.HashMap(CharKey, CharData, struct {
     pub fn hash(self: @This(), key: CharKey) u64 {
         _ = self;
-        return (@intCast(u64, key.codepoint) << 32) | @bitCast(u32, key.size);
+        return (@as(u64, @intCast(key.codepoint)) << 32) | @as(u32, @bitCast(key.size));
     }
     pub fn eql(self: @This(), key_a: CharKey, key_b: CharKey) bool {
         _ = self;
@@ -196,7 +196,7 @@ const CharPair = [2]u21;
 const KerningMap = std.HashMap(CharPair, i32, struct {
     pub fn hash(self: @This(), key: CharPair) u64 {
         _ = self;
-        return @intCast(u64, key[0]) * 7 + @intCast(u64, key[1]) * 11;
+        return @as(u64, @intCast(key[0])) * 7 + @as(u64, @intCast(key[1])) * 11;
     }
     pub fn eql(self: @This(), key_a: CharPair, key_b: CharPair) bool {
         _ = self;
@@ -216,8 +216,8 @@ fn setupPacking(self: *Font, texture_size: u32) !void {
     if (c.stbtt_PackBegin(
         &self.packing_ctx,
         self.texture_data.ptr,
-        @intCast(i32, self.texture.width),
-        @intCast(i32, self.texture.height),
+        @as(i32, @intCast(self.texture.width)),
+        @as(i32, @intCast(self.texture.height)),
         0,
         1, // padding between characters
         null,
@@ -247,7 +247,7 @@ fn increaseTextureAndRepack(self: *Font) !void {
             self.file_data.ptr,
             0,
             entry.key_ptr.size,
-            @intCast(i32, entry.key_ptr.codepoint),
+            @as(i32, @intCast(entry.key_ptr.codepoint)),
             1,
             &entry.value_ptr.packing_data,
         );
@@ -275,7 +275,7 @@ fn getCharData(self: *Font, codepoint: u21, pixel_size: f32) !CharData {
         self.file_data.ptr,
         0,
         pixel_size,
-        @intCast(i32, codepoint),
+        @as(i32, @intCast(codepoint)),
         1,
         &char_data.packing_data,
     );

@@ -100,17 +100,17 @@ pub const ptrace_error = error{
 };
 
 pub fn ptrace(req: PTRACE.request, pid: std.os.pid_t, _addr: ?*anyopaque, _data: ?*anyopaque) ptrace_error!usize {
-    var addr = if (_addr) |a| @ptrToInt(a) else 0;
-    var data = if (_data) |d| @ptrToInt(d) else 0;
+    var addr = if (_addr) |a| @intFromPtr(a) else 0;
+    var data = if (_data) |d| @intFromPtr(d) else 0;
 
     // both musl and glibc do this, so I'm doing it too
     var ret: usize = 0;
-    if (@enumToInt(req) < 4) data = @ptrToInt(&ret);
+    if (@intFromEnum(req) < 4) data = @intFromPtr(&ret);
 
     const ptrace_ret = std.os.linux.syscall4(
         .ptrace,
-        @enumToInt(req),
-        @intCast(usize, pid),
+        @intFromEnum(req),
+        @as(usize, @intCast(pid)),
         addr,
         data,
     );
@@ -129,6 +129,6 @@ pub fn ptrace(req: PTRACE.request, pid: std.os.pid_t, _addr: ?*anyopaque, _data:
         }),
     }
 
-    if (@enumToInt(req) < 4) return ret;
+    if (@intFromEnum(req) < 4) return ret;
     return ptrace_ret;
 }

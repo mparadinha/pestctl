@@ -38,9 +38,9 @@ pub fn init(allocator: Allocator, width: u32, height: u32, title: []const u8) In
     c.glfwWindowHint(c.GLFW_OPENGL_FORWARD_COMPAT, gl.TRUE);
     // c.glfwWindowHint(c.GLFW_SAMPLES, 4);
     const handle = c.glfwCreateWindow(
-        @intCast(c_int, width),
-        @intCast(c_int, height),
-        @ptrCast([*c]const u8, title),
+        @as(c_int, @intCast(width)),
+        @as(c_int, @intCast(height)),
+        @as([*c]const u8, @ptrCast(title)),
         null,
         null,
     ) orelse if (returnGlfwError()) unreachable else |err| return err;
@@ -119,7 +119,7 @@ pub fn getFramebufferSize(self: *Window) GlfwError!uvec2 {
     return if (self.framebuffer_size) |fb_size| fb_size else blk: {
         var width: u32 = undefined;
         var height: u32 = undefined;
-        c.glfwGetFramebufferSize(self.handle, @ptrCast(*i32, &width), @ptrCast(*i32, &height));
+        c.glfwGetFramebufferSize(self.handle, @as(*i32, @ptrCast(&width)), @as(*i32, @ptrCast(&height)));
         if (returnGlfwError()) {} else |err| return err;
         self.framebuffer_size = uvec2{ width, height };
         break :blk self.framebuffer_size.?;
@@ -191,21 +191,21 @@ pub fn getMousePos(self: *Window) GlfwError!vec2 {
         var ypos: f64 = undefined;
         c.glfwGetCursorPos(self.handle, &xpos, &ypos);
         if (returnGlfwError()) {} else |err| return err;
-        self.mouse_pos = vec2{ @floatCast(f32, xpos), @floatCast(f32, ypos) };
+        self.mouse_pos = vec2{ @as(f32, @floatCast(xpos)), @as(f32, @floatCast(ypos)) };
         break :blk self.mouse_pos.?;
     };
     const framebuffer_size = try self.getFramebufferSize();
 
     return vec2{
         mouse_pos[0],
-        @intToFloat(f32, framebuffer_size[1]) - mouse_pos[1],
+        @as(f32, @floatFromInt(framebuffer_size[1])) - mouse_pos[1],
     };
 }
 
 pub fn getMousePosNDC(self: *Window) GlfwError!vec2 {
     const mouse_pos = try self.getMouse_pos();
     const framebuffer_size = try self.getFramebufferSize();
-    const relative = mouse_pos / @intToFloat(f32, framebuffer_size);
+    const relative = mouse_pos / @as(f32, @floatFromInt(framebuffer_size));
     return (vec2{ 2, 2 } * relative) - vec2{ 1, 1 };
 }
 
@@ -214,7 +214,7 @@ fn glfw_error_callback(error_code: c_int, error_msg: [*c]const u8) callconv(.C) 
 }
 
 fn glfw_key_callback(glfw_window: ?*c.GLFWwindow, key: i32, scancode: i32, action: i32, mods: i32) callconv(.C) void {
-    const self = @ptrCast(*Window, @alignCast(8, c.glfwGetWindowUserPointer(glfw_window).?));
+    const self = @as(*align(8) Window, @ptrCast(@alignCast(c.glfwGetWindowUserPointer(glfw_window).?)));
 
     if (key == c.GLFW_KEY_UNKNOWN) return;
     const key_ev = InputEvent.KeyEvent{ .key = key, .mods = .{
@@ -236,7 +236,7 @@ fn glfw_key_callback(glfw_window: ?*c.GLFWwindow, key: i32, scancode: i32, actio
 }
 
 fn glfw_mouse_button_callback(glfw_window: ?*c.GLFWwindow, button: i32, action: i32, mods: i32) callconv(.C) void {
-    const self = @ptrCast(*Window, @alignCast(8, c.glfwGetWindowUserPointer(glfw_window).?));
+    const self = @as(*align(8) Window, @ptrCast(@alignCast(c.glfwGetWindowUserPointer(glfw_window).?)));
     if (action == c.GLFW_PRESS)
         self.event_queue.append(.{ .MouseDown = button }) catch unreachable;
     if (action == c.GLFW_RELEASE)
@@ -245,7 +245,7 @@ fn glfw_mouse_button_callback(glfw_window: ?*c.GLFWwindow, button: i32, action: 
 }
 
 fn glfw_cursor_pos_callback(glfw_window: ?*c.GLFWwindow, xpos: f64, ypos: f64) callconv(.C) void {
-    const self = @ptrCast(*Window, @alignCast(8, c.glfwGetWindowUserPointer(glfw_window).?));
+    const self = @as(*align(8) Window, @ptrCast(@alignCast(c.glfwGetWindowUserPointer(glfw_window).?)));
 
     const held_mouse_button: ?i32 =
         if (c.glfwGetMouseButton(self.handle, c.GLFW_MOUSE_BUTTON_LEFT) == c.GLFW_TRUE)
@@ -257,24 +257,24 @@ fn glfw_cursor_pos_callback(glfw_window: ?*c.GLFWwindow, xpos: f64, ypos: f64) c
 
     if (held_mouse_button) |button| {
         self.event_queue.append(.{ .MouseDrag = .{
-            .x = @floatCast(f32, xpos),
-            .y = @floatCast(f32, ypos),
+            .x = @as(f32, @floatCast(xpos)),
+            .y = @as(f32, @floatCast(ypos)),
             .held_button = button,
         } }) catch unreachable;
     }
 }
 
 fn glfw_scroll_callback(glfw_window: ?*c.GLFWwindow, xoffset: f64, yoffset: f64) callconv(.C) void {
-    const self = @ptrCast(*Window, @alignCast(8, c.glfwGetWindowUserPointer(glfw_window).?));
+    const self = @as(*align(8) Window, @ptrCast(@alignCast(c.glfwGetWindowUserPointer(glfw_window).?)));
     self.event_queue.append(.{ .MouseScroll = .{
-        .x = @floatCast(f32, xoffset),
-        .y = @floatCast(f32, yoffset),
+        .x = @as(f32, @floatCast(xoffset)),
+        .y = @as(f32, @floatCast(yoffset)),
         .shift_held = self.keyPressed(c.GLFW_KEY_LEFT_SHIFT) or self.keyPressed(c.GLFW_KEY_RIGHT_SHIFT),
     } }) catch unreachable;
 }
 
 fn glfw_char_callback(glfw_window: ?*c.GLFWwindow, codepoint: u32) callconv(.C) void {
-    const self = @ptrCast(*Window, @alignCast(8, c.glfwGetWindowUserPointer(glfw_window).?));
+    const self = @as(*align(8) Window, @ptrCast(@alignCast(c.glfwGetWindowUserPointer(glfw_window).?)));
     self.event_queue.append(.{ .Char = codepoint }) catch unreachable;
 }
 
@@ -529,7 +529,7 @@ fn get_proc_address_fn(window: ?*c.GLFWwindow, proc_name: [:0]const u8) ?*const 
     _ = window;
     const fn_ptr = c.glfwGetProcAddress(proc_name.ptr);
     // without this I got a "cast discards const qualifier" error
-    return @intToPtr(?*const anyopaque, @ptrToInt(fn_ptr));
+    return @as(?*const anyopaque, @ptrFromInt(@intFromPtr(fn_ptr)));
 }
 
 fn gl_error_callback(

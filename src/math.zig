@@ -246,14 +246,14 @@ pub fn look_at_roll(eye: vec3, target: vec3, roll: f32) mat4 {
 fn perfect_sqrt(x: anytype) ?@TypeOf(x) {
     const info = @typeInfo(@TypeOf(x));
     const sqrt: f32 = switch (info) {
-        .Int, .ComptimeInt => @sqrt(@intToFloat(f32, x)),
-        .Float, .ComptimeFloat => @sqrt(@floatCast(f32, x)),
+        .Int, .ComptimeInt => @sqrt(@as(f32, @floatFromInt(x))),
+        .Float, .ComptimeFloat => @sqrt(@as(f32, @floatCast(x))),
         else => |tag| @compileError("can't calculate perfect for " ++ @tagName(tag)),
     };
     if (@floor(sqrt) != @ceil(sqrt)) return null;
     return switch (info) {
-        .Int, .ComptimeInt => @floatToInt(@TypeOf(x), sqrt),
-        .Float, .ComptimeFloat => @floatCast(@TypeOf(x), sqrt),
+        .Int, .ComptimeInt => @as(@TypeOf(x), @intFromFloat(sqrt)),
+        .Float, .ComptimeFloat => @as(@TypeOf(x), @floatCast(sqrt)),
         else => |tag| @compileError("can't calculate perfect for " ++ @tagName(tag)),
     };
 }

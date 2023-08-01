@@ -49,7 +49,7 @@ pub fn textOpFromAction(action: TextAction, cursor: usize, mark: usize, unicode_
     if (action.delta == 0) {
         // nothing to do;
     } else if (action.delta == std.math.minInt(isize) or action.delta == std.math.maxInt(isize)) {
-        byte_delta = delta_sign * @intCast(isize, buf.len);
+        byte_delta = delta_sign * @as(isize, @intCast(buf.len));
     } else if (action.flags.word_scan) {
         // when moving the cursor to the next 'word' most programs have slightly different behaviours.
         // for example: firefox jumps over the word separator and always put the cursor on the right
@@ -92,7 +92,7 @@ pub fn textOpFromAction(action: TextAction, cursor: usize, mark: usize, unicode_
         } else if (action.delta == -1 and cursor > 0) {
             const utf8_viewer = Utf8Viewer.init(buf[0..cursor]);
             const char_size = utf8_viewer.lastCharByteSize();
-            byte_delta = -@intCast(isize, char_size);
+            byte_delta = -@as(isize, @intCast(char_size));
         }
     }
 
@@ -112,13 +112,13 @@ pub fn textOpFromAction(action: TextAction, cursor: usize, mark: usize, unicode_
     }
 
     // calculate the range we're gonna operate on
-    const new_byte_cursor = @intCast(isize, text_op.byte_cursor) + byte_delta;
+    const new_byte_cursor = @as(isize, @intCast(text_op.byte_cursor)) + byte_delta;
     const size_diff = castAndSub(isize, text_op.replace_str.len, text_op.range.end - text_op.range.start);
     const new_buf_len = castWrappedAdd(buf.len, size_diff);
-    text_op.byte_cursor = @intCast(usize, std.math.clamp(new_byte_cursor, 0, new_buf_len));
+    text_op.byte_cursor = @as(usize, @intCast(std.math.clamp(new_byte_cursor, 0, @as(isize, @intCast(new_buf_len)))));
     text_op.range = .{
-        .start = std.math.min(text_op.byte_cursor, text_op.byte_mark),
-        .end = std.math.max(text_op.byte_cursor, text_op.byte_mark),
+        .start = @min(text_op.byte_cursor, text_op.byte_mark),
+        .end = @max(text_op.byte_cursor, text_op.byte_mark),
     };
     if (text_op.replace_str.len == 0 and !action.flags.delete) text_op.range = .{ .start = 0, .end = 0 };
 
@@ -145,9 +145,9 @@ fn findFirstSep(buf: []const u8, start_idx: usize, search_dir: SearchDir) ?usize
     };
 
     // note: because all of our words separators are ASCII we can use a non-unicode aware search
-    var search_idx: isize = @intCast(isize, start_idx);
+    var search_idx: isize = @as(isize, @intCast(start_idx));
     while (search_idx >= 0 and search_idx < buf.len) : (search_idx += delta) {
-        const idx = @intCast(usize, search_idx);
+        const idx = @as(usize, @intCast(search_idx));
         for (word_seps) |sep| {
             if (buf[idx] == sep) return idx;
         }
@@ -162,9 +162,9 @@ fn findFirstNonSep(buf: []const u8, start_idx: usize, search_dir: SearchDir) ?us
     };
 
     // note: because all of our words separators are ASCII we can use a non-unicode aware search
-    var search_idx: isize = @intCast(isize, start_idx);
+    var search_idx: isize = @as(isize, @intCast(start_idx));
     outer_loop: while (search_idx >= 0 and search_idx < buf.len) : (search_idx += delta) {
-        const idx = @intCast(usize, search_idx);
+        const idx = @as(usize, @intCast(search_idx));
         for (word_seps) |sep| {
             if (buf[idx] == sep) continue :outer_loop;
         }
@@ -215,12 +215,12 @@ pub fn replaceRange(buffer: []u8, buf_len: *usize, range: struct { start: usize,
 }
 
 fn castWrappedAdd(src: usize, diff: isize) usize {
-    const new_src = @intCast(isize, src) + diff;
-    return @intCast(usize, std.math.max(0, new_src));
+    const new_src = @as(isize, @intCast(src)) + diff;
+    return @as(usize, @intCast(@max(0, new_src)));
 }
 
 fn castAndSub(comptime T: type, a: anytype, b: anytype) T {
-    return @intCast(T, a) - @intCast(T, b);
+    return @as(T, @intCast(a)) - @as(T, @intCast(b));
 }
 
 const Utf8Viewer = struct {
@@ -234,7 +234,7 @@ const Utf8Viewer = struct {
     /// number of bytes occupied by the last character
     pub fn lastCharByteSize(self: Utf8Viewer) u3 {
         const len = self.bytes.len;
-        var size = std.math.min(4, len);
+        var size = @min(4, len);
         while (size > 0) : (size -= 1) {
             const slice = self.bytes[len - size .. len];
             if (std.unicode.utf8ValidateSlice(slice)) {

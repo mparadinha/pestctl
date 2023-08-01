@@ -101,7 +101,7 @@ pub fn executeOp(
         DW.OP.xderef => std.debug.panic("TODO: {s}\n", .{DW.OP.asStr(op)}),
         DW.OP.abs => {
             const value = (try self.stack.pop()).generic;
-            try self.stack.push(try std.math.absInt(@bitCast(isize, value)));
+            try self.stack.push(try std.math.absInt(@as(isize, @bitCast(value))));
         },
         DW.OP.@"and" => {
             const value_one = (try self.stack.pop()).generic;
@@ -111,7 +111,7 @@ pub fn executeOp(
         DW.OP.div => {
             const value_one = (try self.stack.pop()).generic;
             const value_two = (try self.stack.pop()).generic;
-            try self.stack.push(@divTrunc(@bitCast(isize, value_two), @bitCast(isize, value_one)));
+            try self.stack.push(@divTrunc(@as(isize, @bitCast(value_two)), @as(isize, @bitCast(value_one))));
         },
         DW.OP.minus => {
             const value_one = (try self.stack.pop()).generic;
@@ -130,7 +130,7 @@ pub fn executeOp(
         },
         DW.OP.neg => {
             const value = (try self.stack.pop()).generic;
-            try self.stack.push(-@bitCast(isize, value));
+            try self.stack.push(-@as(isize, @bitCast(value)));
         },
         DW.OP.not => {
             const value = (try self.stack.pop()).generic;
@@ -154,18 +154,18 @@ pub fn executeOp(
         DW.OP.shl => {
             const value_one = (try self.stack.pop()).generic;
             const value_two = (try self.stack.pop()).generic;
-            try self.stack.push(value_two << @intCast(u6, value_one));
+            try self.stack.push(value_two << @as(u6, @intCast(value_one)));
         },
         DW.OP.shr => {
             const value_one = (try self.stack.pop()).generic;
             const value_two = (try self.stack.pop()).generic;
-            try self.stack.push(value_two >> @intCast(u6, value_one));
+            try self.stack.push(value_two >> @as(u6, @intCast(value_one)));
         },
         DW.OP.shra => {
             const value_one = (try self.stack.pop()).generic;
             const value_two = (try self.stack.pop()).generic;
             const top_bit = value_two & 0x8000_0000_0000_0000;
-            const shift_res = value_two >> @intCast(u6, value_one);
+            const shift_res = value_two >> @as(u6, @intCast(value_one));
             const arith_shift_res = top_bit | (shift_res & 0x7fff_ffff_ffff_ffff);
             try self.stack.push(arith_shift_res);
         },
@@ -180,33 +180,33 @@ pub fn executeOp(
             if (stack_top != 0) try reader.context.seekBy(offset);
         },
         DW.OP.eq => {
-            const value_one = @bitCast(isize, (try self.stack.pop()).generic);
-            const value_two = @bitCast(isize, (try self.stack.pop()).generic);
+            const value_one = @as(isize, @bitCast((try self.stack.pop()).generic));
+            const value_two = @as(isize, @bitCast((try self.stack.pop()).generic));
             try self.stack.push(@as(usize, if (value_two == value_one) 1 else 0));
         },
         DW.OP.ge => {
-            const value_one = @bitCast(isize, (try self.stack.pop()).generic);
-            const value_two = @bitCast(isize, (try self.stack.pop()).generic);
+            const value_one = @as(isize, @bitCast((try self.stack.pop()).generic));
+            const value_two = @as(isize, @bitCast((try self.stack.pop()).generic));
             try self.stack.push(@as(usize, if (value_two >= value_one) 1 else 0));
         },
         DW.OP.gt => {
-            const value_one = @bitCast(isize, (try self.stack.pop()).generic);
-            const value_two = @bitCast(isize, (try self.stack.pop()).generic);
+            const value_one = @as(isize, @bitCast((try self.stack.pop()).generic));
+            const value_two = @as(isize, @bitCast((try self.stack.pop()).generic));
             try self.stack.push(@as(usize, if (value_two > value_one) 1 else 0));
         },
         DW.OP.le => {
-            const value_one = @bitCast(isize, (try self.stack.pop()).generic);
-            const value_two = @bitCast(isize, (try self.stack.pop()).generic);
+            const value_one = @as(isize, @bitCast((try self.stack.pop()).generic));
+            const value_two = @as(isize, @bitCast((try self.stack.pop()).generic));
             try self.stack.push(@as(usize, if (value_two <= value_one) 1 else 0));
         },
         DW.OP.lt => {
-            const value_one = @bitCast(isize, (try self.stack.pop()).generic);
-            const value_two = @bitCast(isize, (try self.stack.pop()).generic);
+            const value_one = @as(isize, @bitCast((try self.stack.pop()).generic));
+            const value_two = @as(isize, @bitCast((try self.stack.pop()).generic));
             try self.stack.push(@as(usize, if (value_two < value_one) 1 else 0));
         },
         DW.OP.ne => {
-            const value_one = @bitCast(isize, (try self.stack.pop()).generic);
-            const value_two = @bitCast(isize, (try self.stack.pop()).generic);
+            const value_one = @as(isize, @bitCast((try self.stack.pop()).generic));
+            const value_two = @as(isize, @bitCast((try self.stack.pop()).generic));
             try self.stack.push(@as(usize, if (value_two != value_one) 1 else 0));
         },
         DW.OP.skip => {
@@ -258,7 +258,7 @@ pub fn executeOp(
         => {
             const offset = try std.leb.readILEB128(isize, reader);
             const breg = registers[op - DW.OP.breg0];
-            const value = @intCast(usize, @intCast(isize, breg) + offset);
+            const value = @as(usize, @intCast(@as(isize, @intCast(breg)) + offset));
             try self.stack.push(value);
         },
         DW.OP.regx => {
@@ -271,14 +271,14 @@ pub fn executeOp(
         DW.OP.fbreg => {
             const offset = try std.leb.readILEB128(isize, reader);
             const fb_reg = registers[frame_base_reg_idx];
-            const value = @intCast(usize, @intCast(isize, fb_reg) + offset);
+            const value = @as(usize, @intCast(@as(isize, @intCast(fb_reg)) + offset));
             try self.stack.push(value);
         },
         DW.OP.bregx => {
             const reg_code = try std.leb.readULEB128(usize, reader);
             const breg = registers[reg_code];
             const offset = try std.leb.readILEB128(isize, reader);
-            const value = @intCast(usize, @intCast(isize, breg) + offset);
+            const value = @as(usize, @intCast(@as(isize, @intCast(breg)) + offset));
             try self.stack.push(value);
         },
         DW.OP.piece => {
@@ -357,12 +357,12 @@ fn BoundedStack(comptime max_size: usize) type {
 
         pub fn push(self: *Self, item_generic: anytype) Error!void {
             const item = switch (@TypeOf(item_generic)) {
-                u64, i64, usize, isize => @bitCast(usize, item_generic),
+                u64, i64, usize, isize => @as(usize, @bitCast(item_generic)),
                 comptime_int => @as(usize, item_generic),
-                u8, u16, u32 => @intCast(usize, item_generic),
-                i8 => @intCast(usize, @bitCast(u8, item_generic)),
-                i16 => @intCast(usize, @bitCast(u16, item_generic)),
-                i32 => @intCast(usize, @bitCast(u32, item_generic)),
+                u8, u16, u32 => @as(usize, @intCast(item_generic)),
+                i8 => @as(usize, @intCast(@as(u8, @bitCast(item_generic)))),
+                i16 => @as(usize, @intCast(@as(u16, @bitCast(item_generic)))),
+                i32 => @as(usize, @intCast(@as(u32, @bitCast(item_generic)))),
                 else => @compileError(@typeName(@TypeOf(item_generic))),
             };
             return self.pushElement(.{ .generic = item });

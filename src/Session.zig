@@ -67,7 +67,7 @@ pub fn startTracing(self: *Session) !void {
         ptrace(.TRACEME, 0, {}) catch unreachable;
         const path_ptr = self.exec_path.ptr;
         const environ_ptr = std.os.environ.ptr;
-        _ = std.os.linux.syscall3(.execve, @ptrToInt(path_ptr), 0, @ptrToInt(environ_ptr));
+        _ = std.os.linux.syscall3(.execve, @intFromPtr(path_ptr), 0, @intFromPtr(environ_ptr));
         unreachable;
     }
 
@@ -103,22 +103,23 @@ pub fn unpause(self: *Session) !void {
     self.addr_range = null;
 
     // if we're resuming from a breakpoint we have to reset it
-    //for (self.breakpoints.items) |*breakpt| {
-    //    if (breakpt.addr == self.regs.rip) {
-    //        std.debug.print("rip is at a breakpoint addr: byte at rip: 0x{x}\n", .{(try self.getBytesAtAddr(self.regs.rip, 4))[0]});
-    //        // first run the instruction we're on, so we can modify it with `int3` for the breakpoint
-    //        try self.stepInstructions(1);
+    for (self.breakpoints.items) |*breakpt| {
+        if (breakpt.addr == self.regs.rip) {
+            std.debug.print("rip is at a breakpoint addr: byte at rip: 0x{x}\n", .{(try self.getBytesAtAddr(self.regs.rip, 4))[0]});
+            // first run the instruction we're on, so we can modify it with `int3` for the breakpoint
+            try self.stepInstructions(1);
 
-    //        const saved = try self.insertByteAtAddr(breakpt.addr, 0xcc);
-    //        if (saved != 0xcc) breakpt.saved_byte = saved;
-    //    }
-    //}
+            const saved = try self.insertByteAtAddr(breakpt.addr, 0xcc);
+            if (saved != 0xcc) breakpt.saved_byte = saved;
+        }
+    }
 
     // TODO: when we send a SIGSTOP to stop the tracee and later do .CONT with
     // the 0 signal argument on it, we must check that we're not erasing any other
     // SIGSTOP that might have been sent to the tracee by some other process
 
     // note: doing a ptrace(.CONT) does not produce a notification from waitpid
+    std.debug.print("doing ptrace .CONT\n", .{});
     try ptrace(.CONT, self.pid, 0);
 }
 
@@ -133,6 +134,8 @@ pub fn fullUpdate(self: *Session) !void {
         std.debug.print("[fullUpdate] {}\n", .{status});
     }
 
+    if (try self.getState() != .stopped) return;
+
     self.regs = try self.getRegisters();
     self.src_loc = try self.elf.translateAddrToSrc(self.regs.rip);
 
@@ -143,7 +146,7 @@ pub fn fullUpdate(self: *Session) !void {
                 if (std.mem.eql(u8, file.name, src.file) and
                     std.mem.eql(u8, prog.include_dirs[file.dir], src.dir))
                 {
-                    if (try prog.findAddrRangeForSrc(@intCast(u32, i), src.line)) |range| {
+                    if (try prog.findAddrRangeForSrc(@intCast(i), src.line)) |range| {
                         self.addr_range = range;
                     }
                     break;
@@ -279,7 +282,7 @@ pub fn getVariableValue(self: *Session, variable: Dwarf.Variable) !Value {
                                 }));
                                 // zig fmt: on
                                 // TODO: get the actual frame_base register (it might not be rbp)
-                                const expr_result = Dwarf.Expression.result(expr, registers, @enumToInt(Dwarf.Register.rbp)) catch unreachable;
+                                const expr_result = Dwarf.Expression.result(expr, registers, @intFromEnum(Dwarf.Register.rbp)) catch unreachable;
                                 switch (expr_result) {
                                     .generic => |addr| {
                                         const proc_mem = try self.procMemFile();
@@ -481,7 +484,7 @@ pub fn getMemMaps(self: Session, allocator: Allocator) ![]MemMapInfo {
     return maps.toOwnedSlice();
 }
 
-// translate addr to src location
+// translate src location to addr
 // if no addr matches this line exactly tries the next line until it matches
 fn findAddrForThisLineOrNextOne(self: *Session, src: SrcLoc) !?usize {
     prog_blk: for (self.elf.dwarf.line_progs) |prog| {
@@ -498,7 +501,7 @@ fn findAddrForThisLineOrNextOne(self: *Session, src: SrcLoc) !?usize {
 
         var search_loc = src;
         while (search_loc.line <= prog.file_line_range[1]) : (search_loc.line += 1) {
-            const state = try prog.findAddrForSrc(@intCast(u32, file_idx), search_loc.line);
+            const state = try prog.findAddrForSrc(@intCast(file_idx), search_loc.line);
             if (state) |s| return s.address;
         }
     }
@@ -514,7 +517,7 @@ fn insertByteAtAddr(self: *Session, addr: usize, byte: u8) !u8 {
     const data = try ptrace(.PEEKTEXT, self.pid, addr);
     const new_data = (data & 0xffff_ffff_ffff_ff00) | byte;
     try ptrace(.POKETEXT, self.pid, .{ .addr = addr, .data = new_data });
-    return @truncate(u8, data);
+    return @truncate(data);
 }
 
 pub fn getBytesAtAddr(self: Session, addr: usize, comptime N: u4) ![N]u8 {
@@ -522,20 +525,20 @@ pub fn getBytesAtAddr(self: Session, addr: usize, comptime N: u4) ![N]u8 {
     const data = try ptrace(.PEEKTEXT, self.pid, addr);
     return switch (N) {
         4 => [4]u8{
-            @intCast(u8, (data & 0x0000_00ff)),
-            @intCast(u8, (data & 0x0000_ff00) >> 8),
-            @intCast(u8, (data & 0x00ff_0000) >> 16),
-            @intCast(u8, (data & 0xff00_0000) >> 24),
+            @intCast((data & 0x0000_00ff)),
+            @intCast((data & 0x0000_ff00) >> 8),
+            @intCast((data & 0x00ff_0000) >> 16),
+            @intCast((data & 0xff00_0000) >> 24),
         },
         8 => [8]u8{
-            @intCast(u8, (data & 0x0000_0000_0000_00ff)),
-            @intCast(u8, (data & 0x0000_0000_0000_ff00) >> 8),
-            @intCast(u8, (data & 0x0000_0000_00ff_0000) >> 16),
-            @intCast(u8, (data & 0x0000_0000_ff00_0000) >> 24),
-            @intCast(u8, (data & 0x0000_00ff_0000_0000) >> 32),
-            @intCast(u8, (data & 0x0000_ff00_0000_0000) >> 40),
-            @intCast(u8, (data & 0x00ff_0000_0000_0000) >> 48),
-            @intCast(u8, (data & 0xff00_0000_0000_0000) >> 56),
+            @intCast((data & 0x0000_0000_0000_00ff)),
+            @intCast((data & 0x0000_0000_0000_ff00) >> 8),
+            @intCast((data & 0x0000_0000_00ff_0000) >> 16),
+            @intCast((data & 0x0000_0000_ff00_0000) >> 24),
+            @intCast((data & 0x0000_00ff_0000_0000) >> 32),
+            @intCast((data & 0x0000_ff00_0000_0000) >> 40),
+            @intCast((data & 0x00ff_0000_0000_0000) >> 48),
+            @intCast((data & 0xff00_0000_0000_0000) >> 56),
         },
         else => @panic("TODO"),
     };
@@ -804,9 +807,9 @@ pub fn FreeList(comptime T: type) type {
 fn castIntoPtr(comptime PtrType: type, src: anytype) ?PtrType {
     const SrcType = @TypeOf(src);
     return switch (@typeInfo(SrcType)) {
-        .Int => if (src == 0) null else @intToPtr(PtrType, src),
-        .ComptimeInt => if (src == 0) null else @intToPtr(PtrType, src),
-        .Pointer => @ptrCast(PtrType, src),
+        .Int => if (src == 0) null else @ptrFromInt(src),
+        .ComptimeInt => if (src == 0) null else @ptrFromInt(src),
+        .Pointer => @ptrCast(src),
         else => {
             @compileError("cannot convert " ++ @typeName(SrcType) ++ " to pointer type " ++ @typeName(PtrType));
         },
@@ -898,19 +901,19 @@ pub const WaitStatus = struct {
     ptrace_event: ?c.PTRACE.EVENT,
 
     pub fn parse(status: u32) WaitStatus {
-        const low_bits = @intCast(u8, status & 0x7f);
-        const second_byte = @intCast(u8, (status & 0xff00) >> 8);
-        const third_byte = @intCast(u8, (status & 0xff_0000) >> 16);
+        const low_bits: u8 = @intCast(status & 0x7f);
+        const second_byte: u8 = @intCast((status & 0xff00) >> 8);
+        const third_byte: u8 = @intCast((status & 0xff_0000) >> 16);
         const exited_normally = (low_bits == 0);
-        const terminated_by_signal = (@bitCast(i8, low_bits + 1) >> 1) > 0;
+        const terminated_by_signal = (@as(i8, @bitCast(low_bits + 1)) >> 1) > 0;
         const stopped_by_signal = (status & 0xff) == 0x7f;
-        const had_event = second_byte == @enumToInt(Signal.SIGTRAP) and third_byte != 0;
+        const had_event = second_byte == @intFromEnum(Signal.SIGTRAP) and third_byte != 0;
         return .{
             .exit_status = if (exited_normally) second_byte else null,
-            .term_signal = if (terminated_by_signal) @intToEnum(Signal, low_bits) else null,
-            .stop_signal = if (stopped_by_signal) @intToEnum(Signal, second_byte) else null,
+            .term_signal = if (terminated_by_signal) @enumFromInt(low_bits) else null,
+            .stop_signal = if (stopped_by_signal) @enumFromInt(second_byte) else null,
             .resumed = status == 0xffff,
-            .ptrace_event = if (had_event) @intToEnum(c.PTRACE.EVENT, third_byte) else null,
+            .ptrace_event = if (had_event) @enumFromInt(third_byte) else null,
         };
     }
 };
@@ -947,7 +950,7 @@ pub fn waitpid(pid: pid_t, wstatus: *u32, options: u32) waitpid_error!pid_t {
         .INVAL => return waitpid_error.EINVAL,
         else => std.debug.panic("invalid errno={} for waitpid\n", .{errno}),
     }
-    return @intCast(i32, wait_ret);
+    return @intCast(wait_ret);
 }
 
 // from the table in `man 7 signal`
@@ -986,5 +989,5 @@ pub const Signal = enum(u8) {
 };
 
 pub fn sendSignal(pid: pid_t, sig: Signal) !void {
-    try std.os.kill(pid, @enumToInt(sig));
+    try std.os.kill(pid, @intFromEnum(sig));
 }

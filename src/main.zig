@@ -71,8 +71,6 @@ pub const SessionCmd = union(enum) {
 var show_ctx_menu = false;
 var ctx_menu_top_left = @as(vec2, undefined);
 
-const InputBuf = std.BoundedArray(u8, 0x1000);
-
 pub fn main() !void {
     var general_purpose_allocator = std.heap.GeneralPurposeAllocator(.{
         .stack_trace_frames = 8,
@@ -130,19 +128,21 @@ pub fn main() !void {
         });
     }
 
-    var last_time = @floatCast(f32, c.glfwGetTime());
+    var last_time = @as(f32, @floatCast(c.glfwGetTime()));
 
-    var src_file_buf = try InputBuf.init(0);
+    var src_file_buf = InputBuf{};
     var src_file_search = FuzzySearchOptions(SrcFileSearchCtx, 20).init(allocator);
     defer src_file_search.deinit();
-    var num_buf = try InputBuf.init(0);
-    var file_buf = try InputBuf.init(0);
-    var var_buf = try InputBuf.init(0);
+    var num_buf = InputBuf{};
+    var file_buf = InputBuf{};
+    var var_buf = InputBuf{};
     var var_search = FuzzySearchOptions(VarSearchCtx, 10).init(allocator);
     defer var_search.deinit();
-    var func_buf = try InputBuf.init(0);
+    var func_buf = InputBuf{};
     var func_search = FuzzySearchOptions(FuncSearchCtx, 10).init(allocator);
     defer func_search.deinit();
+    var memline_buf = InputBuf{};
+    var memline_addr: ?usize = null;
 
     var disasm_texts = std.ArrayList(AsmTextInfo).init(allocator);
     defer {
@@ -166,7 +166,7 @@ pub fn main() !void {
     var frame_idx: u64 = 0;
 
     while (!window.shouldClose()) {
-        //std.debug.print("frame_idx={}\n", .{frame_idx});
+        // std.debug.print("frame_idx={}\n", .{frame_idx});
 
         var frame_arena = std.heap.ArenaAllocator.init(allocator);
         defer frame_arena.deinit();
@@ -174,10 +174,10 @@ pub fn main() !void {
         const framebuf_size = try window.getFramebufferSize();
         width = framebuf_size[0];
         height = framebuf_size[1];
-        gl.viewport(0, 0, @intCast(i32, width), @intCast(i32, height));
+        gl.viewport(0, 0, @as(i32, @intCast(width)), @as(i32, @intCast(height)));
         //const ratio = @intToFloat(f32, width) / @intToFloat(f32, height);
 
-        const cur_time = @floatCast(f32, c.glfwGetTime());
+        const cur_time = @as(f32, @floatCast(c.glfwGetTime()));
         const dt = cur_time - last_time;
         last_time = cur_time;
 
@@ -256,6 +256,32 @@ pub fn main() !void {
                     try call_stack_viewer.display(&ui, session.call_stack, session.*);
                 } else {
                     ui.labelF("TODO: <{s}> here", .{tab_choice});
+                }
+            }
+
+            {
+                const mem_line_view_parent = ui.pushLayoutParent("mem_line_view_parent", Size.fillByChildren(.x), .x);
+                defer ui.popParentAssert(mem_line_view_parent);
+                ui.pushTmpStyle(text_input_style);
+                if (ui.textInput("mem_line_addr_input", &memline_buf.buffer, &memline_buf.len).enter_pressed) {
+                    memline_addr = try std.fmt.parseUnsigned(usize, memline_buf.slice(), 0);
+                }
+                if (memline_addr) |addr| {
+                    const memfilepath = try std.fmt.allocPrint(frame_arena.allocator(), "/proc/{}/mem", .{session.pid});
+                    const memfile = try std.fs.openFileAbsolute(memfilepath, .{});
+                    defer memfile.close();
+
+                    try memfile.seekTo(addr);
+                    var line: [16]u8 = undefined;
+                    _ = try memfile.read(&line);
+
+                    var strbuf: [1000]u8 = undefined;
+                    var stream = std.io.fixedBufferStream(&strbuf);
+                    var writer = stream.writer();
+                    for (line) |byte| {
+                        _ = try writer.print("{x} ", .{byte});
+                    }
+                    ui.label(stream.getWritten());
                 }
             }
 
@@ -403,6 +429,17 @@ pub fn main() !void {
     }
 }
 
+const InputBuf = struct {
+    buffer: [buffer_capacity]u8 = [_]u8{0} ** buffer_capacity,
+    len: usize = 0,
+
+    const buffer_capacity = 0x1000;
+
+    pub fn slice(self: InputBuf) []const u8 {
+        return self.buffer[0..self.len];
+    }
+};
+
 const FileTab = struct {
     allocator: Allocator,
     files: std.ArrayList(FileInfo),
@@ -490,10 +527,10 @@ const FileTab = struct {
         try self.addFile(path);
         const file_idx = self.findFile(path) orelse unreachable;
 
-        self.files.items[file_idx].target_lock_line = @intToFloat(f32, src.line);
+        self.files.items[file_idx].target_lock_line = @as(f32, @floatFromInt(src.line));
         self.files.items[file_idx].target_focus_box = .{
-            .min = .{ .line = @intToFloat(f32, src.line), .column = @intToFloat(f32, src.column) },
-            .max = .{ .line = @intToFloat(f32, src.line), .column = @intToFloat(f32, src.column) },
+            .min = .{ .line = @as(f32, @floatFromInt(src.line)), .column = @as(f32, @floatFromInt(src.column)) },
+            .max = .{ .line = @as(f32, @floatFromInt(src.line)), .column = @as(f32, @floatFromInt(src.column)) },
         };
         self.active_file = file_idx;
     }
@@ -546,7 +583,7 @@ const FileTab = struct {
             const line_sig = line_scroll_parent.signal;
             const line_text_node = blk: {
                 const n_lines = file.line_offsets.len;
-                const max_line_fmt_size = @floatToInt(usize, @ceil(@log10(@intToFloat(f32, n_lines)))) + 1;
+                const max_line_fmt_size = @as(usize, @intFromFloat(@ceil(@log10(@as(f32, @floatFromInt(n_lines)))))) + 1;
                 var tmpbuf = try self.allocator.alloc(u8, max_line_fmt_size * n_lines);
                 defer self.allocator.free(tmpbuf);
 
@@ -602,7 +639,7 @@ const FileTab = struct {
                 const mouse_offset = text_node_rect.max[1] - ctx_menu_top_left[1] - UiContext.text_vpadding;
                 const line_offset = mouse_offset - text_scroll_node.scroll_offset[1];
                 const mouse_line = @floor(line_offset / line_size);
-                const src_line = @floatToInt(u32, mouse_line) + 1;
+                const src_line = @as(u32, @intFromFloat(mouse_line)) + 1;
 
                 if (ui.buttonF("Set Breakpoint At Line {}\n", .{src_line}).clicked) {
                     try session_cmds.append(.{ .set_break_at_src = .{
@@ -774,7 +811,7 @@ fn doDisassemblyWindow(
         if (addr == rip) break :loop i;
     } else unreachable;
 
-    _ = try showDisassemblyWindow(ui, "main_disasm_window", disasm_text, @intToFloat(f32, line_idx + 1));
+    _ = try showDisassemblyWindow(ui, "main_disasm_window", disasm_text, @as(f32, @floatFromInt(line_idx + 1)));
 }
 
 fn showDisassemblyWindow(ui: *UiContext, label: []const u8, asm_text_info: AsmTextInfo, lock_line: ?f32) !UiContext.Signal {
@@ -818,9 +855,9 @@ fn textDisplay(
     const total_lines = text_info.line_offsets.len;
 
     const lines_that_fit = @trunc(parent_size[1] / line_size);
-    const cur_middle_line = @trunc(std.math.max(0, -y_off.* + parent_size[1] / 2) / line_size);
-    const partial_start_line = @floatToInt(usize, @trunc(std.math.max(0, cur_middle_line - lines_that_fit)));
-    const partial_end_line = std.math.min(@floatToInt(usize, @trunc(cur_middle_line + lines_that_fit)), total_lines);
+    const cur_middle_line = @trunc(@max(0, -y_off.* + parent_size[1] / 2) / line_size);
+    const partial_start_line = @as(usize, @intFromFloat(@trunc(@max(0, cur_middle_line - lines_that_fit))));
+    const partial_end_line = @min(@as(usize, @intFromFloat(@trunc(cur_middle_line + lines_that_fit))), total_lines);
 
     const partial_start_idx = text_info.line_offsets[partial_start_line];
     const partial_end_idx = if (partial_end_line == total_lines)
@@ -838,23 +875,23 @@ fn textDisplay(
     }, partial_text, label, .{});
 
     // hack to cut off scrolling at the ends of text
-    const text_size = vec2{ label_node.text_rect.size()[0], line_size * @intToFloat(f32, total_lines) };
+    const text_size = vec2{ label_node.text_rect.size()[0], line_size * @as(f32, @floatFromInt(total_lines)) };
     var max_offset = text_size - parent_size + vec2{ 2, 2 } * UiContext.text_padd;
-    max_offset = vec2{ std.math.max(max_offset[0], 0), std.math.max(max_offset[1], 0) };
+    max_offset = vec2{ @max(max_offset[0], 0), @max(max_offset[1], 0) };
     x_off.* = std.math.clamp(x_off.*, -max_offset[0], 0);
     y_off.* = std.math.clamp(y_off.*, -max_offset[1], 0);
 
     label_node.rel_pos_placement = .top_left;
     label_node.rel_pos_placement_parent = .top_left;
-    label_node.rel_pos = vec2{ x_off.*, -y_off.* - @intToFloat(f32, partial_start_line) * line_size };
+    label_node.rel_pos = vec2{ x_off.*, -y_off.* - @as(f32, @floatFromInt(partial_start_line)) * line_size };
 
     for (boxes) |box| {
         if (box.min.line == 0 and box.max.line == 0) break;
 
         const text_y_start = parent.rect.size()[1] - y_off.*;
-        const line_y_start = std.math.max(0, box.min.line - 1) * line_size;
+        const line_y_start = @max(0, box.min.line - 1) * line_size;
         const box_y_top = text_y_start - line_y_start - UiContext.text_padd[1];
-        const box_y_size = std.math.max(1, box.max.line - box.min.line) * line_size;
+        const box_y_size = @max(1, box.max.line - box.min.line) * line_size;
 
         const box_node = ui.addNode(.{
             .no_id = true,
@@ -896,7 +933,7 @@ fn generateTextInfoForDisassembly(allocator: Allocator, data: []const u8, data_s
     var data_idx: usize = 0;
     asm_loop: while (data_idx < data.len) {
         const asm_addr = data_idx + data_start_addr;
-        const inst_bytes = data[data_idx..std.math.min(data_idx + 15, data.len)];
+        const inst_bytes = data[data_idx..@min(data_idx + 15, data.len)];
 
         var instruction: c.ZydisDisassembledInstruction = undefined;
         const disassemble_result = c.ZydisDisassembleIntel(
@@ -945,11 +982,11 @@ fn generateTextInfoForDisassembly(allocator: Allocator, data: []const u8, data_s
             break :blk str_bufs;
         };
         var idx: usize = 0;
-        while (idx < std.math.max(10, inst_len)) : (idx += 1) {
+        while (idx < @max(10, inst_len)) : (idx += 1) {
             const byte_str = if (idx < inst_len) &byte_hex_strs[inst_bytes[idx]] else "  ";
             try writer.print("{s} ", .{byte_str});
         }
-        const instruction_text = std.mem.span(@ptrCast([*c]u8, &instruction.text[0]));
+        const instruction_text = std.mem.span(@as([*c]u8, @ptrCast(&instruction.text[0])));
         try writer.print("{s}\n", .{instruction_text});
         fmt_zone.End();
 
@@ -1343,7 +1380,7 @@ fn fuzzyScore(pattern: []const u8, test_str: []const u8) f32 {
         }
     }
 
-    if (std.mem.indexOf(u8, test_str, pattern)) |idx| score = (score * 5) - @intToFloat(f32, idx);
+    if (std.mem.indexOf(u8, test_str, pattern)) |idx| score = (score * 5) - @as(f32, @floatFromInt(idx));
 
     return score;
 }
@@ -1526,10 +1563,10 @@ fn FuzzySearchOptions(comptime Ctx: type, comptime max_slots: usize) type {
                 // conjunction with vec4
                 // break :ctx @ptrCast(*align(1) const CustomDrawMatchHighlightCtx, ctx_bytes.ptr).*;
                 var rawbuf: [@sizeOf(CustomDrawMatchHighlightCtx) + 32]u8 = undefined;
-                var align_amount = 32 - (@ptrToInt(&rawbuf[0]) % 32);
+                var align_amount = 32 - (@intFromPtr(&rawbuf[0]) % 32);
                 var buf = rawbuf[align_amount .. align_amount + @sizeOf(CustomDrawMatchHighlightCtx)];
                 std.mem.copy(u8, buf, ctx_bytes);
-                break :ctx @intToPtr(*align(32) const CustomDrawMatchHighlightCtx, @ptrToInt(buf.ptr)).*;
+                break :ctx @as(*align(32) const CustomDrawMatchHighlightCtx, @ptrFromInt(@intFromPtr(buf.ptr))).*;
             } else @panic("forgot to set the draw ctx");
 
             var text_pos = ui.textPosFromNode(node);
@@ -1571,9 +1608,9 @@ fn FuzzySearchOptions(comptime Ctx: type, comptime max_slots: usize) type {
                     .clip_rect_min = node.clip_rect.min,
                     .clip_rect_max = node.clip_rect.max,
                     .which_font = if (is_highlight)
-                        @enumToInt(UiContext.FontType.text_bold)
+                        @intFromEnum(UiContext.FontType.text_bold)
                     else
-                        @enumToInt(UiContext.FontType.text),
+                        @intFromEnum(UiContext.FontType.text),
                 });
             }
         }
@@ -1615,7 +1652,7 @@ pub fn getMemoryStats(allocator: Allocator) !MemoryStats {
     }
 
     // the values we just parsed are measured in pages, not bytes
-    const page_size = @intCast(u64, c.sysconf(c._SC_PAGESIZE));
+    const page_size = @as(u64, @intCast(c.sysconf(c._SC_PAGESIZE)));
 
     return MemoryStats{
         .virtual_size = values[0] * page_size,

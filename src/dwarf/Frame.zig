@@ -18,7 +18,7 @@ ops: []const u8,
 
 // see Dwarf v5, chapter 6.4.1, pg.173, line 7
 pub const RegRule = union(enum) {
-    @"undefined": void,
+    undefined: void,
     same_value: void,
     offset: isize,
     val_offset: isize,
@@ -30,7 +30,7 @@ pub const RegRule = union(enum) {
 
 // see Dwarf v5, chapter 6.4.1, pg.172, line 34
 pub const CfaRule = union(enum) {
-    @"undefined": void,
+    undefined: void,
     register: struct { reg: u8, offset: isize },
     expression: []const u8,
 };
@@ -47,9 +47,9 @@ pub fn rulesForAddr(self: Frame, addr: usize) !State {
     std.debug.assert(self.pc_begin <= addr and addr < self.pc_end);
     var state = State{
         .loc = self.pc_begin,
-        .cfa = .{ .@"undefined" = {} },
+        .cfa = .{ .undefined = {} },
         // default register rule is 'undefined'. see: Dwarf v5 spec, chapter 6.4.1, pg. 175, line 22
-        .regs = [_]RegRule{RegRule{ .@"undefined" = {} }} ** State.max_registers,
+        .regs = [_]RegRule{RegRule{ .undefined = {} }} ** State.max_registers,
     };
 
     var initial_stream = std.io.fixedBufferStream(self.initial_ops);
@@ -109,7 +109,7 @@ pub fn updateState(self: Frame, state: *State, reader: anytype, initial_state: ?
     else if (instruction == DW.CFA.def_cfa) {
         state.cfa = .{ .register = .{
             .reg = try std.leb.readULEB128(u8, reader),
-            .offset = @intCast(isize, try std.leb.readULEB128(usize, reader)),
+            .offset = @as(isize, @intCast(try std.leb.readULEB128(usize, reader))),
         } };
     } else if (instruction == DW.CFA.def_cfa_sf) {
         state.cfa = .{ .register = .{
@@ -119,7 +119,7 @@ pub fn updateState(self: Frame, state: *State, reader: anytype, initial_state: ?
     } else if (instruction == DW.CFA.def_cfa_register) {
         state.cfa.register.reg = try std.leb.readULEB128(u8, reader);
     } else if (instruction == DW.CFA.def_cfa_offset) {
-        state.cfa.register.offset = @intCast(isize, try std.leb.readULEB128(usize, reader));
+        state.cfa.register.offset = @as(isize, @intCast(try std.leb.readULEB128(usize, reader)));
     } else if (instruction == DW.CFA.def_cfa_offset_sf) {
         const factored_offset = try std.leb.readILEB128(isize, reader);
         state.cfa.register.offset = factored_offset * self.data_alignment_factor;
@@ -127,20 +127,20 @@ pub fn updateState(self: Frame, state: *State, reader: anytype, initial_state: ?
         state.cfa.expression = try Dwarf.forms.readExprLoc(reader, DW.FORM.exprloc);
     }
     // register rule instructions
-    else if (instruction == DW.CFA.@"undefined") {
+    else if (instruction == DW.CFA.undefined) {
         const reg = try std.leb.readULEB128(usize, reader);
-        state.regs[reg] = .{ .@"undefined" = {} };
+        state.regs[reg] = .{ .undefined = {} };
     } else if (instruction == DW.CFA.same_value) {
         const reg = try std.leb.readULEB128(usize, reader);
         state.regs[reg] = .{ .same_value = {} };
     } else if ((instruction & 0xc0) == DW.CFA.offset) {
         const reg = instruction & 0x3f;
         const offset = try std.leb.readULEB128(usize, reader);
-        state.regs[reg] = .{ .offset = @intCast(isize, offset) * self.data_alignment_factor };
+        state.regs[reg] = .{ .offset = @as(isize, @intCast(offset)) * self.data_alignment_factor };
     } else if (instruction == DW.CFA.offset_extended) {
         const reg = try std.leb.readULEB128(usize, reader);
         const offset = try std.leb.readULEB128(usize, reader);
-        state.regs[reg] = .{ .offset = @intCast(isize, offset) * self.data_alignment_factor };
+        state.regs[reg] = .{ .offset = @as(isize, @intCast(offset)) * self.data_alignment_factor };
     } else if (instruction == DW.CFA.offset_extended_sf) {
         const reg = try std.leb.readULEB128(usize, reader);
         const offset = try std.leb.readILEB128(isize, reader);
@@ -148,7 +148,7 @@ pub fn updateState(self: Frame, state: *State, reader: anytype, initial_state: ?
     } else if (instruction == DW.CFA.val_offset) {
         const reg = try std.leb.readULEB128(usize, reader);
         const offset = try std.leb.readULEB128(usize, reader);
-        state.regs[reg] = .{ .val_offset = @intCast(isize, offset) * self.data_alignment_factor };
+        state.regs[reg] = .{ .val_offset = @as(isize, @intCast(offset)) * self.data_alignment_factor };
     } else if (instruction == DW.CFA.val_offset_sf) {
         const reg = try std.leb.readULEB128(usize, reader);
         const offset = try std.leb.readILEB128(isize, reader);

@@ -645,7 +645,7 @@ pub fn startBuild(self: *UiContext, screen_w: u32, screen_h: u32, mouse_pos: vec
         if (node.flags.no_id) try node_iter.removeCurrent();
     }
 
-    const screen_size = vec2{ @intToFloat(f32, screen_w), @intToFloat(f32, screen_h) };
+    const screen_size = vec2{ @as(f32, @floatFromInt(screen_w)), @as(f32, @floatFromInt(screen_h)) };
     self.screen_size = screen_size;
     self.mouse_pos = mouse_pos;
     self.events = events;
@@ -835,7 +835,7 @@ pub fn computeNodeSignal(self: *UiContext, node: *Node) !Signal {
 
     // double/triple click logic
     const delay_time = 0.4; // 400 milliseconds
-    const cur_time = @floatCast(f32, c.glfwGetTime());
+    const cur_time = @as(f32, @floatCast(c.glfwGetTime()));
     if (signal.clicked and node.last_click_time + delay_time > cur_time)
         signal.double_clicked = true;
     if (signal.double_clicked and node.last_double_click_time + delay_time > cur_time)
@@ -865,7 +865,7 @@ pub fn render(self: *UiContext) !void {
     defer gl.deleteBuffers(1, &inputs_vbo);
     gl.bindBuffer(gl.ARRAY_BUFFER, inputs_vbo);
     const stride = @sizeOf(ShaderInput);
-    gl.bufferData(gl.ARRAY_BUFFER, @intCast(isize, shader_inputs.items.len * stride), shader_inputs.items.ptr, gl.STATIC_DRAW);
+    gl.bufferData(gl.ARRAY_BUFFER, @as(isize, @intCast(shader_inputs.items.len * stride)), shader_inputs.items.ptr, gl.STATIC_DRAW);
     var field_offset: usize = 0;
     inline for (@typeInfo(ShaderInput).Struct.fields, 0..) |field, i| {
         const elems = switch (@typeInfo(field.type)) {
@@ -878,7 +878,7 @@ pub fn render(self: *UiContext) !void {
             else => field.type,
         };
 
-        const offset_ptr = if (field_offset == 0) null else @intToPtr(*const anyopaque, field_offset);
+        const offset_ptr = if (field_offset == 0) null else @as(*const anyopaque, @ptrFromInt(field_offset));
         switch (@typeInfo(child_type)) {
             .Float => {
                 const gl_type = gl.FLOAT;
@@ -900,7 +900,7 @@ pub fn render(self: *UiContext) !void {
     // always draw on top of whatever was on screen, no matter what
     var saved_depth_func: c_int = undefined;
     gl.getIntegerv(gl.DEPTH_FUNC, &saved_depth_func);
-    defer gl.depthFunc(@intCast(c_uint, saved_depth_func));
+    defer gl.depthFunc(@as(c_uint, @intCast(saved_depth_func)));
     gl.depthFunc(gl.ALWAYS);
 
     self.generic_shader.bind();
@@ -912,7 +912,7 @@ pub fn render(self: *UiContext) !void {
     self.generic_shader.set("icon_atlas", @as(i32, 2));
     self.icon_font.texture.bind(2);
     gl.bindVertexArray(inputs_vao);
-    gl.drawArrays(gl.POINTS, 0, @intCast(i32, shader_inputs.items.len));
+    gl.drawArrays(gl.POINTS, 0, @as(i32, @intCast(shader_inputs.items.len)));
 }
 
 fn setupTreeForRender(self: *UiContext, shader_inputs: *std.ArrayList(ShaderInput), root: *Node) !void {
@@ -947,7 +947,7 @@ fn addShaderInputsForNode(self: *UiContext, shader_inputs: *std.ArrayList(Shader
         .border_thickness = node.border_thickness,
         .clip_rect_min = node.clip_rect.min,
         .clip_rect_max = node.clip_rect.max,
-        .which_font = @enumToInt(node.font_type),
+        .which_font = @intFromEnum(node.font_type),
     };
 
     // draw background
@@ -1289,7 +1289,7 @@ fn solveFinalPos(self: *UiContext, node: *Node) void {
 
 fn solveIndependentSizesWorkFn(self: *UiContext, node: *Node, axis: Axis) void {
     _ = self;
-    const axis_idx: usize = @enumToInt(axis);
+    const axis_idx: usize = @intFromEnum(axis);
     switch (node.pref_size[axis_idx]) {
         .pixels => |pixels| node.calc_size[axis_idx] = pixels.value,
         // this is wrong for percent (the correct one is calculated later) but this gives
@@ -1317,7 +1317,7 @@ fn solveIndependentSizesWorkFn(self: *UiContext, node: *Node, axis: Axis) void {
 fn solveDownwardDependentWorkFn(self: *UiContext, node: *Node, axis: Axis) void {
     _ = self;
 
-    const axis_idx: usize = @enumToInt(axis);
+    const axis_idx: usize = @intFromEnum(axis);
     const is_layout_axis = (axis == node.child_layout_axis);
 
     const child_funcs = struct {
@@ -1335,7 +1335,7 @@ fn solveDownwardDependentWorkFn(self: *UiContext, node: *Node, axis: Axis) void 
             while (child) |child_node| : (child = child_node.next) {
                 const child_size = switch (child_node.pref_size[idx]) {
                     .percent => blk: {
-                        if (@enumToInt(child_node.child_layout_axis) == idx) {
+                        if (@intFromEnum(child_node.child_layout_axis) == idx) {
                             break :blk sumChildrenSizes(child_node, idx);
                         } else {
                             break :blk sumChildrenSizes(child_node, idx);
@@ -1343,7 +1343,7 @@ fn solveDownwardDependentWorkFn(self: *UiContext, node: *Node, axis: Axis) void 
                     },
                     else => child_node.calc_size[idx],
                 };
-                max_so_far = std.math.max(max_so_far, child_size);
+                max_so_far = @max(max_so_far, child_size);
             }
             return max_so_far;
         }
@@ -1363,7 +1363,7 @@ fn solveDownwardDependentWorkFn(self: *UiContext, node: *Node, axis: Axis) void 
 
 fn solveUpwardDependentWorkFn(self: *UiContext, node: *Node, axis: Axis) void {
     _ = self;
-    const axis_idx: usize = @enumToInt(axis);
+    const axis_idx: usize = @intFromEnum(axis);
     switch (node.pref_size[axis_idx]) {
         .percent => |percent| {
             if (node.parent) |parent| {
@@ -1378,7 +1378,7 @@ fn solveViolationsWorkFn(self: *UiContext, node: *Node, axis: Axis) void {
     _ = self;
     if (node.child_count == 0) return;
 
-    const axis_idx: usize = @enumToInt(axis);
+    const axis_idx: usize = @intFromEnum(axis);
     const is_layout_axis = (axis == node.child_layout_axis);
 
     // collect sizing information about children
@@ -1400,7 +1400,7 @@ fn solveViolationsWorkFn(self: *UiContext, node: *Node, axis: Axis) void {
         const child_size = child_node.calc_size[axis_idx];
 
         total_children_size += child_size;
-        max_child_size = std.math.max(max_child_size, child_size);
+        max_child_size = @max(max_child_size, child_size);
         if (strictness == 0) {
             zero_strict_take_budget += child_size;
             zero_strict_children.append(child_node) catch unreachable;
@@ -1411,18 +1411,18 @@ fn solveViolationsWorkFn(self: *UiContext, node: *Node, axis: Axis) void {
     }
 
     const total_size = if (is_layout_axis) total_children_size else max_child_size;
-    var overflow = std.math.max(0, total_size - node.calc_size[axis_idx]);
+    var overflow = @max(0, total_size - node.calc_size[axis_idx]);
 
     // shrink zero strictness children as much as we can (to 0 size if needed) before
     // trying to shrink other children with strictness > 0
-    const zero_strict_remove_amount = std.math.min(overflow, zero_strict_take_budget);
+    const zero_strict_remove_amount = @min(overflow, zero_strict_take_budget);
     for (zero_strict_children.slice()) |z_child| {
         if (is_layout_axis) {
             const z_child_percent = z_child.calc_size[axis_idx] / zero_strict_take_budget;
             z_child.calc_size[axis_idx] -= @round(zero_strict_remove_amount * z_child_percent);
         } else {
             const extra_size = z_child.calc_size[axis_idx] - node.calc_size[axis_idx];
-            z_child.calc_size[axis_idx] -= std.math.max(0, extra_size);
+            z_child.calc_size[axis_idx] -= @max(0, extra_size);
         }
     }
     overflow -= zero_strict_remove_amount;
@@ -1439,8 +1439,8 @@ fn solveViolationsWorkFn(self: *UiContext, node: *Node, axis: Axis) void {
             const remove_amount = if (is_layout_axis)
                 @round(overflow * leeway_percent)
             else
-                std.math.max(0, child_size - node.calc_size[axis_idx]);
-            child_node.calc_size[axis_idx] -= std.math.min(child_take_budget, remove_amount);
+                @max(0, child_size - node.calc_size[axis_idx]);
+            child_node.calc_size[axis_idx] -= @min(child_take_budget, remove_amount);
         }
     }
 }
@@ -1448,7 +1448,7 @@ fn solveViolationsWorkFn(self: *UiContext, node: *Node, axis: Axis) void {
 fn solveFinalPosWorkFn(self: *UiContext, node: *Node, axis: Axis) void {
     _ = self;
 
-    const axis_idx: usize = @enumToInt(axis);
+    const axis_idx: usize = @intFromEnum(axis);
     const is_layout_axis = (axis == node.child_layout_axis);
 
     if (node.parent == null) {
@@ -1836,11 +1836,11 @@ pub fn dumpNodeTree(self: *UiContext) void {
         std.debug.print("{*} [{s}] :: first=0x{x:0>15}, last=0x{x:0>15}, next=0x{x:0>15}, prev=0x{x:0>15}, parent=0x{x:0>15}, child_count={}\n", .{
             node,
             node.hash_string,
-            if (node.first) |ptr| @ptrToInt(ptr) else 0,
-            if (node.last) |ptr| @ptrToInt(ptr) else 0,
-            if (node.next) |ptr| @ptrToInt(ptr) else 0,
-            if (node.prev) |ptr| @ptrToInt(ptr) else 0,
-            if (node.parent) |ptr| @ptrToInt(ptr) else 0,
+            if (node.first) |ptr| @intFromPtr(ptr) else 0,
+            if (node.last) |ptr| @intFromPtr(ptr) else 0,
+            if (node.next) |ptr| @intFromPtr(ptr) else 0,
+            if (node.prev) |ptr| @intFromPtr(ptr) else 0,
+            if (node.parent) |ptr| @intFromPtr(ptr) else 0,
             node.child_count,
         });
     }
@@ -1857,7 +1857,7 @@ pub fn dumpNodeTreeGraph(self: *UiContext, root: *Node, save_path: []const u8) !
 
     var node_iter = self.node_table.valueIterator();
     while (node_iter.next()) |node| {
-        try writer.print("  Node_0x{x} [label=\"", .{@ptrToInt(node)});
+        try writer.print("  Node_0x{x} [label=\"", .{@intFromPtr(node)});
         try writer.print("{s}\n", .{std.fmt.fmtSliceEscapeLower(node.hash_string)});
         try writer.print("{any}\n", .{node.pref_size});
         try writer.print("{d}\n", .{node.rect});
@@ -1866,11 +1866,11 @@ pub fn dumpNodeTreeGraph(self: *UiContext, root: *Node, save_path: []const u8) !
             if (@field(node.flags, field.name)) _ = try writer.write(field.name ++ ",");
         }
         try writer.print("\"];\n", .{});
-        if (node.parent) |other| try writer.print("    Node_0x{x} -> Node_0x{x} [label=\"parent\"];\n", .{ @ptrToInt(node), @ptrToInt(other) });
-        if (node.first) |other| try writer.print("    Node_0x{x} -> Node_0x{x} [label=\"first\"];\n", .{ @ptrToInt(node), @ptrToInt(other) });
-        if (node.last) |other| try writer.print("    Node_0x{x} -> Node_0x{x} [label=\"last\"];\n", .{ @ptrToInt(node), @ptrToInt(other) });
-        if (node.next) |other| try writer.print("    Node_0x{x} -> Node_0x{x} [label=\"next\"];\n", .{ @ptrToInt(node), @ptrToInt(other) });
-        if (node.prev) |other| try writer.print("    Node_0x{x} -> Node_0x{x} [label=\"prev\"];\n", .{ @ptrToInt(node), @ptrToInt(other) });
+        if (node.parent) |other| try writer.print("    Node_0x{x} -> Node_0x{x} [label=\"parent\"];\n", .{ @intFromPtr(node), @intFromPtr(other) });
+        if (node.first) |other| try writer.print("    Node_0x{x} -> Node_0x{x} [label=\"first\"];\n", .{ @intFromPtr(node), @intFromPtr(other) });
+        if (node.last) |other| try writer.print("    Node_0x{x} -> Node_0x{x} [label=\"last\"];\n", .{ @intFromPtr(node), @intFromPtr(other) });
+        if (node.next) |other| try writer.print("    Node_0x{x} -> Node_0x{x} [label=\"next\"];\n", .{ @intFromPtr(node), @intFromPtr(other) });
+        if (node.prev) |other| try writer.print("    Node_0x{x} -> Node_0x{x} [label=\"prev\"];\n", .{ @intFromPtr(node), @intFromPtr(other) });
     }
 
     node_iter = self.node_table.valueIterator();
@@ -1883,7 +1883,7 @@ pub fn dumpNodeTreeGraph(self: *UiContext, root: *Node, save_path: []const u8) !
 
         var child = node.first;
         while (child) |child_node| : (child = child_node.next) {
-            try writer.print("    Node_0x{x};\n", .{@ptrToInt(child_node)});
+            try writer.print("    Node_0x{x};\n", .{@intFromPtr(child_node)});
         }
 
         _ = try writer.write("  }\n");

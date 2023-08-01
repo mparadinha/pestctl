@@ -15,34 +15,34 @@ pub const Mesh = struct {
 
     /// 'deinit' cleans up used resources
     pub fn init(vert_data: []const f32, indices: []const u32, attribs: []const Attrib) Mesh {
-        var mesh = Mesh{ .vao = 0, .vbo = 0, .ebo = 0, .n_indices = @intCast(u16, indices.len) };
+        var mesh = Mesh{ .vao = 0, .vbo = 0, .ebo = 0, .n_indices = @as(u16, @intCast(indices.len)) };
 
         gl.genVertexArrays(1, &mesh.vao);
         gl.bindVertexArray(mesh.vao);
 
         gl.genBuffers(1, &mesh.vbo);
         gl.bindBuffer(gl.ARRAY_BUFFER, mesh.vbo);
-        gl.bufferData(gl.ARRAY_BUFFER, @intCast(isize, vert_data.len * @sizeOf(f32)), vert_data.ptr, gl.STATIC_DRAW);
+        gl.bufferData(gl.ARRAY_BUFFER, @as(isize, @intCast(vert_data.len * @sizeOf(f32))), vert_data.ptr, gl.STATIC_DRAW);
 
         var stride: u32 = 0;
         for (attribs) |attrib| stride += attrib.n_elems;
         var offset: u32 = 0;
         for (attribs, 0..) |attrib, i| {
             gl.vertexAttribPointer(
-                @intCast(u32, i),
-                @intCast(i32, attrib.n_elems),
+                @as(u32, @intCast(i)),
+                @as(i32, @intCast(attrib.n_elems)),
                 gl.FLOAT,
                 gl.FALSE,
-                @intCast(i32, stride) * @sizeOf(f32),
-                if (offset == 0) null else @intToPtr(*const anyopaque, offset),
+                @as(i32, @intCast(stride)) * @sizeOf(f32),
+                if (offset == 0) null else @as(*const anyopaque, @ptrFromInt(offset)),
             );
-            gl.enableVertexAttribArray(@intCast(u32, i));
+            gl.enableVertexAttribArray(@as(u32, @intCast(i)));
             offset += attrib.n_elems * @sizeOf(f32);
         }
 
         gl.genBuffers(1, &mesh.ebo);
         gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, mesh.ebo);
-        gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, @intCast(isize, indices.len * @sizeOf(u32)), indices.ptr, gl.STATIC_DRAW);
+        gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, @as(isize, @intCast(indices.len * @sizeOf(u32))), indices.ptr, gl.STATIC_DRAW);
 
         return mesh;
     }
@@ -84,7 +84,7 @@ pub const Texture = struct {
 
         gl.genTextures(1, &self.id);
         gl.bindTexture(tex_type, self.id);
-        for (params) |param| gl.texParameteri(tex_type, param.name, @intCast(i32, param.value));
+        for (params) |param| gl.texParameteri(tex_type, param.name, @as(i32, @intCast(param.value)));
         self.updateData(data);
         gl.generateMipmap(tex_type);
 
@@ -95,10 +95,10 @@ pub const Texture = struct {
         gl.bindTexture(self.tex_type, self.id);
         // zig fmt: off
         gl.texImage2D(
-            self.tex_type, 0, @intCast(i32, self.format),
-            @intCast(i32, self.width), @intCast(i32, self.height), 0,
+            self.tex_type, 0, @intCast(self.format),
+            @intCast(self.width), @intCast(self.height), 0,
             self.format, gl.UNSIGNED_BYTE,
-            if (data) |ptr| @ptrCast(*const anyopaque, &ptr[0]) else null,
+            if (data) |ptr| @ptrCast(&ptr[0]) else null,
         );
         // zig fmt: on
     }
@@ -186,7 +186,7 @@ pub const Shader = struct {
             .fragment => @as(u32, gl.FRAGMENT_SHADER),
         };
         var id: u32 = gl.createShader(gl_shader_type);
-        gl.shaderSource(id, 1, &(&src[0]), &(@intCast(c_int, src.len)));
+        gl.shaderSource(id, 1, &(&src[0]), &(@as(c_int, @intCast(src.len))));
         gl.compileShader(id);
 
         // check compilation errors
@@ -269,7 +269,7 @@ pub const Shader = struct {
             i32 => gl.uniform1i(loc, obj),
             u32 => gl.uniform1ui(loc, obj),
             f32 => gl.uniform1f(loc, obj),
-            bool => gl.uniform1ui(loc, @boolToInt(obj)),
+            bool => gl.uniform1ui(loc, @intFromBool(obj)),
             math.vec2 => gl.uniform2fv(loc, 1, &obj[0]),
             math.vec3 => gl.uniform3fv(loc, 1, &obj[0]),
             math.vec4 => gl.uniform4fv(loc, 1, &obj[0]),
@@ -290,7 +290,7 @@ pub const Framebuffer = struct {
         var self: Framebuffer = undefined;
 
         var current_fbo: u32 = 0;
-        gl.getIntegerv(gl.DRAW_FRAMEBUFFER_BINDING, @ptrCast(*i32, &current_fbo));
+        gl.getIntegerv(gl.DRAW_FRAMEBUFFER_BINDING, @as(*i32, @ptrCast(&current_fbo)));
         defer gl.bindFramebuffer(gl.FRAMEBUFFER, current_fbo);
 
         gl.genFramebuffers(1, &self.fbo);
@@ -348,7 +348,7 @@ pub fn make_cube_mesh(size: f32) Mesh {
     var indices: [6 * 6]u32 = undefined;
     for (indices, 0..) |*idx, i| {
         const face_idxs = [6]u32{ 0, 1, 2, 0, 2, 3 };
-        idx.* = face_idxs[i % 6] + @intCast(u32, 4 * (i / 6));
+        idx.* = face_idxs[i % 6] + @as(u32, @intCast(4 * (i / 6)));
     }
 
     return Mesh.init(&vert_data, &indices, &.{

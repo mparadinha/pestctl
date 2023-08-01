@@ -153,7 +153,7 @@ pub fn init(allocator: Allocator, debug_line: []const u8, offset: usize, debug_l
             for (dir_entry_formats) |format| {
                 // TODO: use the readXXX for these forms
                 if (format.content_type == DW.LNCT.path and format.form == DW.FORM.line_strp) {
-                    const strp = if (is_64) try reader.readIntLittle(u64) else @intCast(u64, try reader.readIntLittle(u32));
+                    const strp = if (is_64) try reader.readIntLittle(u64) else @as(u64, @intCast(try reader.readIntLittle(u32)));
                     dir.* = stringFromTable(debug_line_str, strp);
                     break;
                 }
@@ -188,7 +188,7 @@ pub fn init(allocator: Allocator, debug_line: []const u8, offset: usize, debug_l
                             break :blk self.raw_data[str_start .. str_start + strlen];
                         },
                         DW.FORM.line_strp => blk: {
-                            const strp = if (is_64) try reader.readIntLittle(u64) else @intCast(u64, try reader.readIntLittle(u32));
+                            const strp = if (is_64) try reader.readIntLittle(u64) else @as(u64, @intCast(try reader.readIntLittle(u32)));
                             break :blk stringFromTable(debug_line_str, strp);
                         },
                         DW.FORM.strp => std.debug.panic("need to pass .debug_str in\n", .{}),
@@ -198,15 +198,15 @@ pub fn init(allocator: Allocator, debug_line: []const u8, offset: usize, debug_l
                     found_path = true;
                 } else if (format.content_type == DW.LNCT.directory_index) {
                     file.dir = switch (format.form) {
-                        DW.FORM.data1 => @intCast(usize, try reader.readByte()),
-                        DW.FORM.data2 => @intCast(usize, try reader.readIntLittle(u16)),
+                        DW.FORM.data1 => @as(usize, @intCast(try reader.readByte())),
+                        DW.FORM.data2 => @as(usize, @intCast(try reader.readIntLittle(u16))),
                         DW.FORM.udata => try std.leb.readULEB128(usize, reader),
                         else => std.debug.panic("invalid FORM 0x{x} for directory index\n", .{format.form}),
                     };
                 } else if (format.content_type == DW.LNCT.timestamp) {
                     file.mod_time = switch (format.form) {
                         DW.FORM.udata => try std.leb.readULEB128(u64, reader),
-                        DW.FORM.data4 => @intCast(u64, try reader.readIntLittle(u32)),
+                        DW.FORM.data4 => @as(u64, @intCast(try reader.readIntLittle(u32))),
                         DW.FORM.data8 => try reader.readIntLittle(u64),
                         DW.FORM.block => std.debug.panic("TODO: implement block for timestamp\n", .{}),
                         else => std.debug.panic("invalid FORM 0x{x} for timestamp\n", .{format.form}),
@@ -214,9 +214,9 @@ pub fn init(allocator: Allocator, debug_line: []const u8, offset: usize, debug_l
                 } else if (format.content_type == DW.LNCT.size) {
                     file.len = switch (format.form) {
                         DW.FORM.udata => try std.leb.readULEB128(u64, reader),
-                        DW.FORM.data1 => @intCast(u64, try reader.readByte()),
-                        DW.FORM.data2 => @intCast(u64, try reader.readIntLittle(u16)),
-                        DW.FORM.data4 => @intCast(u64, try reader.readIntLittle(u32)),
+                        DW.FORM.data1 => @as(u64, @intCast(try reader.readByte())),
+                        DW.FORM.data2 => @as(u64, @intCast(try reader.readIntLittle(u16))),
+                        DW.FORM.data4 => @as(u64, @intCast(try reader.readIntLittle(u32))),
                         DW.FORM.data8 => try reader.readIntLittle(u64),
                         else => std.debug.panic("invalid FORM 0x{x} for file len\n", .{format.form}),
                     };
@@ -257,10 +257,10 @@ pub fn init(allocator: Allocator, debug_line: []const u8, offset: usize, debug_l
     while ((try op_stream.getPos()) < self.ops.len) {
         const new_row = try self.updateState(&state, op_reader);
         if (new_row) |row| {
-            self.address_range[0] = std.math.min(self.address_range[0], row.address);
-            self.address_range[1] = std.math.max(self.address_range[1], row.address);
-            self.file_line_range[0] = std.math.min(self.file_line_range[0], row.line);
-            self.file_line_range[1] = std.math.max(self.file_line_range[1], row.line);
+            self.address_range[0] = @min(self.address_range[0], row.address);
+            self.address_range[1] = @max(self.address_range[1], row.address);
+            self.file_line_range[0] = @min(self.file_line_range[0], row.line);
+            self.file_line_range[1] = @max(self.file_line_range[1], row.line);
             if (row.end_sequence) break;
         }
     }
@@ -368,7 +368,7 @@ pub fn updateState(self: LineProg, state: *State, reader: anytype) !?State {
             },
             DW.LNS.advance_line => {
                 const advance = try std.leb.readILEB128(i32, reader);
-                state.line = @intCast(u32, @intCast(i32, state.line) + advance);
+                state.line = @as(u32, @intCast(@as(i32, @intCast(state.line)) + advance));
             },
             DW.LNS.set_file => state.file = try std.leb.readULEB128(u32, reader),
             DW.LNS.set_column => state.column = try std.leb.readULEB128(u32, reader),
@@ -393,9 +393,9 @@ pub fn updateState(self: LineProg, state: *State, reader: anytype) !?State {
         const adjusted_opcode = op - self.opcode_base;
         const operation_advance = adjusted_opcode / self.line_range;
 
-        const line_increment = self.line_base + @intCast(i32, (adjusted_opcode % self.line_range));
+        const line_increment = self.line_base + @as(i32, @intCast((adjusted_opcode % self.line_range)));
 
-        state.line = @intCast(u32, @intCast(i32, state.line) + line_increment);
+        state.line = @as(u32, @intCast(@as(i32, @intCast(state.line)) + line_increment));
         state.address += self.min_instr_len * ((state.op_index + operation_advance) / self.max_ops_per_instr);
         state.op_index = (state.op_index + operation_advance) % self.max_ops_per_instr;
 

@@ -125,7 +125,7 @@ pub fn initTables(self: *Dwarf) !void {
 
     //_ = timer_start;
     const timer_elapsed = std.time.nanoTimestamp() - timer_start;
-    std.debug.print("Dwarf.initTables took {d:.2}ms\n", .{@intToFloat(f32, timer_elapsed) / std.time.ns_per_ms});
+    std.debug.print("Dwarf.initTables took {d:.2}ms\n", .{@as(f32, @floatFromInt(timer_elapsed)) / std.time.ns_per_ms});
 }
 
 pub const SrcLoc = struct {
@@ -198,8 +198,8 @@ pub fn callStackAddrs(
         const cfa = switch (rules.cfa) {
             .undefined => unreachable,
             .register => |rule| blk: {
-                const reg_value = regs.getPtr(@intToEnum(Register, rule.reg)).*;
-                break :blk @intCast(usize, @intCast(isize, reg_value) + rule.offset);
+                const reg_value = regs.getPtr(@as(Register, @enumFromInt(rule.reg))).*;
+                break :blk @as(usize, @intCast(@as(isize, @intCast(reg_value)) + rule.offset));
             },
             .expression => @panic("TODO: DWARF expression for CFA rule"),
         };
@@ -207,7 +207,7 @@ pub fn callStackAddrs(
         const ret_addr = switch (rules.regs[frame.return_address_register]) {
             .undefined => break :frame_loop,
             .offset => |offset| blk: {
-                const reg_saved_addr = @intCast(usize, @intCast(isize, cfa) + offset);
+                const reg_saved_addr = @as(usize, @intCast(@as(isize, @intCast(cfa)) + offset));
                 try proc_mem.seekTo(reg_saved_addr);
                 break :blk try proc_mem.reader().readIntLittle(usize);
             },
@@ -220,10 +220,10 @@ pub fn callStackAddrs(
             switch (reg) {
                 .undefined => {},
                 .offset => |offset| {
-                    const reg_saved_addr = @intCast(usize, @intCast(isize, cfa) + offset);
+                    const reg_saved_addr = @as(usize, @intCast(@as(isize, @intCast(cfa)) + offset));
                     try proc_mem.seekTo(reg_saved_addr);
                     const reg_value = try proc_mem.reader().readIntLittle(usize);
-                    regs.getPtr(@intToEnum(Register, i)).* = reg_value;
+                    regs.getPtr(@as(Register, @enumFromInt(i))).* = reg_value;
                 },
                 else => std.debug.panic("TODO: {}\n", .{std.meta.activeTag(reg)}),
             }
@@ -360,7 +360,7 @@ pub fn readLengthField(reader: anytype) !LengthField {
 /// some fields are 4 or 8 bytes depending on which DWARF format is used (32-bit/64-bit respectively)
 pub fn readIs64(reader: anytype, is_64: bool) !usize {
     return if (is_64)
-        @intCast(usize, try reader.readIntLittle(u64))
+        @as(usize, @intCast(try reader.readIntLittle(u64)))
     else
-        @intCast(usize, try reader.readIntLittle(u32));
+        @as(usize, @intCast(try reader.readIntLittle(u32)));
 }

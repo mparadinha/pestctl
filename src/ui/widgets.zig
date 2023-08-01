@@ -392,7 +392,7 @@ pub fn textInputRaw(self: *UiContext, hash_string: []const u8, buffer: []u8, buf
     const selection_size = @fabs(partial_text_rect_mark.max[0] - partial_text_rect.max[0]);
     selection_node.pref_size = [2]Size{ Size.pixels(selection_size, 1), cursor_node.pref_size[1] };
     selection_node.rel_pos = vec2{
-        std.math.min(partial_text_rect_mark.max[0], partial_text_rect.max[0]),
+        @min(partial_text_rect_mark.max[0], partial_text_rect.max[0]),
         0,
     } + UiContext.text_padd;
 
@@ -412,7 +412,7 @@ pub fn textInputRaw(self: *UiContext, hash_string: []const u8, buffer: []u8, buf
     // double click selects the current word
     else if (sig.double_clicked) {
         widget_node.mark = if (text_ops.findFirstDiff(display_str, widget_node.cursor, .left)) |idx| blk: {
-            break :blk std.math.min(idx + 1, display_str.len);
+            break :blk @min(idx + 1, display_str.len);
         } else 0;
         widget_node.cursor = text_ops.findFirstDiff(display_str, widget_node.cursor, .right) orelse
             display_str.len;
@@ -490,7 +490,7 @@ pub fn textInputRaw(self: *UiContext, hash_string: []const u8, buffer: []u8, buf
                 const add_codepoint_action = TextAction{
                     .flags = .{},
                     .delta = 0,
-                    .codepoint = @intCast(u21, codepoint),
+                    .codepoint = @as(u21, @intCast(codepoint)),
                 };
                 try text_actions.append(add_codepoint_action);
             },
