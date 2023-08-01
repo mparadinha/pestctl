@@ -159,20 +159,29 @@ pub const Shader = struct {
     }
 
     /// call `deinit` to cleanup
-    pub fn from_files(allocator: Allocator, shader_name: []const u8) Shader {
-        var shader = Shader{
-            .vert_id = 0,
-            .frag_id = 0,
-            .prog_id = 0,
-            .name = allocator.dupe(u8, shader_name) catch unreachable,
-            .allocator = allocator,
-        };
+    pub fn from_files(
+        allocator: Allocator,
+        name: []const u8,
+        src_paths: struct {
+            vertex: []const u8,
+            geometry: ?[]const u8 = null,
+            fragment: []const u8,
+        },
+    ) Shader {
+        const max_bytes = std.math.maxInt(usize);
+        const dir = std.fs.cwd();
+        const vert_src = dir.readFileAlloc(allocator, src_paths.vertex, max_bytes) catch unreachable;
+        defer allocator.free(vert_src);
+        const geom_src = if (src_paths.geometry) |path| dir.readFileAlloc(allocator, path, max_bytes) catch null else null;
+        defer if (geom_src) |src| allocator.free(src);
+        const frag_src = dir.readFileAlloc(allocator, src_paths.fragment, max_bytes) catch unreachable;
+        defer allocator.free(frag_src);
 
-        shader.compile_from_files();
-
-        std.log.info("created shader '{s}' from files.", .{shader.name});
-
-        return shader;
+        return Shader.from_srcs(allocator, name, .{
+            .vertex = vert_src,
+            .geometry = geom_src,
+            .fragment = frag_src,
+        });
     }
 
     pub fn deinit(self: Shader) void {

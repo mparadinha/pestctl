@@ -855,6 +855,16 @@ pub fn render(self: *UiContext) !void {
     if (self.ctx_menu_root_node) |node| try self.setupTreeForRender(&shader_inputs, node);
     if (self.tooltip_root_node) |node| try self.setupTreeForRender(&shader_inputs, node);
 
+    // try rebuilding shaders
+    {
+        self.generic_shader.deinit();
+        self.generic_shader = gfx.Shader.from_files(self.allocator, "ui_generic", .{
+            .vertex = "ui_shader.vert",
+            .geometry = "ui_shader.geom",
+            .fragment = "ui_shader.frag",
+        });
+    }
+
     // create vertex buffer
     var inputs_vao: u32 = 0;
     gl.genVertexArrays(1, &inputs_vao);
