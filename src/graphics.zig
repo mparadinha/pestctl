@@ -186,6 +186,15 @@ pub const Shader = struct {
 
     pub fn deinit(self: Shader) void {
         self.allocator.free(self.name);
+
+        gl.detachShader(self.prog_id, self.vert_id);
+        if (self.geom_id) |id| gl.detachShader(self.prog_id, id);
+        gl.detachShader(self.prog_id, self.frag_id);
+
+        gl.deleteShader(self.vert_id);
+        if (self.geom_id) |id| gl.deleteShader(id);
+        gl.deleteShader(self.frag_id);
+        gl.deleteProgram(self.prog_id);
     }
 
     fn compile_src(self: *Shader, src: []const u8, shader_type: ShaderType) u32 {

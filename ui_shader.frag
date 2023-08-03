@@ -1,6 +1,6 @@
 #version 330 core
 
-in vec4 gl_FragCoord;
+layout (pixel_center_integer) in vec4 gl_FragCoord;
 
 in GS_Out {
     vec2 uv;
@@ -17,6 +17,8 @@ in GS_Out {
     vec2 clip_rect_max;
 
     flat uint which_font;
+
+    flat vec2 rect_pixel_center;
 } fs_in;
 
 uniform vec2 screen_size; // in pixels
@@ -39,7 +41,46 @@ bool insideBorder(vec2 quad_coords) {
     return side_dist.x <= fs_in.border_thickness || side_dist.y <= fs_in.border_thickness;
 }
 
+float rectSDF(vec2 point, vec2 center, vec2 half_size) {
+    point = abs(point - center);
+    vec2 dist = point - half_size;
+    float corner_dist = length(point - half_size);
+    return dist.x > 0 && dist.y > 0 ? corner_dist : max(dist.x, dist.y);
+}
+
+float roundedRectSDF(vec2 point, vec2 center, vec2 half_size, float corner_radius) {
+    half_size -= vec2(corner_radius);
+    float dist = rectSDF(point, center, half_size);
+    dist -= corner_radius;
+    return dist;
+}
+
 void main() {
+    // FragColor = fs_in.color;
+    // return;
+
+    if (fs_in.rect_size == screen_size) {
+        FragColor = vec4(gl_FragCoord.xy / screen_size, 1, 1);
+        return;
+    }
+
+    vec2 pixel_coord = gl_FragCoord.xy;
+    vec4 rect_color = fs_in.color;
+    vec2 rect_half_size = fs_in.rect_size / 2;
+    vec2 rect_center = fs_in.rect_pixel_center;
+    float corner_radius = rect_half_size[0]; // in pixels
+    float corner_softness = 1; // TODO: somethings not right about this
+    float thickness = 10;
+
+    float rect_dist = roundedRectSDF(pixel_coord, rect_center, rect_half_size, corner_radius);
+
+    FragColor = vec4(
+        rect_color.rgb,
+        rect_color.a * smoothstep(-corner_softness, corner_softness, -rect_dist)
+    );
+}
+
+void old_main() {
     vec2 pixel_coord = gl_FragCoord.xy - vec2(0.5);
     if (!rectContains(fs_in.clip_rect_min, fs_in.clip_rect_max, pixel_coord)) {
         FragColor = vec4(0);
@@ -62,4 +103,3 @@ void main() {
 
     FragColor = color * vec4(1, 1, 1, alpha);
 }
-

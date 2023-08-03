@@ -922,7 +922,7 @@ pub fn render(self: *UiContext) !void {
     self.generic_shader.set("icon_atlas", @as(i32, 2));
     self.icon_font.texture.bind(2);
     gl.bindVertexArray(inputs_vao);
-    gl.drawArrays(gl.POINTS, 0, @as(i32, @intCast(shader_inputs.items.len)));
+    gl.drawArrays(gl.POINTS, 0, @intCast(shader_inputs.items.len));
 }
 
 fn setupTreeForRender(self: *UiContext, shader_inputs: *std.ArrayList(ShaderInput), root: *Node) !void {

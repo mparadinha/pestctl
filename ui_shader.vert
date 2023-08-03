@@ -27,6 +27,8 @@ out VS_Out {
     vec2 clip_rect_min;
     vec2 clip_rect_max;
     uint which_font;
+
+    vec2 rect_pixel_center;
 } vs_out;
 
 void main() {
@@ -46,5 +48,7 @@ void main() {
     vs_out.clip_rect_min = attrib_clip_rect_min;
     vs_out.clip_rect_max = attrib_clip_rect_max;
     vs_out.which_font = attrib_which_font;
+
+    vs_out.rect_pixel_center = (attrib_bottom_left_pos + attrib_top_right_pos) / 2;
 }
 

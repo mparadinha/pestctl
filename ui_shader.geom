@@ -18,6 +18,8 @@ in VS_Out {
     vec2 clip_rect_min;
     vec2 clip_rect_max;
     uint which_font;
+
+    vec2 rect_pixel_center;
 } gs_in[];
 
 out GS_Out {
@@ -31,6 +33,8 @@ out GS_Out {
     vec2 clip_rect_min;
     vec2 clip_rect_max;
     flat uint which_font;
+
+    flat vec2 rect_pixel_center;
 } gs_out;
 
 void main() {
@@ -53,6 +57,8 @@ void main() {
     gs_out.clip_rect_min = gs_in[0].clip_rect_min;
     gs_out.clip_rect_max = gs_in[0].clip_rect_max;
     gs_out.which_font = gs_in[0].which_font;
+
+    gs_out.rect_pixel_center = gs_in[0].rect_pixel_center;
 
     gl_Position        = bottom_left_pos;
     gs_out.uv          = bottom_left_uv;
