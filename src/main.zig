@@ -350,19 +350,22 @@ pub fn main() !void {
                 .pref_size = Size.fill(1, 1),
             });
             test_ui.pushParent(bg_node);
+            _ = test_ui.button("button");
             const addTestNode = (struct {
-                pub fn func(ui_ctx: *UiContext, color: vec4, size: vec2, center: vec2) void {
+                pub fn func(ui_ctx: *UiContext, color: vec4, size: vec2, center: vec2, corner_rad: f32, border: f32) void {
                     _ = ui_ctx.addNode(.{ .no_id = true, .draw_text = true, .draw_background = true, .floating_x = true, .floating_y = true }, "", .{
                         .bg_color = color,
+                        .corner_radius = corner_rad,
+                        .border_thickness = border,
                         .pref_size = [2]Size{ Size.pixels(size[0], 1), Size.pixels(size[1], 1) },
                         .rel_pos = center,
                         .rel_pos_placement = .center,
                     });
                 }
             }).func;
-            addTestNode(&test_ui, vec4{ 1, 1, 0, 0.5 }, vec2{ 300, 400 }, vec2{ 350, 550 });
-            addTestNode(&test_ui, vec4{ 1, 0, 1, 0.75 }, vec2{ 400, 200 }, vec2{ 250, 300 });
-            addTestNode(&test_ui, vec4{ 0, 1, 1, 0.75 }, vec2{ 50, 450 }, vec2{ 300, 400 });
+            addTestNode(&test_ui, vec4{ 1, 1, 0, 0.5 }, vec2{ 300, 400 }, vec2{ 350, 550 }, 25, 10);
+            addTestNode(&test_ui, vec4{ 1, 0, 1, 0.75 }, vec2{ 400, 200 }, vec2{ 250, 300 }, 20, 10);
+            addTestNode(&test_ui, vec4{ 0, 1, 1, 0.75 }, vec2{ 50, 450 }, vec2{ 300, 400 }, 15, 10);
             test_ui.popParentAssert(bg_node);
             test_ui.endBuild(dt);
             try test_ui.render();
@@ -1629,7 +1632,7 @@ fn FuzzySearchOptions(comptime Ctx: type, comptime max_slots: usize) type {
                     .top_right_uv = quad.points[2].uv,
                     .top_color = text_color,
                     .bottom_color = text_color,
-                    .corner_roundness = 0,
+                    .corner_radius = 0,
                     .border_thickness = 0,
                     .clip_rect_min = node.clip_rect.min,
                     .clip_rect_max = node.clip_rect.max,

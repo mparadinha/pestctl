@@ -3,7 +3,7 @@
 layout (points) in;
 layout (triangle_strip, max_vertices = 6) out;
 
-uniform vec2 screen_size; // in pixels
+uniform vec2 screen_size;
 
 in VS_Out {
     vec2 bottom_left_pos;
@@ -12,85 +12,75 @@ in VS_Out {
     vec2 top_right_uv;
     vec4 top_color;
     vec4 bottom_color;
-    float corner_roundness;
+    float corner_radius;
     float border_thickness;
-    vec2 rect_size;
     vec2 clip_rect_min;
     vec2 clip_rect_max;
     uint which_font;
-
-    vec2 rect_pixel_center;
 } gs_in[];
 
 out GS_Out {
     vec2 uv;
     vec4 color;
-    vec2 quad_coords;
-    float quad_size_ratio;
-    float corner_roundness;
-    float border_thickness;
-    vec2 rect_size;
-    vec2 clip_rect_min;
-    vec2 clip_rect_max;
+    flat vec2 rect_size;
+    flat vec2 rect_center;
+    flat float corner_radius;
+    flat float border_thickness;
+    flat vec2 clip_rect_min;
+    flat vec2 clip_rect_max;
     flat uint which_font;
-
-    flat vec2 rect_pixel_center;
 } gs_out;
 
 void main() {
-    vec4 bottom_left_pos  = vec4(gs_in[0].bottom_left_pos, 0, 1);
-    vec2 bottom_left_uv   = gs_in[0].bottom_left_uv;
-    vec4 top_right_pos    = vec4(gs_in[0].top_right_pos, 0, 1);
-    vec2 top_right_uv     = gs_in[0].top_right_uv;
-    vec4 bottom_right_pos = vec4(top_right_pos.x, bottom_left_pos.y, 0, 1);
-    vec2 bottom_right_uv  = vec2(top_right_uv.x,  bottom_left_uv.y);
-    vec4 top_left_pos     = vec4(bottom_left_pos.x, top_right_pos.y, 0, 1);
-    vec2 top_left_uv      = vec2(bottom_left_uv.x,  top_right_uv.y);
-
     vec2 quad_size = gs_in[0].top_right_pos - gs_in[0].bottom_left_pos;
+    vec2 quad_btm_left = gs_in[0].bottom_left_pos;
+    vec2 quad_btm_right = quad_btm_left + vec2(quad_size.x, 0);
+    vec2 quad_top_left = quad_btm_left + vec2(0, quad_size.y);
+    vec2 quad_top_right = gs_in[0].top_right_pos;
+
+    vec4 btm_left_coord = vec4((quad_btm_left / screen_size) * 2 - vec2(1), 0, 1);
+    vec4 btm_right_coord = vec4((quad_btm_right / screen_size) * 2 - vec2(1), 0, 1);
+    vec4 top_left_coord = vec4((quad_top_left / screen_size) * 2 - vec2(1), 0, 1);
+    vec4 top_right_coord = vec4((quad_top_right / screen_size) * 2 - vec2(1), 0, 1);
+
+    vec2 uv_range = gs_in[0].top_right_uv - gs_in[0].bottom_left_uv;
+    vec2 uv_btm_right = gs_in[0].bottom_left_uv + vec2(uv_range.x, 0);
+    vec2 uv_top_left = gs_in[0].bottom_left_uv + vec2(0, uv_range.y);
 
     // some things are the same for all verts of the quad
-    gs_out.corner_roundness = gs_in[0].corner_roundness;
+    gs_out.rect_size = quad_size;
+    gs_out.rect_center = quad_btm_left + quad_size / 2;
+    gs_out.corner_radius = gs_in[0].corner_radius;
     gs_out.border_thickness = gs_in[0].border_thickness;
-    gs_out.rect_size = gs_in[0].rect_size;
-    gs_out.quad_size_ratio = (quad_size.x / quad_size.y) * (screen_size.x / screen_size.y);
     gs_out.clip_rect_min = gs_in[0].clip_rect_min;
     gs_out.clip_rect_max = gs_in[0].clip_rect_max;
     gs_out.which_font = gs_in[0].which_font;
 
-    gs_out.rect_pixel_center = gs_in[0].rect_pixel_center;
-
-    gl_Position        = bottom_left_pos;
-    gs_out.uv          = bottom_left_uv;
+    gl_Position        = btm_left_coord;
+    gs_out.uv          = gs_in[0].bottom_left_uv;
     gs_out.color       = gs_in[0].bottom_color;
-    gs_out.quad_coords = vec2(0, 0);
     EmitVertex();
-    gl_Position        = bottom_right_pos;
-    gs_out.uv          = bottom_right_uv;
+    gl_Position        = btm_right_coord;
+    gs_out.uv          = uv_btm_right;
     gs_out.color       = gs_in[0].bottom_color;
-    gs_out.quad_coords = vec2(1, 0);
     EmitVertex();
-    gl_Position        = top_right_pos;
-    gs_out.uv          = top_right_uv;
+    gl_Position        = top_right_coord;
+    gs_out.uv          = gs_in[0].top_right_uv;
     gs_out.color       = gs_in[0].top_color;
-    gs_out.quad_coords = vec2(1, 1);
     EmitVertex();
     EndPrimitive();
 
-    gl_Position        = bottom_left_pos;
-    gs_out.uv          = bottom_left_uv;
+    gl_Position        = btm_left_coord;
+    gs_out.uv          = gs_in[0].bottom_left_uv;
     gs_out.color       = gs_in[0].bottom_color;
-    gs_out.quad_coords = vec2(0, 0);
     EmitVertex();
-    gl_Position        = top_right_pos;
-    gs_out.uv          = top_right_uv;
+    gl_Position        = top_right_coord;
+    gs_out.uv          = gs_in[0].top_right_uv;
     gs_out.color       = gs_in[0].top_color;
-    gs_out.quad_coords = vec2(1, 1);
     EmitVertex();
-    gl_Position        = top_left_pos;
-    gs_out.uv          = top_left_uv;
+    gl_Position        = top_left_coord;
+    gs_out.uv          = uv_top_left;
     gs_out.color       = gs_in[0].top_color;
-    gs_out.quad_coords = vec2(0, 1);
     EmitVertex();
     EndPrimitive();
 }

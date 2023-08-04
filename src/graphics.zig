@@ -167,15 +167,18 @@ pub const Shader = struct {
             geometry: ?[]const u8 = null,
             fragment: []const u8,
         },
-    ) Shader {
+    ) !Shader {
         const max_bytes = std.math.maxInt(usize);
         const dir = std.fs.cwd();
-        const vert_src = dir.readFileAlloc(allocator, src_paths.vertex, max_bytes) catch unreachable;
+        const vert_src = try dir.readFileAlloc(allocator, src_paths.vertex, max_bytes);
         defer allocator.free(vert_src);
-        const geom_src = if (src_paths.geometry) |path| dir.readFileAlloc(allocator, path, max_bytes) catch null else null;
+        if (vert_src.len == 0) return error.EmptyFile;
+        const geom_src = if (src_paths.geometry) |path| try dir.readFileAlloc(allocator, path, max_bytes) else null;
         defer if (geom_src) |src| allocator.free(src);
-        const frag_src = dir.readFileAlloc(allocator, src_paths.fragment, max_bytes) catch unreachable;
+        if (geom_src) |src| if (src.len == 0) return error.EmptyFile;
+        const frag_src = try dir.readFileAlloc(allocator, src_paths.fragment, max_bytes);
         defer allocator.free(frag_src);
+        if (frag_src.len == 0) return error.EmptyFile;
 
         return Shader.from_srcs(allocator, name, .{
             .vertex = vert_src,

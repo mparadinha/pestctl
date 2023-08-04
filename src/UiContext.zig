@@ -187,7 +187,7 @@ pub const Node = struct {
     bg_color: vec4,
     border_color: vec4,
     text_color: vec4,
-    corner_roundness: f32,
+    corner_radius: f32,
     border_thickness: f32,
     pref_size: [2]Size,
     child_layout_axis: Axis,
@@ -244,7 +244,7 @@ pub const Style = struct {
     bg_color: vec4 = vec4{ 0.24, 0.27, 0.31, 1 },
     border_color: vec4 = vec4{ 0.5, 0.5, 0.5, 0.75 },
     text_color: vec4 = vec4{ 1, 1, 1, 1 },
-    corner_roundness: f32 = 0,
+    corner_radius: f32 = 0,
     border_thickness: f32 = 2,
     pref_size: [2]Size = .{ Size.text_dim(1), Size.text_dim(1) },
     child_layout_axis: Axis = .y,
@@ -856,13 +856,14 @@ pub fn render(self: *UiContext) !void {
     if (self.tooltip_root_node) |node| try self.setupTreeForRender(&shader_inputs, node);
 
     // try rebuilding shaders
-    {
-        self.generic_shader.deinit();
-        self.generic_shader = gfx.Shader.from_files(self.allocator, "ui_generic", .{
+    blk: {
+        const new_shader = gfx.Shader.from_files(self.allocator, "ui_generic", .{
             .vertex = "ui_shader.vert",
             .geometry = "ui_shader.geom",
             .fragment = "ui_shader.frag",
-        });
+        }) catch break :blk;
+        self.generic_shader.deinit();
+        self.generic_shader = new_shader;
     }
 
     // create vertex buffer
@@ -953,7 +954,7 @@ fn addShaderInputsForNode(self: *UiContext, shader_inputs: *std.ArrayList(Shader
         .top_right_uv = vec2{ 0, 0 },
         .top_color = vec4{ 0, 0, 0, 0 },
         .bottom_color = vec4{ 0, 0, 0, 0 },
-        .corner_roundness = node.corner_roundness,
+        .corner_radius = node.corner_radius,
         .border_thickness = node.border_thickness,
         .clip_rect_min = node.clip_rect.min,
         .clip_rect_max = node.clip_rect.max,
@@ -965,7 +966,6 @@ fn addShaderInputsForNode(self: *UiContext, shader_inputs: *std.ArrayList(Shader
         var rect = base_rect;
         rect.top_color = node.bg_color;
         rect.bottom_color = node.bg_color;
-        rect.border_thickness = 0;
         try shader_inputs.append(rect);
 
         const hot_remove_factor = if (node.flags.draw_active_effects) node.active_trans else 0;
@@ -973,13 +973,11 @@ fn addShaderInputsForNode(self: *UiContext, shader_inputs: *std.ArrayList(Shader
 
         if (node.flags.draw_hot_effects) {
             rect = base_rect;
-            rect.border_thickness = 0;
             rect.top_color = vec4{ 1, 1, 1, 0.1 * effective_hot_trans };
             try shader_inputs.append(rect);
         }
         if (node.flags.draw_active_effects) {
             rect = base_rect;
-            rect.border_thickness = 0;
             rect.bottom_color = vec4{ 1, 1, 1, 0.1 * node.active_trans };
             try shader_inputs.append(rect);
         }
@@ -1029,7 +1027,7 @@ fn addShaderInputsForNode(self: *UiContext, shader_inputs: *std.ArrayList(Shader
                 .top_right_uv = quad.points[2].uv,
                 .top_color = node.text_color,
                 .bottom_color = node.text_color,
-                .corner_roundness = 0,
+                .corner_radius = 0,
                 .border_thickness = 0,
                 .clip_rect_min = base_rect.clip_rect_min,
                 .clip_rect_max = base_rect.clip_rect_max,
@@ -1047,7 +1045,7 @@ pub const ShaderInput = extern struct {
     top_right_uv: [2]f32,
     top_color: [4]f32,
     bottom_color: [4]f32,
-    corner_roundness: f32,
+    corner_radius: f32,
     border_thickness: f32,
     clip_rect_min: [2]f32,
     clip_rect_max: [2]f32,
@@ -1063,7 +1061,7 @@ const vertex_shader_src =
     \\layout (location = 3) in vec2 attrib_top_right_uv;
     \\layout (location = 4) in vec4 attrib_top_color;
     \\layout (location = 5) in vec4 attrib_bottom_color;
-    \\layout (location = 6) in float attrib_corner_roundness;
+    \\layout (location = 6) in float attrib_corner_radius;
     \\layout (location = 7) in float attrib_border_thickness;
     \\layout (location = 8) in vec2 attrib_clip_rect_min;
     \\layout (location = 9) in vec2 attrib_clip_rect_max;
@@ -1078,7 +1076,7 @@ const vertex_shader_src =
     \\    vec2 top_right_uv;
     \\    vec4 top_color;
     \\    vec4 bottom_color;
-    \\    float corner_roundness;
+    \\    float corner_radius;
     \\    float border_thickness;
     \\    vec2 rect_size;
     \\    vec2 clip_rect_min;
@@ -1097,7 +1095,7 @@ const vertex_shader_src =
     \\    vs_out.top_right_uv = attrib_top_right_uv;
     \\    vs_out.top_color = attrib_top_color;
     \\    vs_out.bottom_color = attrib_bottom_color;
-    \\    vs_out.corner_roundness = attrib_corner_roundness;
+    \\    vs_out.corner_radius = attrib_corner_radius;
     \\    vs_out.border_thickness = attrib_border_thickness;
     \\    vs_out.rect_size = attrib_top_right_pos - attrib_bottom_left_pos;
     \\    vs_out.clip_rect_min = attrib_clip_rect_min;
@@ -1121,7 +1119,7 @@ const geometry_shader_src =
     \\    vec2 top_right_uv;
     \\    vec4 top_color;
     \\    vec4 bottom_color;
-    \\    float corner_roundness;
+    \\    float corner_radius;
     \\    float border_thickness;
     \\    vec2 rect_size;
     \\    vec2 clip_rect_min;
@@ -1134,7 +1132,7 @@ const geometry_shader_src =
     \\    vec4 color;
     \\    vec2 quad_coords;
     \\    float quad_size_ratio;
-    \\    float corner_roundness;
+    \\    float corner_radius;
     \\    float border_thickness;
     \\    vec2 rect_size;
     \\    vec2 clip_rect_min;
@@ -1155,7 +1153,7 @@ const geometry_shader_src =
     \\    vec2 quad_size = gs_in[0].top_right_pos - gs_in[0].bottom_left_pos;
     \\
     \\    // some things are the same for all verts of the quad
-    \\    gs_out.corner_roundness = gs_in[0].corner_roundness;
+    \\    gs_out.corner_radius = gs_in[0].corner_radius;
     \\    gs_out.border_thickness = gs_in[0].border_thickness;
     \\    gs_out.rect_size = gs_in[0].rect_size;
     \\    gs_out.quad_size_ratio = (quad_size.x / quad_size.y) * (screen_size.x / screen_size.y);
@@ -1210,7 +1208,7 @@ const fragment_shader_src =
     \\    vec2 quad_coords;
     \\
     \\    float quad_size_ratio;
-    \\    float corner_roundness; // 0 is square quad, 1 is full circle
+    \\    float corner_radius; // 0 is square quad, 1 is full circle
     \\
     \\    // these are all in pixels
     \\    float border_thickness;
