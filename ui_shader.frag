@@ -22,16 +22,8 @@ uniform sampler2D icon_atlas;
 out vec4 FragColor;
 
 bool rectContains(vec2 rect_min, vec2 rect_max, vec2 point) {
-    return (rect_min.x <= point.x && point.x <= rect_max.x) &&
-           (rect_min.y <= point.y && point.y <= rect_max.y);
-}
-
-bool insideBorder(vec2 quad_coords) {
-    if (fs_in.border_thickness == 0) return true;
-
-    vec2 coords = abs((quad_coords * 2) - vec2(1));
-    vec2 side_dist = (fs_in.rect_size / 2) * (vec2(1) - coords);
-    return side_dist.x <= fs_in.border_thickness || side_dist.y <= fs_in.border_thickness;
+    return rect_min.x <= point.x && point.x <= rect_max.x &&
+           rect_min.y <= point.y && point.y <= rect_max.y;
 }
 
 float rectSDF(vec2 point, vec2 center, vec2 half_size) {
@@ -48,16 +40,12 @@ float roundedRectSDF(vec2 point, vec2 center, vec2 half_size, float corner_radiu
     return dist;
 }
 
-void main() {
-    // FragColor = fs_in.color;
-    // return;
-    // if (fs_in.rect_size == screen_size) {
-    //     vec2 screen_coord = gl_FragCoord.xy / screen_size;
-    //     FragColor = vec4(screen_coord, 1, 1);
-    //     // FragColor = vec4(1, 1 - screen_coord.x, screen_coord.y, 1);
-    //     return;
-    // }
+// `center`: distance from the edge to the center of the border
+float toBorder(float dist, float center, float border_size) {
+    return abs(dist - center) - border_size / 2;
+}
 
+void main() {
     vec2 pixel_coord = gl_FragCoord.xy;
     vec4 rect_color = fs_in.color;
     vec2 rect_half_size = fs_in.rect_size / 2;
@@ -65,38 +53,27 @@ void main() {
     float corner_radius = fs_in.corner_radius;
     float corner_softness = 1; // TODO: somethings not right about this
     float thickness = fs_in.border_thickness;
+    if (thickness == 0) thickness = max(rect_half_size[0], rect_half_size[1]);
 
-    if (thickness == 0) thickness = (rect_half_size[0] > rect_half_size[1]) ? rect_half_size[0] : rect_half_size[1];
+    FragColor = vec4(0);
+
+    // clipping
+    if (!rectContains(fs_in.clip_rect_min, fs_in.clip_rect_max, pixel_coord)) {
+        return;
+    }
 
     float rect_dist = roundedRectSDF(pixel_coord, rect_center, rect_half_size, corner_radius);
-    if (rect_dist < 0) rect_dist = -rect_dist - thickness;
+    rect_dist = toBorder(rect_dist, -(thickness / 2), thickness);
 
-    FragColor = vec4(
-        rect_color.rgb,
-        rect_color.a * smoothstep(-corner_softness, corner_softness, -rect_dist)
-    );
+    FragColor = rect_color;
+    FragColor.a *= smoothstep(-corner_softness, corner_softness, -rect_dist);
+
+    float tex_alpha = 1;
+    switch (fs_in.which_font) {
+        case 0u: tex_alpha = texture(text_atlas, fs_in.uv).r; break;
+        case 1u: tex_alpha = texture(text_bold_atlas, fs_in.uv).r; break;
+        case 2u: tex_alpha = texture(icon_atlas, fs_in.uv).r; break;
+    }
+    if (fs_in.uv == vec2(0, 0)) tex_alpha = 1;
+    FragColor.a *= tex_alpha;
 }
-
-// void old_main() {
-//     vec2 pixel_coord = gl_FragCoord.xy - vec2(0.5);
-//     if (!rectContains(fs_in.clip_rect_min, fs_in.clip_rect_max, pixel_coord)) {
-//         FragColor = vec4(0);
-//         return;
-//     }
-
-//     vec2 uv = fs_in.uv;
-//     vec4 color = fs_in.color;
-//     vec2 quad_coords = fs_in.quad_coords;
-
-//     float alpha = 1;
-//     switch (fs_in.which_font) {
-//         case 0u: alpha = texture(text_atlas, uv).r; break;
-//         case 1u: alpha = texture(text_bold_atlas, uv).r; break;
-//         case 2u: alpha = texture(icon_atlas, uv).r; break;
-//     }
-//     if (uv == vec2(0, 0)) alpha = 1;
-
-//     if (!insideBorder(quad_coords)) alpha = 0;
-
-//     FragColor = color * vec4(1, 1, 1, alpha);
-// }

@@ -32,54 +32,49 @@ out GS_Out {
 } gs_out;
 
 void main() {
-    vec2 quad_size = gs_in[0].top_right_pos - gs_in[0].bottom_left_pos;
-    vec2 quad_btm_left = gs_in[0].bottom_left_pos;
-    vec2 quad_btm_right = quad_btm_left + vec2(quad_size.x, 0);
-    vec2 quad_top_left = quad_btm_left + vec2(0, quad_size.y);
-    vec2 quad_top_right = gs_in[0].top_right_pos;
+    vec2 btm_left_pos = gs_in[0].bottom_left_pos;
+    vec2 top_right_pos = gs_in[0].top_right_pos;
+    vec2 btm_right_pos = vec2(top_right_pos.x, btm_left_pos.y);
+    vec2 top_left_pos = vec2(btm_left_pos.x, top_right_pos.y);
 
-    vec4 btm_left_coord = vec4((quad_btm_left / screen_size) * 2 - vec2(1), 0, 1);
-    vec4 btm_right_coord = vec4((quad_btm_right / screen_size) * 2 - vec2(1), 0, 1);
-    vec4 top_left_coord = vec4((quad_top_left / screen_size) * 2 - vec2(1), 0, 1);
-    vec4 top_right_coord = vec4((quad_top_right / screen_size) * 2 - vec2(1), 0, 1);
-
-    vec2 uv_range = gs_in[0].top_right_uv - gs_in[0].bottom_left_uv;
-    vec2 uv_btm_right = gs_in[0].bottom_left_uv + vec2(uv_range.x, 0);
-    vec2 uv_top_left = gs_in[0].bottom_left_uv + vec2(0, uv_range.y);
+    vec2 btm_left_uv = gs_in[0].bottom_left_uv;
+    vec2 top_right_uv = gs_in[0].top_right_uv;
+    vec2 btm_right_uv = vec2(top_right_uv.x, btm_left_uv.y);
+    vec2 top_left_uv = vec2(btm_left_uv.x, top_right_uv.y);
 
     // some things are the same for all verts of the quad
-    gs_out.rect_size = quad_size;
-    gs_out.rect_center = quad_btm_left + quad_size / 2;
+    gs_out.rect_size = top_right_pos - btm_left_pos;
+    gs_out.rect_center = (btm_left_pos + top_right_pos) / 2;
     gs_out.corner_radius = gs_in[0].corner_radius;
     gs_out.border_thickness = gs_in[0].border_thickness;
     gs_out.clip_rect_min = gs_in[0].clip_rect_min;
     gs_out.clip_rect_max = gs_in[0].clip_rect_max;
     gs_out.which_font = gs_in[0].which_font;
 
-    gl_Position        = btm_left_coord;
-    gs_out.uv          = gs_in[0].bottom_left_uv;
+    gl_Position        = vec4((btm_left_pos / screen_size) * 2 - vec2(1), 0, 1);
+    gs_out.uv          = btm_left_uv;
     gs_out.color       = gs_in[0].bottom_color;
     EmitVertex();
-    gl_Position        = btm_right_coord;
-    gs_out.uv          = uv_btm_right;
+    gl_Position        = vec4((btm_right_pos / screen_size) * 2 - vec2(1), 0, 1);
+    gs_out.uv          = btm_right_uv;
     gs_out.color       = gs_in[0].bottom_color;
     EmitVertex();
-    gl_Position        = top_right_coord;
-    gs_out.uv          = gs_in[0].top_right_uv;
+    gl_Position        = vec4((top_right_pos / screen_size) * 2 - vec2(1), 0, 1);
+    gs_out.uv          = top_right_uv;
     gs_out.color       = gs_in[0].top_color;
     EmitVertex();
     EndPrimitive();
 
-    gl_Position        = btm_left_coord;
-    gs_out.uv          = gs_in[0].bottom_left_uv;
+    gl_Position        = vec4((btm_left_pos / screen_size) * 2 - vec2(1), 0, 1);
+    gs_out.uv          = btm_left_uv;
     gs_out.color       = gs_in[0].bottom_color;
     EmitVertex();
-    gl_Position        = top_right_coord;
-    gs_out.uv          = gs_in[0].top_right_uv;
+    gl_Position        = vec4((top_right_pos / screen_size) * 2 - vec2(1), 0, 1);
+    gs_out.uv          = top_right_uv;
     gs_out.color       = gs_in[0].top_color;
     EmitVertex();
-    gl_Position        = top_left_coord;
-    gs_out.uv          = uv_top_left;
+    gl_Position        = vec4((top_left_pos / screen_size) * 2 - vec2(1), 0, 1);
+    gs_out.uv          = top_left_uv;
     gs_out.color       = gs_in[0].top_color;
     EmitVertex();
     EndPrimitive();

@@ -244,7 +244,7 @@ pub const Style = struct {
     bg_color: vec4 = vec4{ 0.24, 0.27, 0.31, 1 },
     border_color: vec4 = vec4{ 0.5, 0.5, 0.5, 0.75 },
     text_color: vec4 = vec4{ 1, 1, 1, 1 },
-    corner_radius: f32 = 0,
+    corner_radius: f32 = 2,
     border_thickness: f32 = 2,
     pref_size: [2]Size = .{ Size.text_dim(1), Size.text_dim(1) },
     child_layout_axis: Axis = .y,
@@ -924,6 +924,22 @@ pub fn render(self: *UiContext) !void {
     self.icon_font.texture.bind(2);
     gl.bindVertexArray(inputs_vao);
     gl.drawArrays(gl.POINTS, 0, @intCast(shader_inputs.items.len));
+
+    // try drawing wireframe
+    blk: {
+        const wireframe_shader = gfx.Shader.from_files(self.allocator, "ui_wireframe", .{
+            .vertex = "ui_shader.vert",
+            .geometry = "ui_shader.geom",
+            .fragment = "wireframe_shader.frag",
+        }) catch break :blk;
+        defer wireframe_shader.deinit();
+        wireframe_shader.bind();
+        wireframe_shader.set("screen_size", self.screen_size);
+        gl.polygonMode(gl.FRONT_AND_BACK, gl.LINE);
+        defer gl.polygonMode(gl.FRONT_AND_BACK, gl.FILL);
+        gl.bindVertexArray(inputs_vao);
+        gl.drawArrays(gl.POINTS, 0, @intCast(shader_inputs.items.len));
+    }
 }
 
 fn setupTreeForRender(self: *UiContext, shader_inputs: *std.ArrayList(ShaderInput), root: *Node) !void {
@@ -966,6 +982,7 @@ fn addShaderInputsForNode(self: *UiContext, shader_inputs: *std.ArrayList(Shader
         var rect = base_rect;
         rect.top_color = node.bg_color;
         rect.bottom_color = node.bg_color;
+        rect.border_thickness = 0;
         try shader_inputs.append(rect);
 
         const hot_remove_factor = if (node.flags.draw_active_effects) node.active_trans else 0;

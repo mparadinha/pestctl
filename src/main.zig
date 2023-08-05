@@ -87,8 +87,8 @@ pub fn main() !void {
     defer std.process.argsFree(allocator, arg_slices);
     const cmdline_args = CmdlineArgs.parse(arg_slices);
 
-    var width: u32 = 600;
-    var height: u32 = 800;
+    var width: u32 = 1600;
+    var height: u32 = 900;
     var window = try Window.init(allocator, width, height, "pestctl");
     window.finishSetup();
     defer window.deinit();
@@ -343,33 +343,6 @@ pub fn main() !void {
 
         gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
         try ui.render();
-        {
-            gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-            try test_ui.startBuild(width, height, mouse_pos, &window.event_queue);
-            const bg_node = test_ui.addNode(.{ .draw_background = true }, "bg", .{
-                .pref_size = Size.fill(1, 1),
-            });
-            test_ui.pushParent(bg_node);
-            _ = test_ui.button("button");
-            const addTestNode = (struct {
-                pub fn func(ui_ctx: *UiContext, color: vec4, size: vec2, center: vec2, corner_rad: f32, border: f32) void {
-                    _ = ui_ctx.addNode(.{ .no_id = true, .draw_text = true, .draw_background = true, .floating_x = true, .floating_y = true }, "", .{
-                        .bg_color = color,
-                        .corner_radius = corner_rad,
-                        .border_thickness = border,
-                        .pref_size = [2]Size{ Size.pixels(size[0], 1), Size.pixels(size[1], 1) },
-                        .rel_pos = center,
-                        .rel_pos_placement = .center,
-                    });
-                }
-            }).func;
-            addTestNode(&test_ui, vec4{ 1, 1, 0, 0.5 }, vec2{ 300, 400 }, vec2{ 350, 550 }, 25, 10);
-            addTestNode(&test_ui, vec4{ 1, 0, 1, 0.75 }, vec2{ 400, 200 }, vec2{ 250, 300 }, 20, 10);
-            addTestNode(&test_ui, vec4{ 0, 1, 1, 0.75 }, vec2{ 50, 450 }, vec2{ 300, 400 }, 15, 10);
-            test_ui.popParentAssert(bg_node);
-            test_ui.endBuild(dt);
-            try test_ui.render();
-        }
 
         // special debug commands
         if (window.event_queue.searchAndRemove(.KeyUp, .{
