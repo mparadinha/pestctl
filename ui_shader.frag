@@ -74,6 +74,5 @@ void main() {
         case 1u: tex_alpha = texture(text_bold_atlas, fs_in.uv).r; break;
         case 2u: tex_alpha = texture(icon_atlas, fs_in.uv).r; break;
     }
-    if (fs_in.uv == vec2(0, 0)) tex_alpha = 1;
-    FragColor.a *= tex_alpha;
+    if (fs_in.uv != vec2(0, 0)) FragColor.a = tex_alpha;
 }
