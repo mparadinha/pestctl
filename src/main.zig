@@ -105,8 +105,6 @@ pub fn main() !void {
     defer ui.deinit();
     var dbg_ui_view = try UiContext.DebugView.init(allocator, &window);
     defer dbg_ui_view.deinit();
-    var test_ui = try UiContext.init(allocator, .{}, &window);
-    defer test_ui.deinit();
 
     if (cmdline_args.font_scale) |font_scale| {
         ui.base_style.font_size *= font_scale;

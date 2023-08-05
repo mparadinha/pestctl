@@ -101,9 +101,9 @@ pub fn init(allocator: Allocator, font_opts: FontOptions, window_ptr: *Window) !
     return UiContext{
         .allocator = allocator,
         .generic_shader = gfx.Shader.from_srcs(allocator, "ui_generic", .{
-            .vertex = vertex_shader_src,
-            .geometry = geometry_shader_src,
-            .fragment = fragment_shader_src,
+            .vertex = @embedFile("ui/shader.vert"),
+            .geometry = @embedFile("ui/shader.geom"),
+            .fragment = @embedFile("ui/shader.frag"),
         }),
         .font = try Font.from_ttf(allocator, font_opts.font_path),
         .font_bold = try Font.from_ttf(allocator, font_opts.bold_font_path),
@@ -244,7 +244,7 @@ pub const Style = struct {
     bg_color: vec4 = vec4{ 0.24, 0.27, 0.31, 1 },
     border_color: vec4 = vec4{ 0.5, 0.5, 0.5, 0.75 },
     text_color: vec4 = vec4{ 1, 1, 1, 1 },
-    corner_radius: f32 = 2,
+    corner_radius: f32 = 0,
     border_thickness: f32 = 2,
     pref_size: [2]Size = .{ Size.text_dim(1), Size.text_dim(1) },
     child_layout_axis: Axis = .y,
@@ -855,17 +855,6 @@ pub fn render(self: *UiContext) !void {
     if (self.ctx_menu_root_node) |node| try self.setupTreeForRender(&shader_inputs, node);
     if (self.tooltip_root_node) |node| try self.setupTreeForRender(&shader_inputs, node);
 
-    // try rebuilding shaders
-    blk: {
-        const new_shader = gfx.Shader.from_files(self.allocator, "ui_generic", .{
-            .vertex = "ui_shader.vert",
-            .geometry = "ui_shader.geom",
-            .fragment = "ui_shader.frag",
-        }) catch break :blk;
-        self.generic_shader.deinit();
-        self.generic_shader = new_shader;
-    }
-
     // create vertex buffer
     var inputs_vao: u32 = 0;
     gl.genVertexArrays(1, &inputs_vao);
@@ -924,22 +913,6 @@ pub fn render(self: *UiContext) !void {
     self.icon_font.texture.bind(2);
     gl.bindVertexArray(inputs_vao);
     gl.drawArrays(gl.POINTS, 0, @intCast(shader_inputs.items.len));
-
-    // try drawing wireframe
-    blk: {
-        const wireframe_shader = gfx.Shader.from_files(self.allocator, "ui_wireframe", .{
-            .vertex = "ui_shader.vert",
-            .geometry = "ui_shader.geom",
-            .fragment = "wireframe_shader.frag",
-        }) catch break :blk;
-        defer wireframe_shader.deinit();
-        wireframe_shader.bind();
-        wireframe_shader.set("screen_size", self.screen_size);
-        gl.polygonMode(gl.FRONT_AND_BACK, gl.LINE);
-        defer gl.polygonMode(gl.FRONT_AND_BACK, gl.FILL);
-        gl.bindVertexArray(inputs_vao);
-        gl.drawArrays(gl.POINTS, 0, @intCast(shader_inputs.items.len));
-    }
 }
 
 fn setupTreeForRender(self: *UiContext, shader_inputs: *std.ArrayList(ShaderInput), root: *Node) !void {
@@ -1068,219 +1041,6 @@ pub const ShaderInput = extern struct {
     clip_rect_max: [2]f32,
     which_font: u32,
 };
-
-const vertex_shader_src =
-    \\#version 330 core
-    \\
-    \\layout (location = 0) in vec2 attrib_bottom_left_pos;
-    \\layout (location = 1) in vec2 attrib_top_right_pos;
-    \\layout (location = 2) in vec2 attrib_bottom_left_uv;
-    \\layout (location = 3) in vec2 attrib_top_right_uv;
-    \\layout (location = 4) in vec4 attrib_top_color;
-    \\layout (location = 5) in vec4 attrib_bottom_color;
-    \\layout (location = 6) in float attrib_corner_radius;
-    \\layout (location = 7) in float attrib_border_thickness;
-    \\layout (location = 8) in vec2 attrib_clip_rect_min;
-    \\layout (location = 9) in vec2 attrib_clip_rect_max;
-    \\layout (location = 10) in uint attrib_which_font;
-    \\
-    \\uniform vec2 screen_size; // in pixels
-    \\
-    \\out VS_Out {
-    \\    vec2 bottom_left_pos;
-    \\    vec2 top_right_pos;
-    \\    vec2 bottom_left_uv;
-    \\    vec2 top_right_uv;
-    \\    vec4 top_color;
-    \\    vec4 bottom_color;
-    \\    float corner_radius;
-    \\    float border_thickness;
-    \\    vec2 rect_size;
-    \\    vec2 clip_rect_min;
-    \\    vec2 clip_rect_max;
-    \\    uint which_font;
-    \\} vs_out;
-    \\
-    \\void main() {
-    \\    // the input position coordinates come in pixel screen space (which goes from
-    \\    // (0, 0) at the bottom left of the screen, to (screen_size.x, screen_size.y) at
-    \\    // the top right of the screen) so we need to transform them into NDC (which goes
-    \\    // from (-1, -1) to (1, 1))
-    \\    vs_out.bottom_left_pos = (attrib_bottom_left_pos / screen_size) * 2 - vec2(1);
-    \\    vs_out.top_right_pos = (attrib_top_right_pos / screen_size) * 2 - vec2(1);
-    \\    vs_out.bottom_left_uv = attrib_bottom_left_uv;
-    \\    vs_out.top_right_uv = attrib_top_right_uv;
-    \\    vs_out.top_color = attrib_top_color;
-    \\    vs_out.bottom_color = attrib_bottom_color;
-    \\    vs_out.corner_radius = attrib_corner_radius;
-    \\    vs_out.border_thickness = attrib_border_thickness;
-    \\    vs_out.rect_size = attrib_top_right_pos - attrib_bottom_left_pos;
-    \\    vs_out.clip_rect_min = attrib_clip_rect_min;
-    \\    vs_out.clip_rect_max = attrib_clip_rect_max;
-    \\    vs_out.which_font = attrib_which_font;
-    \\}
-    \\
-;
-const geometry_shader_src =
-    \\#version 330 core
-    \\
-    \\layout (points) in;
-    \\layout (triangle_strip, max_vertices = 6) out;
-    \\
-    \\uniform vec2 screen_size; // in pixels
-    \\
-    \\in VS_Out {
-    \\    vec2 bottom_left_pos;
-    \\    vec2 top_right_pos;
-    \\    vec2 bottom_left_uv;
-    \\    vec2 top_right_uv;
-    \\    vec4 top_color;
-    \\    vec4 bottom_color;
-    \\    float corner_radius;
-    \\    float border_thickness;
-    \\    vec2 rect_size;
-    \\    vec2 clip_rect_min;
-    \\    vec2 clip_rect_max;
-    \\    uint which_font;
-    \\} gs_in[];
-    \\
-    \\out GS_Out {
-    \\    vec2 uv;
-    \\    vec4 color;
-    \\    vec2 quad_coords;
-    \\    float quad_size_ratio;
-    \\    float corner_radius;
-    \\    float border_thickness;
-    \\    vec2 rect_size;
-    \\    vec2 clip_rect_min;
-    \\    vec2 clip_rect_max;
-    \\    flat uint which_font;
-    \\} gs_out;
-    \\
-    \\void main() {
-    \\    vec4 bottom_left_pos  = vec4(gs_in[0].bottom_left_pos, 0, 1);
-    \\    vec2 bottom_left_uv   = gs_in[0].bottom_left_uv;
-    \\    vec4 top_right_pos    = vec4(gs_in[0].top_right_pos, 0, 1);
-    \\    vec2 top_right_uv     = gs_in[0].top_right_uv;
-    \\    vec4 bottom_right_pos = vec4(top_right_pos.x, bottom_left_pos.y, 0, 1);
-    \\    vec2 bottom_right_uv  = vec2(top_right_uv.x,  bottom_left_uv.y);
-    \\    vec4 top_left_pos     = vec4(bottom_left_pos.x, top_right_pos.y, 0, 1);
-    \\    vec2 top_left_uv      = vec2(bottom_left_uv.x,  top_right_uv.y);
-    \\
-    \\    vec2 quad_size = gs_in[0].top_right_pos - gs_in[0].bottom_left_pos;
-    \\
-    \\    // some things are the same for all verts of the quad
-    \\    gs_out.corner_radius = gs_in[0].corner_radius;
-    \\    gs_out.border_thickness = gs_in[0].border_thickness;
-    \\    gs_out.rect_size = gs_in[0].rect_size;
-    \\    gs_out.quad_size_ratio = (quad_size.x / quad_size.y) * (screen_size.x / screen_size.y);
-    \\    gs_out.clip_rect_min = gs_in[0].clip_rect_min;
-    \\    gs_out.clip_rect_max = gs_in[0].clip_rect_max;
-    \\    gs_out.which_font = gs_in[0].which_font;
-    \\
-    \\    gl_Position        = bottom_left_pos;
-    \\    gs_out.uv          = bottom_left_uv;
-    \\    gs_out.color       = gs_in[0].bottom_color;
-    \\    gs_out.quad_coords = vec2(0, 0);
-    \\    EmitVertex();
-    \\    gl_Position        = bottom_right_pos;
-    \\    gs_out.uv          = bottom_right_uv;
-    \\    gs_out.color       = gs_in[0].bottom_color;
-    \\    gs_out.quad_coords = vec2(1, 0);
-    \\    EmitVertex();
-    \\    gl_Position        = top_right_pos;
-    \\    gs_out.uv          = top_right_uv;
-    \\    gs_out.color       = gs_in[0].top_color;
-    \\    gs_out.quad_coords = vec2(1, 1);
-    \\    EmitVertex();
-    \\    EndPrimitive();
-    \\
-    \\    gl_Position        = bottom_left_pos;
-    \\    gs_out.uv          = bottom_left_uv;
-    \\    gs_out.color       = gs_in[0].bottom_color;
-    \\    gs_out.quad_coords = vec2(0, 0);
-    \\    EmitVertex();
-    \\    gl_Position        = top_right_pos;
-    \\    gs_out.uv          = top_right_uv;
-    \\    gs_out.color       = gs_in[0].top_color;
-    \\    gs_out.quad_coords = vec2(1, 1);
-    \\    EmitVertex();
-    \\    gl_Position        = top_left_pos;
-    \\    gs_out.uv          = top_left_uv;
-    \\    gs_out.color       = gs_in[0].top_color;
-    \\    gs_out.quad_coords = vec2(0, 1);
-    \\    EmitVertex();
-    \\    EndPrimitive();
-    \\}
-    \\
-;
-const fragment_shader_src =
-    \\#version 330 core
-    \\
-    \\in vec4 gl_FragCoord;
-    \\
-    \\in GS_Out {
-    \\    vec2 uv;
-    \\    vec4 color;
-    \\    vec2 quad_coords;
-    \\
-    \\    float quad_size_ratio;
-    \\    float corner_radius; // 0 is square quad, 1 is full circle
-    \\
-    \\    // these are all in pixels
-    \\    float border_thickness;
-    \\    vec2 rect_size;
-    \\    vec2 clip_rect_min;
-    \\    vec2 clip_rect_max;
-    \\
-    \\    flat uint which_font;
-    \\} fs_in;
-    \\
-    \\uniform vec2 screen_size; // in pixels
-    \\uniform sampler2D text_atlas;
-    \\uniform sampler2D text_bold_atlas;
-    \\uniform sampler2D icon_atlas;
-    \\
-    \\out vec4 FragColor;
-    \\
-    \\bool rectContains(vec2 rect_min, vec2 rect_max, vec2 point) {
-    \\    return (rect_min.x <= point.x && point.x <= rect_max.x) &&
-    \\           (rect_min.y <= point.y && point.y <= rect_max.y);
-    \\}
-    \\
-    \\bool insideBorder(vec2 quad_coords) {
-    \\    if (fs_in.border_thickness == 0) return true;
-    \\
-    \\    vec2 coords = abs((quad_coords * 2) - vec2(1));
-    \\    vec2 side_dist = (fs_in.rect_size / 2) * (vec2(1) - coords);
-    \\    return side_dist.x <= fs_in.border_thickness || side_dist.y <= fs_in.border_thickness;
-    \\}
-    \\
-    \\void main() {
-    \\    vec2 pixel_coord = gl_FragCoord.xy - vec2(0.5);
-    \\    if (!rectContains(fs_in.clip_rect_min, fs_in.clip_rect_max, pixel_coord)) {
-    \\        FragColor = vec4(0);
-    \\        return;
-    \\    }
-    \\
-    \\    vec2 uv = fs_in.uv;
-    \\    vec4 color = fs_in.color;
-    \\    vec2 quad_coords = fs_in.quad_coords;
-    \\
-    \\    float alpha = 1;
-    \\    switch (fs_in.which_font) {
-    \\        case 0u: alpha = texture(text_atlas, uv).r; break;
-    \\        case 1u: alpha = texture(text_bold_atlas, uv).r; break;
-    \\        case 2u: alpha = texture(icon_atlas, uv).r; break;
-    \\    }
-    \\    if (uv == vec2(0, 0)) alpha = 1;
-    \\
-    \\    if (!insideBorder(quad_coords)) alpha = 0;
-    \\
-    \\    FragColor = color * vec4(1, 1, 1, alpha);
-    \\}
-    \\
-;
 
 fn solveIndependentSizes(self: *UiContext, node: *Node) void {
     const work_fn = solveIndependentSizesWorkFn;
