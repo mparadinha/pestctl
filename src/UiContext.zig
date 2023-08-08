@@ -187,7 +187,7 @@ pub const Node = struct {
     bg_color: vec4,
     border_color: vec4,
     text_color: vec4,
-    corner_radius: f32,
+    corner_radii: [4]f32, // order is left-to-right, top-to-bottom
     border_thickness: f32,
     pref_size: [2]Size,
     child_layout_axis: Axis,
@@ -244,7 +244,7 @@ pub const Style = struct {
     bg_color: vec4 = vec4{ 0.24, 0.27, 0.31, 1 },
     border_color: vec4 = vec4{ 0.5, 0.5, 0.5, 0.75 },
     text_color: vec4 = vec4{ 1, 1, 1, 1 },
-    corner_radius: f32 = 0,
+    corner_radii: [4]f32 = [4]f32{ 0, 0, 0, 0 },
     border_thickness: f32 = 2,
     pref_size: [2]Size = .{ Size.text_dim(1), Size.text_dim(1) },
     child_layout_axis: Axis = .y,
@@ -937,13 +937,18 @@ fn addShaderInputsForNode(self: *UiContext, shader_inputs: *std.ArrayList(Shader
     // where llvm emits a `vmovaps` on something that *isn't* 32 byte aligned
     // which triggers a segfault when initing the vec4's
     const base_rect align(32) = ShaderInput{
-        .bottom_left_pos = node.rect.min,
+        .btm_left_pos = node.rect.min,
         .top_right_pos = node.rect.max,
-        .bottom_left_uv = vec2{ 0, 0 },
+        .btm_left_uv = vec2{ 0, 0 },
         .top_right_uv = vec2{ 0, 0 },
-        .top_color = vec4{ 0, 0, 0, 0 },
-        .bottom_color = vec4{ 0, 0, 0, 0 },
-        .corner_radius = node.corner_radius,
+        .top_left_color = vec4{ 0, 0, 0, 0 },
+        .btm_left_color = vec4{ 0, 0, 0, 0 },
+        .top_right_color = vec4{ 0, 0, 0, 0 },
+        .btm_right_color = vec4{ 0, 0, 0, 0 },
+        .top_left_corner_radius = node.corner_radii[0],
+        .btm_left_corner_radius = node.corner_radii[2],
+        .top_right_corner_radius = node.corner_radii[1],
+        .btm_right_corner_radius = node.corner_radii[3],
         .border_thickness = node.border_thickness,
         .clip_rect_min = node.clip_rect.min,
         .clip_rect_max = node.clip_rect.max,
@@ -953,8 +958,10 @@ fn addShaderInputsForNode(self: *UiContext, shader_inputs: *std.ArrayList(Shader
     // draw background
     if (node.flags.draw_background) {
         var rect = base_rect;
-        rect.top_color = node.bg_color;
-        rect.bottom_color = node.bg_color;
+        rect.top_left_color = node.bg_color;
+        rect.btm_left_color = node.bg_color;
+        rect.top_right_color = node.bg_color;
+        rect.btm_right_color = node.bg_color;
         rect.border_thickness = 0;
         try shader_inputs.append(rect);
 
@@ -963,12 +970,16 @@ fn addShaderInputsForNode(self: *UiContext, shader_inputs: *std.ArrayList(Shader
 
         if (node.flags.draw_hot_effects) {
             rect = base_rect;
-            rect.top_color = vec4{ 1, 1, 1, 0.1 * effective_hot_trans };
+            const top_color = vec4{ 1, 1, 1, 0.1 * effective_hot_trans };
+            rect.top_left_color = top_color;
+            rect.top_right_color = top_color;
             try shader_inputs.append(rect);
         }
         if (node.flags.draw_active_effects) {
             rect = base_rect;
-            rect.bottom_color = vec4{ 1, 1, 1, 0.1 * node.active_trans };
+            const btm_color = vec4{ 1, 1, 1, 0.1 * node.active_trans };
+            rect.btm_left_color = btm_color;
+            rect.btm_right_color = btm_color;
             try shader_inputs.append(rect);
         }
     }
@@ -976,14 +987,20 @@ fn addShaderInputsForNode(self: *UiContext, shader_inputs: *std.ArrayList(Shader
     // draw border
     if (node.flags.draw_border) {
         var rect = base_rect;
-        rect.top_color = node.border_color;
-        rect.bottom_color = node.border_color;
+        rect.top_left_color = node.border_color;
+        rect.btm_left_color = node.border_color;
+        rect.top_right_color = node.border_color;
+        rect.btm_right_color = node.border_color;
         try shader_inputs.append(rect);
 
         if (node.flags.draw_hot_effects) {
             rect = base_rect;
-            rect.top_color = vec4{ 1, 1, 1, 0.2 * node.hot_trans };
-            rect.bottom_color = vec4{ 1, 1, 1, 0.2 * node.hot_trans };
+            const top_color = vec4{ 1, 1, 1, 0.2 * node.hot_trans };
+            rect.top_left_color = top_color;
+            rect.top_right_color = top_color;
+            const btm_color = vec4{ 1, 1, 1, 0.2 * node.hot_trans };
+            rect.btm_left_color = btm_color;
+            rect.btm_right_color = btm_color;
             try shader_inputs.append(rect);
         }
     }
@@ -1011,13 +1028,18 @@ fn addShaderInputsForNode(self: *UiContext, shader_inputs: *std.ArrayList(Shader
             quad_rect.max += text_pos;
 
             try shader_inputs.append(.{
-                .bottom_left_pos = quad_rect.min,
+                .btm_left_pos = quad_rect.min,
                 .top_right_pos = quad_rect.max,
-                .bottom_left_uv = quad.points[0].uv,
+                .btm_left_uv = quad.points[0].uv,
                 .top_right_uv = quad.points[2].uv,
-                .top_color = node.text_color,
-                .bottom_color = node.text_color,
-                .corner_radius = 0,
+                .top_left_color = node.text_color,
+                .btm_left_color = node.text_color,
+                .top_right_color = node.text_color,
+                .btm_right_color = node.text_color,
+                .top_left_corner_radius = 0,
+                .btm_left_corner_radius = 0,
+                .top_right_corner_radius = 0,
+                .btm_right_corner_radius = 0,
                 .border_thickness = 0,
                 .clip_rect_min = base_rect.clip_rect_min,
                 .clip_rect_max = base_rect.clip_rect_max,
@@ -1029,13 +1051,18 @@ fn addShaderInputsForNode(self: *UiContext, shader_inputs: *std.ArrayList(Shader
 
 // this struct must have the exact layout expected by the shader
 pub const ShaderInput = extern struct {
-    bottom_left_pos: [2]f32,
+    btm_left_pos: [2]f32,
     top_right_pos: [2]f32,
-    bottom_left_uv: [2]f32,
+    btm_left_uv: [2]f32,
     top_right_uv: [2]f32,
-    top_color: [4]f32,
-    bottom_color: [4]f32,
-    corner_radius: f32,
+    top_left_color: [4]f32,
+    btm_left_color: [4]f32,
+    top_right_color: [4]f32,
+    btm_right_color: [4]f32,
+    top_left_corner_radius: f32,
+    btm_left_corner_radius: f32,
+    top_right_corner_radius: f32,
+    btm_right_corner_radius: f32,
     border_thickness: f32,
     clip_rect_min: [2]f32,
     clip_rect_max: [2]f32,
@@ -1828,7 +1855,7 @@ pub const DebugView = struct {
                         });
                     },
                     []const u8 => self.ui.labelF("{s}=\"{s}\"", .{ name, value }),
-                    f32, vec2, vec4 => self.ui.labelF("{s}={d}", .{ name, value }),
+                    f32, [2]f32, [3]f32, [4]f32, vec2, vec3, vec4 => self.ui.labelF("{s}={d}", .{ name, value }),
                     else => self.ui.labelF("{s}={any}", .{ name, value }),
                 }
             }

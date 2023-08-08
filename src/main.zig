@@ -1597,13 +1597,18 @@ fn FuzzySearchOptions(comptime Ctx: type, comptime max_slots: usize) type {
                 quad_rect.max += text_pos;
 
                 try shader_inputs.append(.{
-                    .bottom_left_pos = quad_rect.min,
+                    .btm_left_pos = quad_rect.min,
                     .top_right_pos = quad_rect.max,
-                    .bottom_left_uv = quad.points[0].uv,
+                    .btm_left_uv = quad.points[0].uv,
                     .top_right_uv = quad.points[2].uv,
-                    .top_color = text_color,
-                    .bottom_color = text_color,
-                    .corner_radius = 0,
+                    .top_left_color = text_color,
+                    .btm_left_color = text_color,
+                    .top_right_color = text_color,
+                    .btm_right_color = text_color,
+                    .top_left_corner_radius = 0,
+                    .btm_left_corner_radius = 0,
+                    .top_right_corner_radius = 0,
+                    .btm_right_corner_radius = 0,
                     .border_thickness = 0,
                     .clip_rect_min = node.clip_rect.min,
                     .clip_rect_max = node.clip_rect.max,
