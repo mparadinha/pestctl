@@ -4,12 +4,12 @@
 
     .dependencies = .{
         .libglfw3 = .{
-            .url = "https://github.com/mparadinha/glfw/archive/0d7f577f228aabecdd40f04cb0bcd106961db03c.tar.gz",
-            .hash = "12201f249b14973ab24301a7c612620bbe89484cffcbb349d9ab2ce08d54c7b136ee",
+            .url = "https://github.com/mparadinha/glfw/archive/refs/heads/master.tar.gz",
+            .hash = "1220bf9a30c112888d439f82bf7862dccb46c84c855ad4193c4b0adb7cf7c719054a",
         },
         .Zydis = .{
-            .url = "https://github.com/mparadinha/Zydis/archive/3790bc16c230855e3eb0741bf53dbef8bbf05b26.tar.gz",
-            .hash = "1220d9c8f99bbc6e1b1c8e083c66c315f61e2a5a27d4bd230a6468baf3f0cfc2510d",
+            .url = "https://github.com/mparadinha/Zydis/archive/refs/heads/master.tar.gz",
+            .hash = "12207e7a5ec3dd9c02be9efc5969927630b6bf49d603504948853fb294c3209bfc3d",
         },
     },
 }

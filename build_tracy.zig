@@ -9,9 +9,9 @@ pub fn link(b: *Builder, step: *LibExeObjStep, opt_path: ?[]const u8) void {
     step_options.addOption(bool, "tracy_enabled", opt_path != null);
 
     if (opt_path) |path| {
-        step.addIncludePath(path);
+        step.addIncludePath(.{ .path = path });
         const tracy_client_source_path = std.fs.path.join(b.allocator, &.{ path, "TracyClient.cpp" }) catch unreachable;
-        step.addCSourceFile(tracy_client_source_path, &[_][]const u8{
+        step.addCSourceFiles(&.{tracy_client_source_path}, &.{
             "-DTRACY_ENABLE",
             // MinGW doesn't have all the newfangled windows features,
             // so we need to pretend to have an older windows version.

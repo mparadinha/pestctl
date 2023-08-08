@@ -20,8 +20,8 @@ pub fn build(b: *std.build.Builder) void {
     exe.linkLibrary(glfw_dep.artifact("glfw3"));
     exe.linkLibrary(zydis_dep.artifact("Zydis"));
     { // stb libs
-        exe.addIncludePath("src");
-        exe.addCSourceFile("src/stb_impls.c", &[_][]u8{""});
+        exe.addIncludePath(.{ .path = "src" });
+        exe.addCSourceFiles(&.{"src/stb_impls.c"}, &.{""});
     }
     { // tracy
         _ = tracy.link(b, exe, if (use_tracy) "tracy-0.8.2" else null);

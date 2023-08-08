@@ -15,8 +15,7 @@ pub const vec4 = @Vector(4, f32);
 pub const uvec2 = @Vector(2, u32);
 
 pub fn splat(comptime VecType: type, scalar: std.meta.Child(VecType)) VecType {
-    const info = @typeInfo(VecType).Vector;
-    return @splat(info.len, @as(info.child, scalar));
+    return @splat(scalar);
 }
 
 pub fn zeroes(comptime VecType: type) VecType {
