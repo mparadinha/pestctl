@@ -164,6 +164,7 @@ pub const Flags = packed struct {
     draw_hot_effects: bool = false,
     draw_active_effects: bool = false,
 
+    // node is not taken into account in the normal layout
     floating_x: bool = false,
     floating_y: bool = false,
 
@@ -188,6 +189,7 @@ pub const Node = struct {
     border_color: vec4,
     text_color: vec4,
     corner_radii: [4]f32, // order is left-to-right, top-to-bottom
+    edge_softness: f32,
     border_thickness: f32,
     pref_size: [2]Size,
     child_layout_axis: Axis,
@@ -245,6 +247,7 @@ pub const Style = struct {
     border_color: vec4 = vec4{ 0.5, 0.5, 0.5, 0.75 },
     text_color: vec4 = vec4{ 1, 1, 1, 1 },
     corner_radii: [4]f32 = [4]f32{ 0, 0, 0, 0 },
+    edge_softness: f32 = 1,
     border_thickness: f32 = 2,
     pref_size: [2]Size = .{ Size.text_dim(1), Size.text_dim(1) },
     child_layout_axis: Axis = .y,
@@ -293,6 +296,10 @@ pub const Size = union(enum) {
             .x => [2]Size{ Size.percent(1, 0), Size.by_children(1) },
             .y => [2]Size{ Size.by_children(1), Size.percent(1, 0) },
         };
+    }
+
+    pub fn pixelsExact(x: f32, y: f32) [2]Size {
+        return [2]Size{ Size.pixels(x, 1), Size.pixels(y, 1) };
     }
 
     pub fn fromRect(rect: Rect) [2]Size {
@@ -640,6 +647,8 @@ pub fn startBuild(self: *UiContext, screen_w: u32, screen_h: u32, mouse_pos: vec
     self.node_keys_this_frame.clearRetainingCapacity();
 
     // remove the `no_id` nodes from the hash table before starting this new frame
+    // TODO: is this necessary or just a memory saving thing? because if it's the
+    //       latter, these nodes should get yetted on the next frame anyway...
     var node_iter = self.node_table.valueIterator();
     while (node_iter.next()) |node| {
         if (node.flags.no_id) try node_iter.removeCurrent();
@@ -933,27 +942,7 @@ fn setupTreeForRender(self: *UiContext, shader_inputs: *std.ArrayList(ShaderInpu
 fn addShaderInputsForNode(self: *UiContext, shader_inputs: *std.ArrayList(ShaderInput), node: *Node) !void {
     if (node.custom_draw_fn) |draw_fn| return draw_fn(self, shader_inputs, node);
 
-    // note: the `align(32)` is to side step a zig bug (prob this one https://github.com/ziglang/zig/issues/11154)
-    // where llvm emits a `vmovaps` on something that *isn't* 32 byte aligned
-    // which triggers a segfault when initing the vec4's
-    const base_rect align(32) = ShaderInput{
-        .btm_left_pos = node.rect.min,
-        .top_right_pos = node.rect.max,
-        .btm_left_uv = vec2{ 0, 0 },
-        .top_right_uv = vec2{ 0, 0 },
-        .top_left_color = vec4{ 0, 0, 0, 0 },
-        .btm_left_color = vec4{ 0, 0, 0, 0 },
-        .top_right_color = vec4{ 0, 0, 0, 0 },
-        .btm_right_color = vec4{ 0, 0, 0, 0 },
-        .top_left_corner_radius = node.corner_radii[0],
-        .btm_left_corner_radius = node.corner_radii[2],
-        .top_right_corner_radius = node.corner_radii[1],
-        .btm_right_corner_radius = node.corner_radii[3],
-        .border_thickness = node.border_thickness,
-        .clip_rect_min = node.clip_rect.min,
-        .clip_rect_max = node.clip_rect.max,
-        .which_font = @intFromEnum(node.font_type),
-    };
+    const base_rect = ShaderInput.fromNode(node);
 
     // draw background
     if (node.flags.draw_background) {
@@ -1036,10 +1025,8 @@ fn addShaderInputsForNode(self: *UiContext, shader_inputs: *std.ArrayList(Shader
                 .btm_left_color = node.text_color,
                 .top_right_color = node.text_color,
                 .btm_right_color = node.text_color,
-                .top_left_corner_radius = 0,
-                .btm_left_corner_radius = 0,
-                .top_right_corner_radius = 0,
-                .btm_right_corner_radius = 0,
+                .corner_radii = [4]f32{ 0, 0, 0, 0 },
+                .edge_softness = 0,
                 .border_thickness = 0,
                 .clip_rect_min = base_rect.clip_rect_min,
                 .clip_rect_max = base_rect.clip_rect_max,
@@ -1059,14 +1046,35 @@ pub const ShaderInput = extern struct {
     btm_left_color: [4]f32,
     top_right_color: [4]f32,
     btm_right_color: [4]f32,
-    top_left_corner_radius: f32,
-    btm_left_corner_radius: f32,
-    top_right_corner_radius: f32,
-    btm_right_corner_radius: f32,
+    corner_radii: [4]f32,
+    edge_softness: f32,
     border_thickness: f32,
     clip_rect_min: [2]f32,
     clip_rect_max: [2]f32,
     which_font: u32,
+
+    pub fn fromNode(node: *const Node) ShaderInput {
+        // note: the `align(32)` is to side step a zig bug (prob this one https://github.com/ziglang/zig/issues/11154)
+        // where llvm emits a `vmovaps` on something that *isn't* 32 byte aligned
+        // which triggers a segfault when initing the vec4's
+        const rect align(32) = ShaderInput{
+            .btm_left_pos = node.rect.min,
+            .top_right_pos = node.rect.max,
+            .btm_left_uv = vec2{ 0, 0 },
+            .top_right_uv = vec2{ 0, 0 },
+            .top_left_color = vec4{ 0, 0, 0, 0 },
+            .btm_left_color = vec4{ 0, 0, 0, 0 },
+            .top_right_color = vec4{ 0, 0, 0, 0 },
+            .btm_right_color = vec4{ 0, 0, 0, 0 },
+            .corner_radii = node.corner_radii,
+            .edge_softness = node.edge_softness,
+            .border_thickness = node.border_thickness,
+            .clip_rect_min = node.clip_rect.min,
+            .clip_rect_max = node.clip_rect.max,
+            .which_font = @intFromEnum(node.font_type),
+        };
+        return rect;
+    }
 };
 
 fn solveIndependentSizes(self: *UiContext, node: *Node) void {
@@ -1713,6 +1721,7 @@ pub const DebugView = struct {
     active: bool,
     node_list_idx: usize,
     node_query_pos: ?vec2,
+    anchor_right: bool,
 
     pub fn init(allocator: Allocator, window_ptr: *Window) !DebugView {
         return DebugView{
@@ -1722,6 +1731,7 @@ pub const DebugView = struct {
             .active = false,
             .node_list_idx = 0,
             .node_query_pos = null,
+            .anchor_right = false,
         };
     }
 
@@ -1744,6 +1754,12 @@ pub const DebugView = struct {
             self.node_query_pos = if (self.node_query_pos) |_| null else mouse_pos;
             _ = events.removeAt(ev_idx);
         }
+        // ctrl+shift+left/right to anchor left/right
+        const ctrl_shift = Window.InputEvent.Modifiers{ .shift = true, .control = true };
+        if (events.searchAndRemove(.KeyDown, .{ .key = c.GLFW_KEY_LEFT, .mods = ctrl_shift }))
+            self.anchor_right = false;
+        if (events.searchAndRemove(.KeyDown, .{ .key = c.GLFW_KEY_RIGHT, .mods = ctrl_shift }))
+            self.anchor_right = true;
         // TODO: change the top_left position for the dbg_ui_view?
 
         // grab a list of all the nodes that overlap with the query position
@@ -1784,6 +1800,7 @@ pub const DebugView = struct {
 
         self.ui.pushStyle(.{ .font_size = 16 });
         self.ui.root_node.?.child_layout_axis = .x;
+        if (self.anchor_right) self.ui.spacer(.x, Size.percent(1, 0));
         {
             const left_bg_node = self.ui.addNode(.{
                 .no_id = true,

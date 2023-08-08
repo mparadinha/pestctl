@@ -17,11 +17,9 @@ in VS_Out {
     vec4 top_right_color;
     vec4 btm_right_color;
 
-    float top_left_corner_radius;
-    float btm_left_corner_radius;
-    float top_right_corner_radius;
-    float btm_right_corner_radius;
+    vec4 corner_radii;
 
+    float edge_softness;
     float border_thickness;
 
     vec2 clip_rect_min;
@@ -35,7 +33,8 @@ out GS_Out {
     vec4 color;
     flat vec2 rect_size;
     flat vec2 rect_center;
-    flat float corner_radii[4];
+    flat vec4 corner_radii;
+    flat float edge_softness;
     flat float border_thickness;
     flat vec2 clip_rect_min;
     flat vec2 clip_rect_max;
@@ -56,12 +55,8 @@ void main() {
     // some things are the same for all verts of the quad
     gs_out.rect_size = top_right_pos - btm_left_pos;
     gs_out.rect_center = (btm_left_pos + top_right_pos) / 2;
-    gs_out.corner_radii = float[4](
-        gs_in[0].top_left_corner_radius,
-        gs_in[0].top_right_corner_radius,
-        gs_in[0].btm_left_corner_radius,
-        gs_in[0].btm_right_corner_radius
-    );
+    gs_out.corner_radii = gs_in[0].corner_radii;
+    gs_out.edge_softness = gs_in[0].edge_softness;
     gs_out.border_thickness = gs_in[0].border_thickness;
     gs_out.clip_rect_min = gs_in[0].clip_rect_min;
     gs_out.clip_rect_max = gs_in[0].clip_rect_max;

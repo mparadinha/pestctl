@@ -4,6 +4,7 @@ const std = @import("std");
 const c = @import("../c.zig");
 const math = @import("../math.zig");
 const vec2 = math.vec2;
+const vec3 = math.vec3;
 const vec4 = math.vec4;
 
 const UiContext = @import("../UiContext.zig");
@@ -320,6 +321,7 @@ pub fn textInputRaw(self: *UiContext, hash_string: []const u8, buffer: []u8, buf
     const first_time = !self.node_table.hasKey(hash_string);
 
     const display_str = buffer[0..buf_len.*];
+    // TODO: what is the point of writing this zero byte? the search/match code crashes when I remove it
     buffer[buf_len.*] = 0;
 
     // note: the node cursor/mark is in bytes into buffer
@@ -515,6 +517,221 @@ pub fn textInputRaw(self: *UiContext, hash_string: []const u8, buffer: []u8, buf
     }
 
     return sig;
+}
+
+pub fn colorPicker(ui: *UiContext, color: *vec4) void {
+    const square_size = 250;
+
+    var hsv = RGBtoHSV(color.*);
+
+    const background_node = ui.addNode(.{
+        .draw_border = true,
+        .draw_background = true,
+        .no_id = true,
+    }, "", .{
+        .pref_size = [2]Size{ Size.by_children(1), Size.by_children(1) },
+        .child_layout_axis = .x,
+    });
+    ui.pushParent(background_node);
+    defer ui.popParentAssert(background_node);
+    // this padding is so scuffed; TODO: maybe introduce some new `Size` for this type of deal
+    ui.spacer(.x, Size.pixels(5, 1));
+    defer ui.spacer(.x, Size.pixels(5, 1));
+    _ = ui.pushLayoutParent(
+        "aaaaaaaaaaaaaaaaa",
+        [2]Size{ Size.by_children(1), Size.by_children(1) },
+        .y,
+    );
+    defer _ = ui.popParent();
+    ui.spacer(.y, Size.pixels(5, 1));
+    defer ui.spacer(.y, Size.pixels(4, 1)); // TODO: why won't 5 work here? maybe there's smth wrong w/ spacers?
+    {
+        const color_part_parent = ui.pushLayoutParent(
+            "color_picker_part",
+            [2]Size{ Size.by_children(1), Size.by_children(1) },
+            .x,
+        );
+        defer ui.popParentAssert(color_part_parent);
+
+        const color_square = ui.addNode(.{ .clickable = true }, "color square", .{
+            .pref_size = Size.pixelsExact(square_size, square_size),
+            .custom_draw_fn = (struct {
+                pub fn draw(_: *UiContext, shader_inputs: *std.ArrayList(UiContext.ShaderInput), node: *UiContext.Node) error{OutOfMemory}!void {
+                    const hue = @as(*align(1) const vec4, @ptrCast(node.custom_draw_ctx_as_bytes.?.ptr)).*;
+                    const hue_color = HSVtoRGB(vec4{ hue[0], 1, 1, 1 });
+                    var rect = UiContext.ShaderInput.fromNode(node);
+                    rect.edge_softness = 0;
+                    rect.border_thickness = 0;
+                    rect.top_left_color = vec4{ 1, 1, 1, 1 };
+                    rect.btm_left_color = vec4{ 1, 1, 1, 1 };
+                    rect.top_right_color = hue_color;
+                    rect.btm_right_color = hue_color;
+                    try shader_inputs.append(rect);
+                    rect.top_left_color = vec4{ 0, 0, 0, 0 };
+                    rect.btm_left_color = vec4{ 0, 0, 0, 1 };
+                    rect.top_right_color = vec4{ 0, 0, 0, 0 };
+                    rect.btm_right_color = vec4{ 0, 0, 0, 1 };
+                    try shader_inputs.append(rect);
+                    { // circle cursor
+                        const center = node.rect.min + vec2{ hue[1], hue[2] } * node.rect.size();
+                        const radius: f32 = 10;
+                        const radius_vec = math.splat(vec2, radius);
+                        rect.top_left_color = math.splat(vec4, 1);
+                        rect.btm_left_color = math.splat(vec4, 1);
+                        rect.top_right_color = math.splat(vec4, 1);
+                        rect.btm_right_color = math.splat(vec4, 1);
+                        rect.btm_left_pos = center - radius_vec;
+                        rect.top_right_pos = center + radius_vec;
+                        rect.corner_radii = [4]f32{ radius, radius, radius, radius };
+                        rect.edge_softness = 1;
+                        rect.border_thickness = 2;
+                        try shader_inputs.append(rect);
+                    }
+                }
+            }).draw,
+            .custom_draw_ctx_as_bytes = std.mem.asBytes(&hsv),
+        });
+        if (color_square.signal.held_down) {
+            const norm = color_square.signal.mouse_pos / color_square.rect.size();
+            hsv[1] = std.math.clamp(norm[0], 0, 1);
+            hsv[2] = std.math.clamp(norm[1], 0, 1);
+        }
+
+        ui.spacer(.x, Size.pixels(3, 1));
+
+        const hue_bar = ui.addNode(.{ .clickable = true, .draw_background = true }, "hue_bar", .{
+            .pref_size = Size.pixelsExact(square_size / 10, square_size),
+            .custom_draw_fn = (struct {
+                pub fn draw(_: *UiContext, shader_inputs: *std.ArrayList(UiContext.ShaderInput), node: *UiContext.Node) error{OutOfMemory}!void {
+                    var rect = UiContext.ShaderInput.fromNode(node);
+                    rect.edge_softness = 0;
+                    rect.border_thickness = 0;
+                    const hue_colors = [_]vec4{
+                        vec4{ 1, 0, 0, 1 },
+                        vec4{ 1, 1, 0, 1 },
+                        vec4{ 0, 1, 0, 1 },
+                        vec4{ 0, 1, 1, 1 },
+                        vec4{ 0, 0, 1, 1 },
+                        vec4{ 1, 0, 1, 1 },
+                    };
+                    const segment_height = node.rect.size()[1] / hue_colors.len;
+                    rect.btm_left_pos[1] = rect.top_right_pos[1] - segment_height;
+                    for (hue_colors, 0..) |rect_color, idx| {
+                        const next_color = hue_colors[(idx + 1) % hue_colors.len];
+                        rect.top_left_color = rect_color;
+                        rect.btm_left_color = next_color;
+                        rect.top_right_color = rect_color;
+                        rect.btm_right_color = next_color;
+                        try shader_inputs.append(rect);
+                        rect.top_right_pos[1] = rect.btm_left_pos[1];
+                        rect.btm_left_pos[1] = rect.top_right_pos[1] - segment_height;
+                    }
+
+                    inline for (@typeInfo(@TypeOf(rect)).Struct.fields) |field| {
+                        if (comptime std.mem.endsWith(u8, field.name, "color"))
+                            @field(rect, field.name) = math.splat(vec4, 1);
+                    }
+                    rect.edge_softness = 1;
+                    rect.border_thickness = 2;
+                    rect.corner_radii = [4]f32{ 2, 2, 2, 2 };
+                    const hsv0 = @as(*align(1) const f32, @ptrCast(node.custom_draw_ctx_as_bytes)).*;
+                    const bar_size: f32 = 10;
+                    const center_y = blk: {
+                        var center = node.rect.max[1] - node.rect.size()[1] * hsv0;
+                        break :blk std.math.clamp(
+                            center,
+                            node.rect.min[1] + bar_size / 2,
+                            node.rect.max[1] - bar_size / 2,
+                        );
+                    };
+                    rect.btm_left_pos[1] = center_y - bar_size / 2;
+                    rect.top_right_pos[1] = center_y + bar_size / 2;
+                    try shader_inputs.append(rect);
+                }
+            }).draw,
+            .custom_draw_ctx_as_bytes = std.mem.asBytes(&hsv[0]),
+        });
+        if (hue_bar.signal.held_down) {
+            const norm = hue_bar.signal.mouse_pos / hue_bar.rect.size();
+            hsv[0] = std.math.clamp(1 - norm[1], 0, 1);
+        }
+    }
+
+    // TODO: add a way to edit the alpha
+
+    color.* = HSVtoRGB(hsv);
+
+    ui.spacer(.y, Size.pixels(3, 1));
+
+    // TODO: the buffers are not working correctly
+    // {
+    //     const value_part_parent = ui.pushLayoutParent(
+    //         "color_picker_values",
+    //         [2]Size{ Size.percent(1, 1), Size.by_children(1) },
+    //         .x,
+    //     );
+    //     defer ui.popParentAssert(value_part_parent);
+
+    //     const Buf = Buffer(5);
+    //     const color_letters = [_][]const u8{ "R", "G", "B", "A" };
+    //     var buffers = [_]Buf{Buf{}} ** color_letters.len;
+    //     for (&buffers, color_letters, 0..) |*buf, letter, idx| {
+    //         const comp = &color[idx];
+    //         ui.label(letter);
+    //         buf.len = (std.fmt.bufPrint(&buf.buffer, "{d:1.2}", .{comp.*}) catch unreachable).len;
+    //         ui.pushTmpStyle(.{ .pref_size = [2]Size{ Size.percent(1, 0), Size.text_dim(1) } });
+    //         _ = ui.textInput(letter, &buf.buffer, &buf.len);
+    //     }
+    // }
+}
+
+fn RGBtoHSV(rgba: vec4) vec4 {
+    const r = rgba[0];
+    const g = rgba[1];
+    const b = rgba[2];
+    const x_max = @max(r, g, b);
+    const x_min = @min(r, g, b);
+    const V = x_max;
+    const C = x_max - x_min;
+    const H = if (C == 0)
+        0
+    else if (V == r)
+        60 * @mod((g - b) / C, 6)
+    else if (V == g)
+        60 * (((b - r) / C) + 2)
+    else if (V == b)
+        60 * (((r - g) / C) + 4)
+    else
+        unreachable;
+    const S_V = if (V == 0) 0 else C / V;
+
+    return vec4{
+        H / 360,
+        S_V,
+        V,
+        rgba[3],
+    };
+}
+
+fn HSVtoRGB(hsva: vec4) vec4 {
+    const h = (hsva[0] * 360) / 60;
+    const C = hsva[2] * hsva[1];
+    const X = C * (1 - @fabs(@mod(h, 2) - 1));
+    const rgb_l = switch (@as(u32, @intFromFloat(@floor(h)))) {
+        0 => vec3{ C, X, 0 },
+        1 => vec3{ X, C, 0 },
+        2 => vec3{ 0, C, X },
+        3 => vec3{ 0, X, C },
+        4 => vec3{ X, 0, C },
+        else => vec3{ C, 0, X },
+    };
+    const m = hsva[2] - C;
+    return vec4{
+        rgb_l[0] + m,
+        rgb_l[1] + m,
+        rgb_l[2] + m,
+        hsva[3],
+    };
 }
 
 pub fn labelF(self: *UiContext, comptime fmt: []const u8, args: anytype) void {

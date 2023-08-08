@@ -8,7 +8,8 @@ in GS_Out {
     vec4 color;
     flat vec2 rect_size;
     flat vec2 rect_center;
-    flat float corner_radii[4];
+    flat vec4 corner_radii;
+    flat float edge_softness;
     flat float border_thickness;
     flat vec2 clip_rect_min;
     flat vec2 clip_rect_max;
@@ -34,7 +35,7 @@ float rectSDF(vec2 point, vec2 center, vec2 half_size) {
     return dist.x > 0 && dist.y > 0 ? corner_dist : max(dist.x, dist.y);
 }
 
-float roundedRectSDF(vec2 point, vec2 center, vec2 half_size, float corner_radii[4]) {
+float roundedRectSDF(vec2 point, vec2 center, vec2 half_size, vec4 corner_radii) {
     float corner_radius = corner_radii[
         (point.x > center.x ? 1 : 0) + (point.y < center.y ? 2 : 0)
     ];
@@ -54,10 +55,9 @@ void main() {
     vec4 rect_color = fs_in.color;
     vec2 rect_half_size = fs_in.rect_size / 2;
     vec2 rect_center = fs_in.rect_center;
-    float corner_radii[4] = fs_in.corner_radii;
-    float corner_softness = 1; // TODO: somethings not right about this
+    vec4 corner_radii = fs_in.corner_radii;
+    float softness = fs_in.edge_softness;
     float thickness = fs_in.border_thickness;
-    if (thickness == 0) thickness = max(rect_half_size[0], rect_half_size[1]);
 
     FragColor = vec4(0);
 
@@ -67,10 +67,10 @@ void main() {
     }
 
     float rect_dist = roundedRectSDF(pixel_coord, rect_center, rect_half_size, corner_radii);
-    rect_dist = toBorder(rect_dist, -(thickness / 2), thickness);
+    if (thickness != 0) rect_dist = toBorder(rect_dist, -(thickness / 2), thickness);
 
     FragColor = rect_color;
-    FragColor.a *= smoothstep(-corner_softness, corner_softness, -rect_dist);
+    if (softness != 0) FragColor.a *= smoothstep(-softness, softness, -rect_dist);
 
     float tex_alpha = 1;
     switch (fs_in.which_font) {

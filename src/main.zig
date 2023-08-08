@@ -429,16 +429,18 @@ pub fn main() !void {
     }
 }
 
-const InputBuf = struct {
-    buffer: [buffer_capacity]u8 = [_]u8{0} ** buffer_capacity,
-    len: usize = 0,
+fn Buffer(comptime capacity: usize) type {
+    return struct {
+        buffer: [capacity]u8 = [_]u8{0} ** capacity,
+        len: usize = 0,
 
-    const buffer_capacity = 0x1000;
+        pub fn slice(self: InputBuf) []const u8 {
+            return self.buffer[0..self.len];
+        }
+    };
+}
 
-    pub fn slice(self: InputBuf) []const u8 {
-        return self.buffer[0..self.len];
-    }
-};
+const InputBuf = Buffer(0x1000);
 
 const FileTab = struct {
     allocator: Allocator,
@@ -1605,10 +1607,8 @@ fn FuzzySearchOptions(comptime Ctx: type, comptime max_slots: usize) type {
                     .btm_left_color = text_color,
                     .top_right_color = text_color,
                     .btm_right_color = text_color,
-                    .top_left_corner_radius = 0,
-                    .btm_left_corner_radius = 0,
-                    .top_right_corner_radius = 0,
-                    .btm_right_corner_radius = 0,
+                    .corner_radii = [4]f32{ 0, 0, 0, 0 },
+                    .edge_softness = 0,
                     .border_thickness = 0,
                     .clip_rect_min = node.clip_rect.min,
                     .clip_rect_max = node.clip_rect.max,
