@@ -144,6 +144,8 @@ pub fn main() !void {
     var memline_buf = InputBuf{};
     var memline_addr: ?usize = null;
 
+    var show_ui_stats = true;
+
     var disasm_texts = std.ArrayList(AsmTextInfo).init(allocator);
     defer {
         for (disasm_texts.items) |text| text.deinit(allocator);
@@ -187,16 +189,29 @@ pub fn main() !void {
 
         const fill_x_size = [2]Size{ Size.percent(1, 1), Size.text_dim(1) };
 
-        const mem_stats = try getMemoryStats(allocator);
-        ui.pushTmpStyle(.{ .pref_size = fill_x_size });
-        ui.labelBoxF("#nodes={}, frame_time={d:2.4}ms, mem(ram/virtual/shared): {d:.2}/{d:.2}/{d:.2}, gpa requested bytes: {d:.2}", .{
-            ui.node_table.key_mappings.items.len,
-            dt * 1000,
-            std.fmt.fmtIntSizeBin(mem_stats.in_ram_size),
-            std.fmt.fmtIntSizeBin(mem_stats.virtual_size),
-            std.fmt.fmtIntSizeBin(mem_stats.shared_size),
-            std.fmt.fmtIntSizeBin(general_purpose_allocator.total_requested_bytes),
-        });
+        {
+            const main_bar_parent = ui.pushLayoutParent("main_bar_parent", fill_x_size, .x);
+            main_bar_parent.flags.draw_background = true;
+            defer ui.popParentAssert(main_bar_parent);
+
+            _ = ui.checkBox("show UI stats", &show_ui_stats);
+
+            if (show_ui_stats) {
+                const mem_stats = try getMemoryStats(allocator);
+                ui.labelF("#nodes={}, frame_time={d:2.4}ms, mem(ram/virtual/shared): {d:.2}/{d:.2}/{d:.2}, gpa requested bytes: {d:.2}", .{
+                    ui.node_table.key_mappings.items.len,
+                    dt * 1000,
+                    std.fmt.fmtIntSizeBin(mem_stats.in_ram_size),
+                    std.fmt.fmtIntSizeBin(mem_stats.virtual_size),
+                    std.fmt.fmtIntSizeBin(mem_stats.shared_size),
+                    std.fmt.fmtIntSizeBin(general_purpose_allocator.total_requested_bytes),
+                });
+            }
+
+            ui.spacer(.x, Size.percent(1, 0));
+            ui.pushTmpStyle(.{ .bg_color = vec4{ 1, 0, 0.2, 1 } });
+            if (ui.iconButton(UiContext.Icons.cancel).clicked) break;
+        }
 
         const tabs_parent = ui.pushLayoutParent("tabs_parent", Size.fill(1, 1), .x);
 
@@ -601,8 +616,7 @@ const FileTab = struct {
                     .draw_text = true,
                     .floating_y = true,
                 }, lines_text, .{});
-                line_text_node.rel_pos_placement = .top_left;
-                line_text_node.rel_pos_placement_parent = .top_left;
+                line_text_node.rel_pos = .{ .src = .top_left, .dst = .top_left };
 
                 break :blk line_text_node;
             };
@@ -662,7 +676,7 @@ const FileTab = struct {
 
             // scroll the line numbers with the src text
             line_scroll_parent.scroll_offset[1] = text_scroll_node.scroll_offset[1];
-            line_text_node.rel_pos[1] = -line_scroll_parent.scroll_offset[1];
+            line_text_node.rel_pos.diff[1] = -line_scroll_parent.scroll_offset[1];
 
             ui.popParentAssert(file_box_parent);
         }
@@ -883,9 +897,11 @@ fn textDisplay(
     x_off.* = std.math.clamp(x_off.*, -max_offset[0], 0);
     y_off.* = std.math.clamp(y_off.*, -max_offset[1], 0);
 
-    label_node.rel_pos_placement = .top_left;
-    label_node.rel_pos_placement_parent = .top_left;
-    label_node.rel_pos = vec2{ x_off.*, -y_off.* - @as(f32, @floatFromInt(partial_start_line)) * line_size };
+    label_node.rel_pos = .{
+        .src = .top_left,
+        .dst = .top_left,
+        .diff = vec2{ x_off.*, -y_off.* - @as(f32, @floatFromInt(partial_start_line)) * line_size },
+    };
 
     for (boxes) |box| {
         if (box.min.line == 0 and box.max.line == 0) break;
@@ -901,7 +917,7 @@ fn textDisplay(
             .floating_y = true,
         }, "", .{});
         box_node.pref_size = [2]Size{ Size.percent(1, 1), Size.pixels(box_y_size, 1) };
-        box_node.rel_pos[1] = box_y_top - box_y_size;
+        box_node.rel_pos.diff[1] = box_y_top - box_y_size;
     }
 
     ui.endScrollRegion(parent, 0, -max_offset[1]);

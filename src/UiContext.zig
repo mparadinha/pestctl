@@ -221,9 +221,7 @@ pub const Node = struct {
     last_frame_touched: usize,
 
     // cross-frame state for specific features
-    rel_pos: vec2, // for floating nodes
-    rel_pos_placement: Placement.Tag, // which coords of this node is `rel_pos` relative to
-    rel_pos_placement_parent: Placement.Tag, // which coords of the parent is `rel_pos` relative to
+    rel_pos: RelativePlacement, // relative to parent
     cursor: usize, // used for text input
     mark: usize, // used for text input
     last_click_time: f32, // used for double click checks
@@ -342,11 +340,10 @@ pub const Rect = struct {
         return .{ .min = bottom_left, .max = bottom_left + calc_size };
     }
 
-    pub fn format(value: Rect, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
-        _ = options;
-        //try writer.print("{{ .min={" ++ fmt ++ "}, .max={" ++ fmt ++ "}}}", .{ value.min, value.max });
+    pub fn format(value: Rect, comptime fmt: []const u8, opts: std.fmt.FormatOptions, writer: anytype) !void {
+        _ = opts;
         _ = fmt;
-        try writer.print("{{.min={d:.2}, .max={d:.2}}}", .{ value.min, value.max });
+        try writer.print("{{ .min={d:.2}, .max={d:.2} }}", .{ value.min, value.max });
     }
 };
 
@@ -356,27 +353,23 @@ pub const Placement = union(enum) {
     top_right: vec2,
     btm_right: vec2,
     center: vec2,
+    middle_top: vec2,
+    middle_btm: vec2,
+    middle_left: vec2,
+    middle_right: vec2,
 
     const Tag = std.meta.Tag(Placement);
 
     // `@unionInit` only works if the tag is comptime known
     pub fn init(tag: Tag, v: vec2) Placement {
         return switch (tag) {
-            .top_left => .{ .top_left = v },
-            .btm_left => .{ .btm_left = v },
-            .top_right => .{ .top_right = v },
-            .btm_right => .{ .btm_right = v },
-            .center => .{ .center = v },
+            inline else => |t| @unionInit(Placement, @tagName(t), v),
         };
     }
 
     pub fn value(self: Placement) vec2 {
         return switch (self) {
-            .top_left => |v| v,
-            .btm_left => |v| v,
-            .top_right => |v| v,
-            .btm_right => |v| v,
-            .center => |v| v,
+            inline else => |v| v,
         };
     }
 
@@ -384,13 +377,17 @@ pub const Placement = union(enum) {
         if (self == new_tag) return self;
         const center = self.getCenter(size);
         const half_size = size / vec2{ 2, 2 };
-        return switch (new_tag) {
-            .top_left => Placement{ .top_left = center + vec2{ -half_size[0], half_size[1] } },
-            .btm_left => Placement{ .btm_left = center - half_size },
-            .top_right => Placement{ .top_right = center + half_size },
-            .btm_right => Placement{ .btm_right = center + vec2{ half_size[0], -half_size[1] } },
-            .center => Placement{ .center = center },
-        };
+        return Placement.init(new_tag, switch (new_tag) {
+            .top_left => center + vec2{ -half_size[0], half_size[1] },
+            .btm_left => center - half_size,
+            .top_right => center + half_size,
+            .btm_right => center + vec2{ half_size[0], -half_size[1] },
+            .center => center,
+            .middle_top => center + vec2{ 0, half_size[1] },
+            .middle_btm => center - vec2{ 0, half_size[1] },
+            .middle_left => center - vec2{ half_size[0], 0 },
+            .middle_right => center + vec2{ half_size[0], 0 },
+        });
     }
 
     pub fn getCenter(self: Placement, size: vec2) vec2 {
@@ -401,8 +398,19 @@ pub const Placement = union(enum) {
             .top_right => |tr| tr - half_size,
             .btm_right => |br| br + vec2{ -half_size[0], half_size[1] },
             .center => |cntr| cntr,
+            .middle_top => |mt| mt - vec2{ 0, half_size[1] },
+            .middle_btm => |mb| mb + vec2{ 0, half_size[1] },
+            .middle_left => |ml| ml + vec2{ half_size[0], 0 },
+            .middle_right => |mr| mr - vec2{ half_size[0], 0 },
         };
     }
+};
+
+/// defines a placement such that `src` plus `diff` is `dst`
+pub const RelativePlacement = struct {
+    src: Placement.Tag,
+    dst: Placement.Tag,
+    diff: vec2 = vec2{ 0, 0 },
 };
 
 pub const Signal = struct {
@@ -539,9 +547,7 @@ pub fn addNodeRawStrings(self: *UiContext, flags: Flags, display_string_in: []co
     if (!lookup_result.found_existing) {
         node.signal = try self.computeNodeSignal(node);
         node.first_frame_touched = self.frame_idx;
-        node.rel_pos = vec2{ 0, 0 };
-        node.rel_pos_placement = .btm_left;
-        node.rel_pos_placement_parent = .btm_left;
+        node.rel_pos = .{ .src = .btm_left, .dst = .btm_left, .diff = vec2{ 0, 0 } };
         node.last_click_time = 0;
         node.last_double_click_time = 0;
         node.scroll_offset = vec2{ 0, 0 };
@@ -1277,7 +1283,7 @@ fn solveFinalPosWorkFn(self: *UiContext, node: *Node, axis: Axis) void {
             .y => node.flags.floating_y,
         };
         if (is_floating) {
-            const placement = Placement.init(node.rel_pos_placement, node.rel_pos);
+            const placement = Placement.init(node.rel_pos.src, node.rel_pos.diff);
             const bottom_left = placement.convertTo(.btm_left, node.calc_size).value();
             node.calc_rel_pos[axis_idx] = bottom_left[axis_idx];
         }
@@ -1302,9 +1308,9 @@ fn solveFinalPosWorkFn(self: *UiContext, node: *Node, axis: Axis) void {
             .y => child_node.flags.floating_y,
         };
         if (is_floating) {
-            const calc_rel_pos = Placement.init(child_node.rel_pos_placement, child_node.rel_pos)
+            const calc_rel_pos = Placement.init(child_node.rel_pos.src, child_node.rel_pos.diff)
                 .convertTo(.btm_left, child_node.calc_size)
-                .convertTo(child_node.rel_pos_placement_parent, node.calc_size)
+                .convertTo(child_node.rel_pos.dst, node.calc_size)
                 .value();
             child_node.calc_rel_pos[axis_idx] = calc_rel_pos[axis_idx];
             continue;
@@ -1787,14 +1793,14 @@ pub const DebugView = struct {
         for (selected_nodes.items) |node| {
             _ = self.ui.addNode(border_node_flags, "", .{
                 .border_color = vec4{ 1, 0, 0, 0.5 },
-                .rel_pos = node.rect.min,
+                .rel_pos = .{ .src = .btm_left, .dst = .btm_left, .diff = node.rect.min },
                 .pref_size = Size.fromRect(node.rect),
             });
         }
         // green border for the node selected from the list (separated so it always draws on top)
         _ = self.ui.addNode(border_node_flags, "", .{
             .border_color = vec4{ 0, 1, 0, 0.5 },
-            .rel_pos = active_node.rect.min,
+            .rel_pos = .{ .src = .btm_left, .dst = .btm_left, .diff = active_node.rect.min },
             .pref_size = Size.fromRect(active_node.rect),
         });
 

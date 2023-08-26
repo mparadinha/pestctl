@@ -77,8 +77,18 @@ pub fn button(self: *UiContext, string: []const u8) Signal {
 }
 
 pub fn iconButton(self: *UiContext, string: []const u8) Signal {
-    self.pushTmpStyle(.{ .font_type = .icon });
-    return self.button(string);
+    const node = self.addNode(.{
+        .clickable = true,
+        .draw_text = true,
+        .draw_border = true,
+        .draw_background = true,
+        .draw_hot_effects = true,
+        .draw_active_effects = true,
+    }, string, .{
+        .cursor_type = .hand,
+        .font_type = .icon,
+    });
+    return node.signal;
 }
 
 pub fn subtleIconButton(self: *UiContext, string: []const u8) Signal {
@@ -144,8 +154,11 @@ pub fn startCtxMenu(self: *UiContext, placement: Placement) void {
         .selectable = true,
     }, "###INTERNAL_CTX_MENU_ROOT_NODE", .{
         .pref_size = ctx_menu_size,
-        .rel_pos = placement.value(),
-        .rel_pos_placement = std.meta.activeTag(placement),
+        .rel_pos = .{
+            .src = std.meta.activeTag(placement),
+            .dst = .btm_left,
+            .diff = placement.value(),
+        },
     });
     self.ctx_menu_root_node = ctx_menu_root;
 }
@@ -164,8 +177,11 @@ pub fn startTooltip(self: *UiContext, placement: Placement) void {
         .selectable = true,
     }, "###INTERNAL_TOOLTIP_ROOT_NODE", .{
         .pref_size = tooltip_size,
-        .rel_pos = placement.value(),
-        .rel_pos_placement = std.meta.activeTag(placement),
+        .rel_pos = .{
+            .src = std.meta.activeTag(placement),
+            .dst = .btm_left,
+            .diff = placement.value(),
+        },
     });
     self.tooltip_root_node = tooltip_root;
 }
@@ -212,8 +228,7 @@ pub fn endScrollRegion(self: *UiContext, parent: *Node, start_scroll: f32, end_s
     bar_node.child_layout_axis = .y;
     bar_node.pref_size = [2]Size{ Size.by_children(1), Size.percent(1, 0) };
     bar_node.bg_color = vec4{ 0, 0, 0, 0.3 };
-    bar_node.rel_pos_placement = .top_right;
-    bar_node.rel_pos_placement_parent = .top_right;
+    bar_node.rel_pos = .{ .src = .top_right, .dst = .top_right };
     {
         self.pushParent(bar_node);
         defer std.debug.assert(self.popParent() == bar_node);
@@ -245,9 +260,8 @@ pub fn endScrollRegion(self: *UiContext, parent: *Node, start_scroll: f32, end_s
                 .font_type = .icon,
             });
             const icon_size = bar_icon_node.text_rect.size()[1];
-            bar_icon_node.rel_pos_placement = .top_left;
-            bar_icon_node.rel_pos_placement_parent = .top_left;
-            bar_icon_node.rel_pos[1] = if (bar_region_size > 0) blk: {
+            bar_icon_node.rel_pos = .{ .src = .top_left, .dst = .top_left };
+            bar_icon_node.rel_pos.diff[1] = if (bar_region_size > 0) blk: {
                 const scroll_pct = std.math.clamp((parent.scroll_offset[1] - start_scroll) / scroll_size, 0, 1);
                 break :blk -std.math.clamp(
                     (bar_region_size * scroll_pct) - (icon_size / 2),
@@ -288,8 +302,7 @@ pub fn dropDownList(self: *UiContext, hash_string: []const u8, options: []const 
             .floating_y = true,
         }, "tmp_opts_window_parent", .{
             .pref_size = opts_parent_size,
-            .rel_pos = choice_parent.rect.min,
-            .rel_pos_placement = .top_left,
+            .rel_pos = .{ .src = .top_left, .dst = .btm_left, .diff = choice_parent.rect.min },
         });
         self.pushParent(opts_parent);
         defer std.debug.assert(self.popParent() == opts_parent);
@@ -354,7 +367,7 @@ pub fn textInputRaw(self: *UiContext, hash_string: []const u8, buffer: []u8, buf
         .floating_x = true,
     }, "{s}", .{display_str}, "{s}_text_node", .{hash_string}, .{});
     text_node.text_color = vec4{ 0, 0, 0, 1 };
-    if (first_time) text_node.rel_pos = vec2{ 0, 0 };
+    if (first_time) text_node.rel_pos.diff = vec2{ 0, 0 };
 
     const cursor_node = self.addNode(.{
         .no_id = true,
@@ -368,17 +381,17 @@ pub fn textInputRaw(self: *UiContext, hash_string: []const u8, buffer: []u8, buf
     cursor_node.pref_size = [2]Size{ Size.pixels(1, 1), Size.pixels(cursor_height, 1) };
     const text_before_cursor = buffer[0..widget_node.cursor];
     const partial_text_rect = try self.font.textRect(text_before_cursor, font_pixel_size);
-    cursor_node.rel_pos = text_node.rel_pos + vec2{ partial_text_rect.max[0], 0 } + UiContext.text_padd;
+    cursor_node.rel_pos.diff = text_node.rel_pos.diff + vec2{ partial_text_rect.max[0], 0 } + UiContext.text_padd;
 
     // scroll text if it doesn't fit
     if (!first_time) {
-        if (cursor_node.rel_pos[0] > widget_node.rect.size()[0] - UiContext.text_hpadding) {
-            const overflow = cursor_node.rel_pos[0] - (widget_node.rect.size()[0] - UiContext.text_hpadding);
-            text_node.rel_pos[0] -= overflow;
+        if (cursor_node.rel_pos.diff[0] > widget_node.rect.size()[0] - UiContext.text_hpadding) {
+            const overflow = cursor_node.rel_pos.diff[0] - (widget_node.rect.size()[0] - UiContext.text_hpadding);
+            text_node.rel_pos.diff[0] -= overflow;
         }
-        if (cursor_node.rel_pos[0] < UiContext.text_hpadding) {
-            const overflow = UiContext.text_hpadding - cursor_node.rel_pos[0];
-            text_node.rel_pos[0] += overflow;
+        if (cursor_node.rel_pos.diff[0] < UiContext.text_hpadding) {
+            const overflow = UiContext.text_hpadding - cursor_node.rel_pos.diff[0];
+            text_node.rel_pos.diff[0] += overflow;
         }
     }
 
@@ -393,7 +406,7 @@ pub fn textInputRaw(self: *UiContext, hash_string: []const u8, buffer: []u8, buf
     const partial_text_rect_mark = try self.font.textRect(text_before_mark, font_pixel_size);
     const selection_size = @fabs(partial_text_rect_mark.max[0] - partial_text_rect.max[0]);
     selection_node.pref_size = [2]Size{ Size.pixels(selection_size, 1), cursor_node.pref_size[1] };
-    selection_node.rel_pos = vec2{
+    selection_node.rel_pos.diff = vec2{
         @min(partial_text_rect_mark.max[0], partial_text_rect.max[0]),
         0,
     } + UiContext.text_padd;
