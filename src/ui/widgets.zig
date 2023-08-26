@@ -518,88 +518,58 @@ pub fn textInputRaw(self: *UiContext, hash_string: []const u8, buffer: []u8, buf
 }
 
 pub fn labelF(self: *UiContext, comptime fmt: []const u8, args: anytype) void {
-    const str = std.fmt.allocPrint(self.build_arena.allocator(), fmt, args) catch |e| blk: {
-        self.setErrorInfo(@errorReturnTrace(), @errorName(e));
-        break :blk "";
-    };
+    const str = self.fmtTmpString(fmt, args);
     self.label(str);
 }
 
 pub fn labelBoxF(self: *UiContext, comptime fmt: []const u8, args: anytype) void {
-    const str = std.fmt.allocPrint(self.build_arena.allocator(), fmt, args) catch |e| blk: {
-        self.setErrorInfo(@errorReturnTrace(), @errorName(e));
-        break :blk "";
-    };
+    const str = self.fmtTmpString(fmt, args);
     self.labelBox(str);
 }
 
 pub fn textF(self: *UiContext, comptime fmt: []const u8, args: anytype) Signal {
-    const str = std.fmt.allocPrint(self.build_arena.allocator(), fmt, args) catch |e| blk: {
-        self.setErrorInfo(@errorReturnTrace(), @errorName(e));
-        break :blk "";
-    };
+    const str = self.fmtTmpString(fmt, args);
     return self.text(str);
 }
 
 pub fn textBoxF(self: *UiContext, comptime fmt: []const u8, args: anytype) Signal {
-    const str = std.fmt.allocPrint(self.build_arena.allocator(), fmt, args) catch |e| blk: {
-        self.setErrorInfo(@errorReturnTrace(), @errorName(e));
-        break :blk "";
-    };
+    const str = self.fmtTmpString(fmt, args);
     return self.textBox(str);
 }
 
 pub fn buttonF(self: *UiContext, comptime fmt: []const u8, args: anytype) Signal {
-    const str = std.fmt.allocPrint(self.build_arena.allocator(), fmt, args) catch |e| blk: {
-        self.setErrorInfo(@errorReturnTrace(), @errorName(e));
-        break :blk "";
-    };
+    const str = self.fmtTmpString(fmt, args);
     return self.button(str);
 }
 
 pub fn iconButtonF(self: *UiContext, comptime fmt: []const u8, args: anytype) Signal {
-    const str = std.fmt.allocPrint(self.build_arena.allocator(), fmt, args) catch |e| blk: {
-        self.setErrorInfo(@errorReturnTrace(), @errorName(e));
-        break :blk "";
-    };
+    const str = self.fmtTmpString(fmt, args);
     return self.iconButton(str);
 }
 
 pub fn subtleIconButtonF(self: *UiContext, comptime fmt: []const u8, args: anytype) Signal {
-    const str = std.fmt.allocPrint(self.build_arena.allocator(), fmt, args) catch |e| blk: {
-        self.setErrorInfo(@errorReturnTrace(), @errorName(e));
-        break :blk "";
-    };
+    const str = self.fmtTmpString(fmt, args);
     return self.subtleIconButton(str);
 }
 
 pub fn checkBoxF(self: *UiContext, comptime fmt: []const u8, args: anytype, value: *bool) Signal {
-    const str = std.fmt.allocPrint(self.build_arena.allocator(), fmt, args) catch |e| blk: {
-        self.setErrorInfo(@errorReturnTrace(), @errorName(e));
-        break :blk "";
-    };
+    const str = self.fmtTmpString(fmt, args);
     return self.checkBox(str, value);
 }
 
 pub fn pushLayoutParentF(self: *UiContext, comptime fmt: []const u8, args: anytype, size: [2]Size, layout_axis: Axis) *Node {
-    const str = std.fmt.allocPrint(self.build_arena.allocator(), fmt, args) catch |e| blk: {
-        self.setErrorInfo(@errorReturnTrace(), @errorName(e));
-        break :blk "";
-    };
+    const str = self.fmtTmpString(fmt, args);
     return self.pushLayoutParent(str, size, layout_axis);
 }
 
-pub fn pushLayoutParentFlagsF(
-    self: *UiContext,
-    flags: UiContext.Flags,
-    comptime fmt: []const u8,
-    args: anytype,
-    size: [2]Size,
-    layout_axis: Axis,
-) *Node {
-    const str = std.fmt.allocPrint(self.build_arena.allocator(), fmt, args) catch |e| blk: {
-        self.setErrorInfo(@errorReturnTrace(), @errorName(e));
-        break :blk "";
-    };
+pub fn pushLayoutParentFlagsF(self: *UiContext, flags: UiContext.Flags, comptime fmt: []const u8, args: anytype, size: [2]Size, layout_axis: Axis) *Node {
+    const str = self.fmtTmpString(fmt, args);
     return self.pushLayoutParentFlags(flags, str, size, layout_axis);
+}
+
+pub fn fmtTmpString(self: *UiContext, comptime fmt: []const u8, args: anytype) []const u8 {
+    return std.fmt.allocPrint(self.build_arena.allocator(), fmt, args) catch |e| {
+        self.setErrorInfo(@errorReturnTrace(), @errorName(e));
+        return "";
+    };
 }
