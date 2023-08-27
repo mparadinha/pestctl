@@ -68,6 +68,109 @@ pub const SessionCmd = union(enum) {
     dump_ui_tree: []const u8, // path of graphviz save file
 };
 
+const ev_mode: enum { save, replay } = .replay;
+const FrameInfo = struct {
+    mouse_pos: vec2,
+    events: []Window.InputEvent,
+};
+
+fn serialize(obj: anytype, writer: anytype) !void {
+    const T = @TypeOf(obj);
+    // @compileLog("serialize: " ++ @typeName(T));
+    switch (@typeInfo(T)) {
+        .Bool => try writer.writeIntLittle(u8, @intFromBool(obj)),
+        .Int => try writer.writeIntLittle(T, obj),
+        .Float => |data| switch (data.bits) {
+            32 => try writer.writeIntLittle(u32, @as(u32, @bitCast(obj))),
+            64 => try writer.writeIntLittle(u64, @as(u64, @bitCast(obj))),
+            else => @panic("TODO: serialize " ++ @typeName(T)),
+        },
+        .Pointer => |data| {
+            if (data.size != .Slice) @panic("TODO: serialize " ++ @typeName(T));
+            try writer.writeIntLittle(usize, obj.len);
+            for (obj) |elem| try serialize(elem, writer);
+        },
+        .Struct => |data| inline for (data.fields) |field| {
+            try serialize(@field(obj, field.name), writer);
+        },
+        .Enum => |data| {
+            const enum_bits = @typeInfo(data.tag_type).Int.bits;
+            // Writer.writeIntLittle converts to nearest whole byte size like this:
+            const padded_bytes: u16 = @intCast((@as(u17, enum_bits) + 7) / 8);
+            const EnumInt = @Type(.{ .Int = .{
+                .signedness = .unsigned,
+                .bits = padded_bytes * 8,
+            } });
+            const enum_int: EnumInt = @intFromEnum(obj);
+            try serialize(enum_int, writer);
+        },
+        .Union => {
+            const tag = std.meta.activeTag(obj);
+            try serialize(tag, writer);
+            switch (tag) {
+                inline else => |t| try serialize(@field(obj, @tagName(t)), writer),
+            }
+        },
+        .Vector => try writer.writeAll(std.mem.asBytes(&obj)),
+        else => @compileError("TODO: serialize " ++ @typeName(T)),
+    }
+}
+
+fn deserialize(comptime T: type, allocator: Allocator, reader: anytype) !T {
+    var obj: T = undefined;
+    // @compileLog("deserialize: " ++ @typeName(T));
+    switch (@typeInfo(T)) {
+        .Bool => {
+            const byte = try reader.readByte();
+            obj = switch (byte) {
+                0 => false,
+                1 => true,
+                else => @panic("invalid value for bool"),
+            };
+        },
+        .Int => obj = try reader.readIntLittle(T),
+        .Float => |data| switch (data.bits) {
+            32 => obj = @bitCast(try reader.readIntLittle(u32)),
+            64 => obj = @bitCast(try reader.readIntLittle(u64)),
+            else => @panic("TODO: deserialize " ++ @typeName(T)),
+        },
+        .Pointer => |data| {
+            if (data.size != .Slice) @panic("TODO: deserialize " ++ @typeName(T));
+            const len = try reader.readIntLittle(usize);
+            var slice = try allocator.alloc(data.child, len);
+            for (slice) |*elem| elem.* = try deserialize(data.child, allocator, reader);
+            obj = slice;
+        },
+        .Struct => |data| inline for (data.fields) |field| {
+            @field(obj, field.name) = try deserialize(field.type, allocator, reader);
+        },
+        .Enum => |data| {
+            const enum_bits = @typeInfo(data.tag_type).Int.bits;
+            // Writer.writeIntLittle converts to nearest whole byte size like this:
+            const padded_bytes: u16 = @intCast((@as(u17, enum_bits) + 7) / 8);
+            const EnumInt = @Type(.{ .Int = .{
+                .signedness = .unsigned,
+                .bits = padded_bytes * 8,
+            } });
+            const enum_int = try deserialize(EnumInt, allocator, reader);
+            obj = @enumFromInt(enum_int);
+        },
+        .Union => {
+            const tag = try deserialize(std.meta.Tag(T), allocator, reader);
+            switch (tag) {
+                inline else => |t| {
+                    const field_type = @TypeOf(@field(obj, @tagName(t)));
+                    const field_data = try deserialize(field_type, allocator, reader);
+                    obj = @unionInit(T, @tagName(t), field_data);
+                },
+            }
+        },
+        .Vector => _ = try reader.readAll(std.mem.asBytes(&obj)),
+        else => @compileError("TODO: deserialize " ++ @typeName(T)),
+    }
+    return obj;
+}
+
 var show_ctx_menu = false;
 var ctx_menu_top_left = @as(vec2, undefined);
 
@@ -167,11 +270,34 @@ pub fn main() !void {
 
     var frame_idx: u64 = 0;
 
+    const saved_frame_filename = "saved_frames.dat";
+    var saved_frames = std.ArrayList(FrameInfo).init(allocator);
+    defer {
+        for (saved_frames.items) |ev| allocator.free(ev.events);
+        saved_frames.deinit();
+    }
+    if (ev_mode == .replay) {
+        const save_file = try std.fs.cwd().openFile(saved_frame_filename, .{});
+        defer save_file.close();
+        const reader = save_file.reader();
+        const num_of_frames = try reader.readIntLittle(usize);
+        try saved_frames.resize(num_of_frames);
+        for (saved_frames.items) |*frame| frame.* = try deserialize(FrameInfo, allocator, reader);
+    }
+
     while (!window.shouldClose()) {
         // std.debug.print("frame_idx={}\n", .{frame_idx});
 
         var frame_arena = std.heap.ArenaAllocator.init(allocator);
         defer frame_arena.deinit();
+
+        if (ev_mode == .replay) blk: {
+            if (frame_idx >= saved_frames.items.len) break :blk;
+            const frame_info = saved_frames.items[frame_idx];
+            window.mouse_pos = frame_info.mouse_pos;
+            window.event_queue.clearRetainingCapacity();
+            for (frame_info.events) |ev| try window.event_queue.append(ev);
+        }
 
         const framebuf_size = try window.getFramebufferSize();
         width = framebuf_size[0];
@@ -184,6 +310,13 @@ pub fn main() !void {
         last_time = cur_time;
 
         const mouse_pos = try window.getMousePos();
+
+        if (ev_mode == .save) {
+            try saved_frames.append(.{
+                .mouse_pos = window.mouse_pos orelse vec2{ 0, 0 },
+                .events = try allocator.dupe(Window.InputEvent, window.event_queue.events.items),
+            });
+        }
 
         try ui.startBuild(width, height, mouse_pos, &window.event_queue);
 
@@ -441,6 +574,14 @@ pub fn main() !void {
         window.update();
         frame_idx += 1;
         tracy.FrameMark();
+    }
+
+    if (ev_mode == .save) {
+        const save_file = try std.fs.cwd().createFile(saved_frame_filename, .{});
+        defer save_file.close();
+        const writer = save_file.writer();
+        try writer.writeIntLittle(usize, saved_frames.items.len);
+        for (saved_frames.items) |frame| try serialize(frame, writer);
     }
 }
 
