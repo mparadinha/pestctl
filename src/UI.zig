@@ -10,7 +10,7 @@ const vec4 = math.vec4;
 const mat4 = math.mat4;
 const Font = @import("Font.zig");
 const Window = @import("Window.zig");
-const UiContext = @This();
+const UI = @This();
 pub usingnamespace @import("ui/widgets.zig");
 
 const build_opts = @import("build_opts");
@@ -26,7 +26,7 @@ prng: PRNG,
 
 window_ptr: *Window, // only used for setting the cursor
 
-// if we accidentally create two nodes with the same hash in the one frame this
+// if we accidentally create two nodes with the same hash in the frame this
 // might lead to the node tree having cycles (which hangs whenever we traverse it)
 // this is cleared every frame
 node_keys_this_frame: std.ArrayList(NodeKey),
@@ -97,8 +97,8 @@ pub const Icons = struct {
 };
 
 // call `deinit` to cleanup resources
-pub fn init(allocator: Allocator, font_opts: FontOptions, window_ptr: *Window) !UiContext {
-    return UiContext{
+pub fn init(allocator: Allocator, font_opts: FontOptions, window_ptr: *Window) !UI {
+    return UI{
         .allocator = allocator,
         .generic_shader = gfx.Shader.from_srcs(allocator, "ui_generic", .{
             .vertex = @embedFile("ui/shader.vert"),
@@ -139,7 +139,7 @@ pub fn init(allocator: Allocator, font_opts: FontOptions, window_ptr: *Window) !
     };
 }
 
-pub fn deinit(self: *UiContext) void {
+pub fn deinit(self: *UI) void {
     self.style_stack.deinit();
     self.parent_stack.deinit();
     self.node_table.deinit();
@@ -231,7 +231,7 @@ pub const Node = struct {
 };
 
 pub const CustomDrawFn = *const fn (
-    ui: *UiContext,
+    ui: *UI,
     shader_inputs: *std.ArrayList(ShaderInput),
     node: *Node,
 ) error{OutOfMemory}!void;
@@ -241,12 +241,12 @@ pub const FontType = enum { text, text_bold, icon };
 pub const TextAlign = enum { left, center, right };
 
 pub const Style = struct {
-    bg_color: vec4 = vec4{ 0.24, 0.27, 0.31, 1 },
+    bg_color: vec4 = vec4{ 0, 0, 0, 1 },
     border_color: vec4 = vec4{ 0.5, 0.5, 0.5, 0.75 },
     text_color: vec4 = vec4{ 1, 1, 1, 1 },
     corner_radii: [4]f32 = [4]f32{ 0, 0, 0, 0 },
-    edge_softness: f32 = 1,
-    border_thickness: f32 = 2,
+    edge_softness: f32 = 0,
+    border_thickness: f32 = 0,
     pref_size: [2]Size = .{ Size.text_dim(1), Size.text_dim(1) },
     child_layout_axis: Axis = .y,
     cursor_type: Window.CursorType = .arrow,
@@ -428,7 +428,7 @@ pub const Signal = struct {
     focused: bool,
 };
 
-pub fn addNode(self: *UiContext, flags: Flags, string: []const u8, init_args: anytype) *Node {
+pub fn addNode(self: *UI, flags: Flags, string: []const u8, init_args: anytype) *Node {
     if (!std.unicode.utf8ValidateSlice(string)) {
         std.debug.panic("`string` passed in for Node is not valid utf8:\n{}", .{std.fmt.fmtSliceEscapeLower(string)});
     }
@@ -440,7 +440,7 @@ pub fn addNode(self: *UiContext, flags: Flags, string: []const u8, init_args: an
     return node;
 }
 
-pub fn addNodeF(self: *UiContext, flags: Flags, comptime fmt: []const u8, args: anytype, init_args: anytype) *Node {
+pub fn addNodeF(self: *UI, flags: Flags, comptime fmt: []const u8, args: anytype, init_args: anytype) *Node {
     const str = std.fmt.allocPrint(self.allocator, fmt, args) catch |e| blk: {
         self.setErrorInfo(@errorReturnTrace(), @errorName(e));
         break :blk "";
@@ -449,7 +449,7 @@ pub fn addNodeF(self: *UiContext, flags: Flags, comptime fmt: []const u8, args: 
     return self.addNode(flags, str, init_args);
 }
 
-pub fn addNodeStrings(self: *UiContext, flags: Flags, display_string: []const u8, hash_string: []const u8, init_args: anytype) *Node {
+pub fn addNodeStrings(self: *UI, flags: Flags, display_string: []const u8, hash_string: []const u8, init_args: anytype) *Node {
     if (!std.unicode.utf8ValidateSlice(display_string)) {
         std.debug.panic("`display_string` passed in for Node is not valid utf8:\n{}", .{std.fmt.fmtSliceEscapeLower(display_string)});
     }
@@ -465,7 +465,7 @@ pub fn addNodeStrings(self: *UiContext, flags: Flags, display_string: []const u8
 }
 
 pub fn addNodeStringsF(
-    self: *UiContext,
+    self: *UI,
     flags: Flags,
     comptime display_fmt: []const u8,
     display_args: anytype,
@@ -486,7 +486,7 @@ pub fn addNodeStringsF(
     return self.addNodeStrings(flags, display_str, hash_str, init_args);
 }
 
-pub fn addNodeRaw(self: *UiContext, flags: Flags, string: []const u8, init_args: anytype) !*Node {
+pub fn addNodeRaw(self: *UI, flags: Flags, string: []const u8, init_args: anytype) !*Node {
     const display_string = if (flags.ignore_hash_sep) string else displayPartOfString(string);
     const hash_string = if (flags.no_id) blk: {
         // for `no_id` nodes we use a random number as the hash string, so they don't clobber each other
@@ -496,7 +496,7 @@ pub fn addNodeRaw(self: *UiContext, flags: Flags, string: []const u8, init_args:
     return self.addNodeRawStrings(flags, display_string, hash_string, init_args);
 }
 
-pub fn addNodeRawStrings(self: *UiContext, flags: Flags, display_string_in: []const u8, hash_string_in: []const u8, init_args: anytype) !*Node {
+pub fn addNodeRawStrings(self: *UI, flags: Flags, display_string_in: []const u8, hash_string_in: []const u8, init_args: anytype) !*Node {
     const allocator = self.build_arena.allocator();
     const display_string = try allocator.dupe(u8, display_string_in);
     const hash_string = try allocator.dupe(u8, hash_string_in);
@@ -579,7 +579,7 @@ pub fn addNodeRawStrings(self: *UiContext, flags: Flags, display_string_in: []co
     return node;
 }
 
-pub fn addNodeAsRoot(self: *UiContext, flags: Flags, string: []const u8, init_args: anytype) *Node {
+pub fn addNodeAsRoot(self: *UI, flags: Flags, string: []const u8, init_args: anytype) *Node {
     // the `addNode` function is gonna use whatever parent is at the top of the stack by default
     // so we have to trick it into thinking this is the root node
     const saved_stack_len = self.parent_stack.len();
@@ -593,21 +593,21 @@ pub fn addNodeAsRoot(self: *UiContext, flags: Flags, string: []const u8, init_ar
     return node;
 }
 
-pub fn pushParent(self: *UiContext, node: *Node) void {
+pub fn pushParent(self: *UI, node: *Node) void {
     self.parent_stack.push(node) catch |e|
         self.setErrorInfo(@errorReturnTrace(), @errorName(e));
 }
-pub fn popParent(self: *UiContext) *Node {
+pub fn popParent(self: *UI) *Node {
     return self.parent_stack.pop().?;
 }
-pub fn popParentAssert(self: *UiContext, expected: *Node) void {
+pub fn popParentAssert(self: *UI, expected: *Node) void {
     std.debug.assert(self.popParent() == expected);
 }
-pub fn topParent(self: *UiContext) *Node {
+pub fn topParent(self: *UI) *Node {
     return self.parent_stack.top().?;
 }
 
-pub fn pushStyle(self: *UiContext, partial_style: anytype) void {
+pub fn pushStyle(self: *UI, partial_style: anytype) void {
     var style = self.style_stack.top().?;
     inline for (@typeInfo(@TypeOf(partial_style)).Struct.fields) |field_type_info| {
         const field_name = field_type_info.name;
@@ -620,24 +620,24 @@ pub fn pushStyle(self: *UiContext, partial_style: anytype) void {
         self.setErrorInfo(@errorReturnTrace(), @errorName(e));
     };
 }
-pub fn popStyle(self: *UiContext) Style {
+pub fn popStyle(self: *UI) Style {
     return self.style_stack.pop().?;
 }
-pub fn topStyle(self: *UiContext) Style {
+pub fn topStyle(self: *UI) Style {
     return self.style_stack.top().?;
 }
 /// same as `pushStyle` but the it gets auto-pop'd after the next `addNode`
-pub fn pushTmpStyle(self: *UiContext, partial_style: anytype) void {
+pub fn pushTmpStyle(self: *UI, partial_style: anytype) void {
     self.pushStyle(partial_style);
     if (self.auto_pop_style) std.debug.panic("only one auto-pop'd style can be in the stack\n", .{});
     self.auto_pop_style = true;
 }
 
-pub fn setFocusedNode(self: *UiContext, node: *Node) void {
+pub fn setFocusedNode(self: *UI, node: *Node) void {
     self.focused_node_key = self.keyFromNode(node);
 }
 
-pub fn startBuild(self: *UiContext, screen_w: u32, screen_h: u32, mouse_pos: vec2, events: *Window.EventQueue) !void {
+pub fn startBuild(self: *UI, screen_w: u32, screen_h: u32, mouse_pos: vec2, events: *Window.EventQueue) !void {
     self.hot_node_key = null;
     // get the signal in the reverse order that we render in (if a node is on top
     // of another, the top one should get the inputs, no the bottom one)
@@ -692,7 +692,7 @@ pub fn startBuild(self: *UiContext, screen_w: u32, screen_h: u32, mouse_pos: vec
     self.window_ptr.setCursor(mouse_cursor);
 }
 
-pub fn endBuild(self: *UiContext, dt: f32) void {
+pub fn endBuild(self: *UI, dt: f32) void {
     if (self.first_error_trace) |error_trace| {
         std.debug.print("{}\n", .{error_trace});
         std.debug.panic("An error occurred during the UI building phase: {s}", .{self.first_error_name});
@@ -733,14 +733,14 @@ pub fn endBuild(self: *UiContext, dt: f32) void {
     self.frame_idx += 1;
 }
 
-fn computeSignalsForTree(self: *UiContext, root: *Node) !void {
+fn computeSignalsForTree(self: *UI, root: *Node) !void {
     var node_iterator = ReverseRenderOrderNodeIterator.init(root);
     while (node_iterator.next()) |node| {
         node.signal = try self.computeNodeSignal(node);
     }
 }
 
-pub fn computeNodeSignal(self: *UiContext, node: *Node) !Signal {
+pub fn computeNodeSignal(self: *UI, node: *Node) !Signal {
     var signal = Signal{
         .clicked = false,
         .pressed = false,
@@ -861,7 +861,7 @@ pub fn computeNodeSignal(self: *UiContext, node: *Node) !Signal {
     return signal;
 }
 
-pub fn render(self: *UiContext) !void {
+pub fn render(self: *UI) !void {
     var shader_inputs = std.ArrayList(ShaderInput).init(self.allocator);
     defer shader_inputs.deinit();
 
@@ -930,7 +930,7 @@ pub fn render(self: *UiContext) !void {
     gl.drawArrays(gl.POINTS, 0, @intCast(shader_inputs.items.len));
 }
 
-fn setupTreeForRender(self: *UiContext, shader_inputs: *std.ArrayList(ShaderInput), root: *Node) !void {
+fn setupTreeForRender(self: *UI, shader_inputs: *std.ArrayList(ShaderInput), root: *Node) !void {
     // do the whole layout right before rendering
     self.solveIndependentSizes(root);
     self.solveDownwardDependent(root);
@@ -944,8 +944,8 @@ fn setupTreeForRender(self: *UiContext, shader_inputs: *std.ArrayList(ShaderInpu
     }
 }
 
-// small helper for `UiContext.render`
-fn addShaderInputsForNode(self: *UiContext, shader_inputs: *std.ArrayList(ShaderInput), node: *Node) !void {
+// small helper for `UI.render`
+fn addShaderInputsForNode(self: *UI, shader_inputs: *std.ArrayList(ShaderInput), node: *Node) !void {
     if (node.custom_draw_fn) |draw_fn| return draw_fn(self, shader_inputs, node);
 
     const base_rect = ShaderInput.fromNode(node);
@@ -1083,37 +1083,37 @@ pub const ShaderInput = extern struct {
     }
 };
 
-fn solveIndependentSizes(self: *UiContext, node: *Node) void {
+fn solveIndependentSizes(self: *UI, node: *Node) void {
     const work_fn = solveIndependentSizesWorkFn;
     layoutRecurseHelperPre(work_fn, .{ .self = self, .node = node, .axis = .x });
     layoutRecurseHelperPre(work_fn, .{ .self = self, .node = node, .axis = .y });
 }
 
-fn solveDownwardDependent(self: *UiContext, node: *Node) void {
+fn solveDownwardDependent(self: *UI, node: *Node) void {
     const work_fn = solveDownwardDependentWorkFn;
     layoutRecurseHelperPost(work_fn, .{ .self = self, .node = node, .axis = .x });
     layoutRecurseHelperPost(work_fn, .{ .self = self, .node = node, .axis = .y });
 }
 
-fn solveUpwardDependent(self: *UiContext, node: *Node) void {
+fn solveUpwardDependent(self: *UI, node: *Node) void {
     const work_fn = solveUpwardDependentWorkFn;
     layoutRecurseHelperPre(work_fn, .{ .self = self, .node = node, .axis = .x });
     layoutRecurseHelperPre(work_fn, .{ .self = self, .node = node, .axis = .y });
 }
 
-fn solveViolations(self: *UiContext, node: *Node) void {
+fn solveViolations(self: *UI, node: *Node) void {
     const work_fn = solveViolationsWorkFn;
     layoutRecurseHelperPre(work_fn, .{ .self = self, .node = node, .axis = .x });
     layoutRecurseHelperPre(work_fn, .{ .self = self, .node = node, .axis = .y });
 }
 
-fn solveFinalPos(self: *UiContext, node: *Node) void {
+fn solveFinalPos(self: *UI, node: *Node) void {
     const work_fn = solveFinalPosWorkFn;
     layoutRecurseHelperPre(work_fn, .{ .self = self, .node = node, .axis = .x });
     layoutRecurseHelperPre(work_fn, .{ .self = self, .node = node, .axis = .y });
 }
 
-fn solveIndependentSizesWorkFn(self: *UiContext, node: *Node, axis: Axis) void {
+fn solveIndependentSizesWorkFn(self: *UI, node: *Node, axis: Axis) void {
     _ = self;
     const axis_idx: usize = @intFromEnum(axis);
     switch (node.pref_size[axis_idx]) {
@@ -1140,7 +1140,7 @@ fn solveIndependentSizesWorkFn(self: *UiContext, node: *Node, axis: Axis) void {
     }
 }
 
-fn solveDownwardDependentWorkFn(self: *UiContext, node: *Node, axis: Axis) void {
+fn solveDownwardDependentWorkFn(self: *UI, node: *Node, axis: Axis) void {
     _ = self;
 
     const axis_idx: usize = @intFromEnum(axis);
@@ -1187,7 +1187,7 @@ fn solveDownwardDependentWorkFn(self: *UiContext, node: *Node, axis: Axis) void 
     }
 }
 
-fn solveUpwardDependentWorkFn(self: *UiContext, node: *Node, axis: Axis) void {
+fn solveUpwardDependentWorkFn(self: *UI, node: *Node, axis: Axis) void {
     _ = self;
     const axis_idx: usize = @intFromEnum(axis);
     switch (node.pref_size[axis_idx]) {
@@ -1200,7 +1200,7 @@ fn solveUpwardDependentWorkFn(self: *UiContext, node: *Node, axis: Axis) void {
     }
 }
 
-fn solveViolationsWorkFn(self: *UiContext, node: *Node, axis: Axis) void {
+fn solveViolationsWorkFn(self: *UI, node: *Node, axis: Axis) void {
     _ = self;
     if (node.child_count == 0) return;
 
@@ -1271,7 +1271,7 @@ fn solveViolationsWorkFn(self: *UiContext, node: *Node, axis: Axis) void {
     }
 }
 
-fn solveFinalPosWorkFn(self: *UiContext, node: *Node, axis: Axis) void {
+fn solveFinalPosWorkFn(self: *UI, node: *Node, axis: Axis) void {
     _ = self;
 
     const axis_idx: usize = @intFromEnum(axis);
@@ -1346,8 +1346,8 @@ fn solveFinalPosWorkFn(self: *UiContext, node: *Node, axis: Axis) void {
     }
 }
 
-const LayoutWorkFn = fn (*UiContext, *Node, Axis) void;
-const LayoutWorkFnArgs = struct { self: *UiContext, node: *Node, axis: Axis };
+const LayoutWorkFn = fn (*UI, *Node, Axis) void;
+const LayoutWorkFnArgs = struct { self: *UI, node: *Node, axis: Axis };
 /// do the work before recursing
 fn layoutRecurseHelperPre(comptime work_fn: LayoutWorkFn, args: LayoutWorkFnArgs) void {
     work_fn(args.self, args.node, args.axis);
@@ -1369,7 +1369,7 @@ pub const text_hpadding: f32 = 4;
 pub const text_vpadding: f32 = 4;
 pub const text_padd = vec2{ text_hpadding, text_vpadding };
 
-pub fn textPosFromNode(self: *UiContext, node: *Node) vec2 {
+pub fn textPosFromNode(self: *UI, node: *Node) vec2 {
     _ = self;
 
     const node_size = node.rect.size();
@@ -1390,16 +1390,16 @@ pub fn textPosFromNode(self: *UiContext, node: *Node) vec2 {
     };
 }
 
-pub fn setErrorInfo(self: *UiContext, trace: ?*std.builtin.StackTrace, name: []const u8) void {
+pub fn setErrorInfo(self: *UI, trace: ?*std.builtin.StackTrace, name: []const u8) void {
     self.first_error_trace = trace;
     self.first_error_name = name;
 }
 
-pub fn nodeFromKey(self: UiContext, key: NodeKey) ?*Node {
+pub fn nodeFromKey(self: UI, key: NodeKey) ?*Node {
     return self.node_table.getFromHash(key);
 }
 
-pub fn keyFromNode(self: UiContext, node: *Node) NodeKey {
+pub fn keyFromNode(self: UI, node: *Node) NodeKey {
     return self.node_table.ctx.hash(hashPartOfString(node.hash_string));
 }
 
@@ -1656,7 +1656,7 @@ pub fn randomString(prng: *PRNG) [32]u8 {
     return buf;
 }
 
-pub fn dumpNodeTree(self: *UiContext) void {
+pub fn dumpNodeTree(self: *UI) void {
     var node_iter = self.node_table.valueIterator();
     while (node_iter.next()) |node| {
         std.debug.print("{*} [{s}] :: first=0x{x:0>15}, last=0x{x:0>15}, next=0x{x:0>15}, prev=0x{x:0>15}, parent=0x{x:0>15}, child_count={}\n", .{
@@ -1672,7 +1672,7 @@ pub fn dumpNodeTree(self: *UiContext) void {
     }
 }
 
-pub fn dumpNodeTreeGraph(self: *UiContext, root: *Node, save_path: []const u8) !void {
+pub fn dumpNodeTreeGraph(self: *UI, root: *Node, save_path: []const u8) !void {
     const savefile = try std.fs.cwd().createFile(save_path, .{});
     defer savefile.close();
     var writer = savefile.writer();
@@ -1723,7 +1723,7 @@ pub fn dumpNodeTreeGraph(self: *UiContext, root: *Node, save_path: []const u8) !
 pub const DebugView = struct {
     allocator: Allocator,
     window_ptr: *Window, // use for `window.getModifiers()`
-    ui: UiContext,
+    ui: UI,
     active: bool,
     node_list_idx: usize,
     node_query_pos: ?vec2,
@@ -1733,7 +1733,7 @@ pub const DebugView = struct {
         return DebugView{
             .allocator = allocator,
             .window_ptr = window_ptr,
-            .ui = try UiContext.init(allocator, .{}, window_ptr),
+            .ui = try UI.init(allocator, .{}, window_ptr),
             .active = false,
             .node_list_idx = 0,
             .node_query_pos = null,
@@ -1745,7 +1745,7 @@ pub const DebugView = struct {
         self.ui.deinit();
     }
 
-    pub fn show(self: *DebugView, ui: *UiContext, width: u32, height: u32, mouse_pos: vec2, events: *Window.EventQueue, dt: f32) !void {
+    pub fn show(self: *DebugView, ui: *UI, width: u32, height: u32, mouse_pos: vec2, events: *Window.EventQueue, dt: f32) !void {
         // scroll up/down to change the highlighted node in the list
         if (events.fetchAndRemove(.MouseScroll, null)) |scroll_ev| {
             if (scroll_ev.y < 0) self.node_list_idx += 1;
@@ -1770,7 +1770,7 @@ pub const DebugView = struct {
 
         // grab a list of all the nodes that overlap with the query position
         const query_pos = if (self.node_query_pos) |pos| pos else mouse_pos;
-        var selected_nodes = std.ArrayList(*UiContext.Node).init(self.allocator);
+        var selected_nodes = std.ArrayList(*UI.Node).init(self.allocator);
         defer selected_nodes.deinit();
         var node_iter = ui.node_table.valueIterator();
         while (node_iter.next()) |node| {

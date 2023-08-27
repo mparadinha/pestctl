@@ -1,4 +1,4 @@
-// there's no need to manually include this file, it's already provided by UiContext.zig
+// there's no need to manually include this file, it's already provided by UI.zig
 
 const std = @import("std");
 const c = @import("../c.zig");
@@ -7,37 +7,37 @@ const vec2 = math.vec2;
 const vec3 = math.vec3;
 const vec4 = math.vec4;
 
-const UiContext = @import("../UiContext.zig");
-const Node = UiContext.Node;
-const Signal = UiContext.Signal;
-const Rect = UiContext.Rect;
-const Size = UiContext.Size;
-const Axis = UiContext.Axis;
-const Placement = UiContext.Placement;
-const Icons = UiContext.Icons;
-const text_hpadding = UiContext.text_hpadding;
-const text_vpadding = UiContext.text_vpadding;
+const UI = @import("../UI.zig");
+const Node = UI.Node;
+const Signal = UI.Signal;
+const Rect = UI.Rect;
+const Size = UI.Size;
+const Axis = UI.Axis;
+const Placement = UI.Placement;
+const Icons = UI.Icons;
+const text_hpadding = UI.text_hpadding;
+const text_vpadding = UI.text_vpadding;
 const text_ops = @import("text_ops.zig");
 const TextAction = text_ops.TextAction;
 
-pub fn spacer(self: *UiContext, axis: Axis, size: Size) void {
+pub fn spacer(ui: *UI, axis: Axis, size: Size) void {
     const sizes = switch (axis) {
         .x => [2]Size{ size, Size.percent(0, 0) },
         .y => [2]Size{ Size.percent(0, 0), size },
     };
-    _ = self.addNode(.{ .no_id = true }, "", .{ .pref_size = sizes });
+    _ = ui.addNode(.{ .no_id = true }, "", .{ .pref_size = sizes });
 }
 
-pub fn label(self: *UiContext, string: []const u8) void {
-    _ = self.addNode(.{
+pub fn label(ui: *UI, string: []const u8) void {
+    _ = ui.addNode(.{
         .no_id = true,
         .ignore_hash_sep = true,
         .draw_text = true,
     }, string, .{});
 }
 
-pub fn labelBox(self: *UiContext, string: []const u8) void {
-    _ = self.addNode(.{
+pub fn labelBox(ui: *UI, string: []const u8) void {
+    _ = ui.addNode(.{
         .no_id = true,
         .ignore_hash_sep = true,
         .draw_text = true,
@@ -46,15 +46,15 @@ pub fn labelBox(self: *UiContext, string: []const u8) void {
     }, string, .{});
 }
 
-pub fn text(self: *UiContext, string: []const u8) Signal {
-    const node = self.addNode(.{
+pub fn text(ui: *UI, string: []const u8) Signal {
+    const node = ui.addNode(.{
         .draw_text = true,
     }, string, .{});
     return node.signal;
 }
 
-pub fn textBox(self: *UiContext, string: []const u8) Signal {
-    const node = self.addNode(.{
+pub fn textBox(ui: *UI, string: []const u8) Signal {
+    const node = ui.addNode(.{
         .draw_text = true,
         .draw_border = true,
         .draw_background = true,
@@ -62,8 +62,8 @@ pub fn textBox(self: *UiContext, string: []const u8) Signal {
     return node.signal;
 }
 
-pub fn button(self: *UiContext, string: []const u8) Signal {
-    const node = self.addNode(.{
+pub fn button(ui: *UI, string: []const u8) Signal {
+    const node = ui.addNode(.{
         .clickable = true,
         .draw_text = true,
         .draw_border = true,
@@ -76,8 +76,8 @@ pub fn button(self: *UiContext, string: []const u8) Signal {
     return node.signal;
 }
 
-pub fn iconButton(self: *UiContext, string: []const u8) Signal {
-    const node = self.addNode(.{
+pub fn iconButton(ui: *UI, string: []const u8) Signal {
+    const node = ui.addNode(.{
         .clickable = true,
         .draw_text = true,
         .draw_border = true,
@@ -91,8 +91,8 @@ pub fn iconButton(self: *UiContext, string: []const u8) Signal {
     return node.signal;
 }
 
-pub fn subtleIconButton(self: *UiContext, string: []const u8) Signal {
-    const node = self.addNode(.{
+pub fn subtleIconButton(ui: *UI, string: []const u8) Signal {
+    const node = ui.addNode(.{
         .clickable = true,
         .draw_text = true,
         .draw_active_effects = true,
@@ -103,51 +103,51 @@ pub fn subtleIconButton(self: *UiContext, string: []const u8) Signal {
     return node.signal;
 }
 
-pub fn checkBox(self: *UiContext, string: []const u8, value: *bool) Signal {
+pub fn checkBox(ui: *UI, string: []const u8, value: *bool) Signal {
     const parent_size = [2]Size{ Size.by_children(1), Size.by_children(1) };
-    const layout_parent = self.pushLayoutParentF("{s}_layout_parent", .{string}, parent_size, .x);
+    const layout_parent = ui.pushLayoutParentF("{s}_layout_parent", .{string}, parent_size, .x);
     layout_parent.flags.draw_background = true;
-    defer self.popParentAssert(layout_parent);
+    defer ui.popParentAssert(layout_parent);
 
     const box_icon = if (value.*) Icons.ok else " ";
-    const box_signal = self.iconButtonF("{s}###{s}_button", .{ box_icon, string });
+    const box_signal = ui.iconButtonF("{s}###{s}_button", .{ box_icon, string });
     if (box_signal.clicked) value.* = !value.*;
 
-    self.label(string);
+    ui.label(string);
 
     return box_signal;
 }
 
 /// pushes a new node as parent that is meant only for layout purposes
 pub fn pushLayoutParent(
-    self: *UiContext,
+    ui: *UI,
     hash_string: []const u8,
     size: [2]Size,
     layout_axis: Axis,
 ) *Node {
-    return self.pushLayoutParentFlags(.{}, hash_string, size, layout_axis);
+    return ui.pushLayoutParentFlags(.{}, hash_string, size, layout_axis);
 }
 
 pub fn pushLayoutParentFlags(
-    self: *UiContext,
-    flags: UiContext.Flags,
+    ui: *UI,
+    flags: UI.Flags,
     hash_string: []const u8,
     size: [2]Size,
     layout_axis: Axis,
 ) *Node {
-    const node = self.addNodeStrings(flags, "", hash_string, .{
+    const node = ui.addNodeStrings(flags, "", hash_string, .{
         .pref_size = size,
         .child_layout_axis = layout_axis,
     });
-    self.pushParent(node);
+    ui.pushParent(node);
     return node;
 }
 
 // don't forget to call `endCtxMenu`
 // TODO: maybe turn this into a generic window function and ctx menu would simply be a special case of a window
-pub fn startCtxMenu(self: *UiContext, placement: Placement) void {
+pub fn startCtxMenu(ui: *UI, placement: Placement) void {
     const ctx_menu_size = [2]Size{ Size.by_children(1), Size.by_children(1) };
-    const ctx_menu_root = self.addNodeAsRoot(.{
+    const ctx_menu_root = ui.addNodeAsRoot(.{
         .clip_children = true,
         .floating_x = true,
         .floating_y = true,
@@ -160,17 +160,17 @@ pub fn startCtxMenu(self: *UiContext, placement: Placement) void {
             .diff = placement.value(),
         },
     });
-    self.ctx_menu_root_node = ctx_menu_root;
+    ui.ctx_menu_root_node = ctx_menu_root;
 }
 
-pub fn endCtxMenu(self: *UiContext) void {
-    const parent = self.popParent();
-    std.debug.assert(parent == self.ctx_menu_root_node);
+pub fn endCtxMenu(ui: *UI) void {
+    const parent = ui.popParent();
+    std.debug.assert(parent == ui.ctx_menu_root_node);
 }
 
-pub fn startTooltip(self: *UiContext, placement: Placement) void {
+pub fn startTooltip(ui: *UI, placement: Placement) void {
     const tooltip_size = [2]Size{ Size.by_children(1), Size.by_children(1) };
-    const tooltip_root = self.addNodeAsRoot(.{
+    const tooltip_root = ui.addNodeAsRoot(.{
         .clip_children = true,
         .floating_x = true,
         .floating_y = true,
@@ -183,77 +183,77 @@ pub fn startTooltip(self: *UiContext, placement: Placement) void {
             .diff = placement.value(),
         },
     });
-    self.tooltip_root_node = tooltip_root;
+    ui.tooltip_root_node = tooltip_root;
 }
 
-pub fn endTooltip(self: *UiContext) void {
-    const parent = self.popParent();
-    std.debug.assert(parent == self.tooltip_root_node);
+pub fn endTooltip(ui: *UI) void {
+    const parent = ui.popParent();
+    std.debug.assert(parent == ui.tooltip_root_node);
 }
 
-pub fn startWindow(self: *UiContext, hash_string: []const u8) *Node {
-    const whole_screen_size = [2]Size{ Size.pixels(self.screen_size[0], 1), Size.pixels(self.screen_size[1], 1) };
-    const node = self.addNodeAsRoot(.{
+pub fn startWindow(ui: *UI, hash_string: []const u8) *Node {
+    const whole_screen_size = [2]Size{ Size.pixels(ui.screen_size[0], 1), Size.pixels(ui.screen_size[1], 1) };
+    const node = ui.addNodeAsRoot(.{
         .clip_children = true,
         .no_id = true,
     }, hash_string, .{
         .pref_size = whole_screen_size,
     });
 
-    self.window_roots.append(node) catch |e| {
-        self.setErrorInfo(@errorReturnTrace(), @errorName(e));
+    ui.window_roots.append(node) catch |e| {
+        ui.setErrorInfo(@errorReturnTrace(), @errorName(e));
     };
 
     return node;
 }
 
-pub fn endWindow(self: *UiContext, window_root: *Node) void {
-    std.debug.assert(self.popParent() == window_root);
+pub fn endWindow(ui: *UI, window_root: *Node) void {
+    std.debug.assert(ui.popParent() == window_root);
 }
 
 /// returns the new parent (which gets pushed on the parent stack) for this region
-pub fn startScrollRegion(self: *UiContext, hash_string: []const u8) *Node {
-    const parent = self.addNodeF(.{
+pub fn startScrollRegion(ui: *UI, hash_string: []const u8) *Node {
+    const parent = ui.addNodeF(.{
         .scrollable = true,
         .clip_children = true,
     }, "###{s}:scroll_region_parent", .{hash_string}, .{ .child_layout_axis = .y });
-    self.pushParent(parent);
+    ui.pushParent(parent);
     return parent;
 }
 
-pub fn endScrollRegion(self: *UiContext, parent: *Node, start_scroll: f32, end_scroll: f32) void {
+pub fn endScrollRegion(ui: *UI, parent: *Node, start_scroll: f32, end_scroll: f32) void {
     const hash_string = parent.hash_string;
 
-    const bar_node = self.addNode(.{ .draw_background = true, .no_id = true, .floating_x = true }, "", .{});
+    const bar_node = ui.addNode(.{ .draw_background = true, .no_id = true, .floating_x = true }, "", .{});
     bar_node.child_layout_axis = .y;
     bar_node.pref_size = [2]Size{ Size.by_children(1), Size.percent(1, 0) };
     bar_node.bg_color = vec4{ 0, 0, 0, 0.3 };
     bar_node.rel_pos = .{ .src = .top_right, .dst = .top_right };
     {
-        self.pushParent(bar_node);
-        defer std.debug.assert(self.popParent() == bar_node);
+        ui.pushParent(bar_node);
+        defer std.debug.assert(ui.popParent() == bar_node);
 
-        const up_btn = self.subtleIconButtonF("{s}###{s}:up_scroll_btn", .{ Icons.up_open, hash_string });
+        const up_btn = ui.subtleIconButtonF("{s}###{s}:up_scroll_btn", .{ Icons.up_open, hash_string });
         if (up_btn.held_down) parent.scroll_offset[1] += 50;
 
-        const scroll_bar_region = self.addNodeF(.{
+        const scroll_bar_region = ui.addNodeF(.{
             .clickable = true,
         }, "###{s}:scroll_bar_region", .{hash_string}, .{});
         scroll_bar_region.pref_size = [2]Size{ Size.percent(1, 0), Size.percent(1, 0) };
         {
-            self.pushParent(scroll_bar_region);
-            defer std.debug.assert(self.popParent() == scroll_bar_region);
+            ui.pushParent(scroll_bar_region);
+            defer std.debug.assert(ui.popParent() == scroll_bar_region);
 
             const scroll_size = end_scroll - start_scroll;
             const bar_region_size = scroll_bar_region.rect.size()[1];
-            const mouse_bar_pct = (scroll_bar_region.rect.max[1] - self.mouse_pos[1]) / bar_region_size;
+            const mouse_bar_pct = (scroll_bar_region.rect.max[1] - ui.mouse_pos[1]) / bar_region_size;
             const bar_pct = std.math.clamp(mouse_bar_pct, 0, 1);
 
             if (scroll_bar_region.signal.held_down) {
                 parent.scroll_offset[1] = (scroll_size * bar_pct) + start_scroll;
             }
 
-            const bar_icon_node = self.addNodeF(.{
+            const bar_icon_node = ui.addNodeF(.{
                 .draw_text = true,
                 .floating_y = true,
             }, "{s}###{s}:bar_btn", .{ Icons.circle, hash_string }, .{
@@ -271,31 +271,31 @@ pub fn endScrollRegion(self: *UiContext, parent: *Node, start_scroll: f32, end_s
             } else 0;
         }
 
-        const down_btn = self.subtleIconButtonF("{s}###{s}:down_scroll_btn", .{ Icons.down_open, hash_string });
+        const down_btn = ui.subtleIconButtonF("{s}###{s}:down_scroll_btn", .{ Icons.down_open, hash_string });
         if (down_btn.held_down) parent.scroll_offset[1] -= 50;
     }
 
-    std.debug.assert(self.popParent() == parent);
+    std.debug.assert(ui.popParent() == parent);
 }
 
 // TODO
-pub fn dropDownList(self: *UiContext, hash_string: []const u8, options: []const []const u8, chosen_idx: *usize, is_open: *bool) void {
+pub fn dropDownList(ui: *UI, hash_string: []const u8, options: []const []const u8, chosen_idx: *usize, is_open: *bool) void {
     const choice_parent_size = [2]Size{ Size.by_children(1), Size.text_dim(1) };
-    const choice_parent = self.addNodeF(.{}, "###{s}:choice_parent", .{hash_string}, .{ .pref_size = choice_parent_size, .child_layout_axis = .x });
-    self.pushParent(choice_parent);
+    const choice_parent = ui.addNodeF(.{}, "###{s}:choice_parent", .{hash_string}, .{ .pref_size = choice_parent_size, .child_layout_axis = .x });
+    ui.pushParent(choice_parent);
     {
-        self.label(options[chosen_idx.*]);
-        const open_btn_sig = self.iconButton(if (is_open.*) Icons.up_open else Icons.down_open);
+        ui.label(options[chosen_idx.*]);
+        const open_btn_sig = ui.iconButton(if (is_open.*) Icons.up_open else Icons.down_open);
         if (open_btn_sig.clicked) is_open.* = !is_open.*;
     }
-    std.debug.assert(self.popParent() == choice_parent);
+    std.debug.assert(ui.popParent() == choice_parent);
 
     if (is_open.*) {
-        const opts_window = self.startWindow("tmp_opts_window");
-        defer self.endWindow(opts_window);
+        const opts_window = ui.startWindow("tmp_opts_window");
+        defer ui.endWindow(opts_window);
 
         const opts_parent_size = [2]Size{ Size.pixels(choice_parent.rect.size()[0], 1), Size.by_children(1) };
-        const opts_parent = self.addNode(.{
+        const opts_parent = ui.addNode(.{
             .clip_children = true,
             .draw_background = true,
             .floating_x = true,
@@ -304,11 +304,11 @@ pub fn dropDownList(self: *UiContext, hash_string: []const u8, options: []const 
             .pref_size = opts_parent_size,
             .rel_pos = .{ .src = .top_left, .dst = .btm_left, .diff = choice_parent.rect.min },
         });
-        self.pushParent(opts_parent);
-        defer std.debug.assert(self.popParent() == opts_parent);
+        ui.pushParent(opts_parent);
+        defer std.debug.assert(ui.popParent() == opts_parent);
 
         for (options, 0..) |option, idx| {
-            const opt_node = self.addNodeStringsF(.{
+            const opt_node = ui.addNodeStringsF(.{
                 .clickable = true,
                 .draw_border = true,
                 .draw_text = true,
@@ -321,17 +321,17 @@ pub fn dropDownList(self: *UiContext, hash_string: []const u8, options: []const 
     }
 }
 
-pub fn textInput(self: *UiContext, hash_string: []const u8, buffer: []u8, buf_len: *usize) Signal {
-    return textInputRaw(self, hash_string, buffer, buf_len) catch |e| blk: {
-        self.setErrorInfo(@errorReturnTrace(), @errorName(e));
+pub fn textInput(ui: *UI, hash_string: []const u8, buffer: []u8, buf_len: *usize) Signal {
+    return textInputRaw(ui, hash_string, buffer, buf_len) catch |e| blk: {
+        ui.setErrorInfo(@errorReturnTrace(), @errorName(e));
         break :blk std.mem.zeroes(Signal);
     };
 }
 
-pub fn textInputRaw(self: *UiContext, hash_string: []const u8, buffer: []u8, buf_len: *usize) !Signal {
+pub fn textInputRaw(ui: *UI, hash_string: []const u8, buffer: []u8, buf_len: *usize) !Signal {
     // this is a really hacky way to see if this is the first time we using this node
     // (we need to initialize the cursor on first use)
-    const first_time = !self.node_table.hasKey(hash_string);
+    const first_time = !ui.node_table.hasKey(hash_string);
 
     const display_str = buffer[0..buf_len.*];
     // TODO: what is the point of writing this zero byte? the search/match code crashes when I remove it
@@ -339,7 +339,7 @@ pub fn textInputRaw(self: *UiContext, hash_string: []const u8, buffer: []u8, buf
 
     // note: the node cursor/mark is in bytes into buffer
 
-    const widget_node = self.addNodeF(.{
+    const widget_node = ui.addNodeF(.{
         .clickable = true,
         .selectable = true,
         .clip_children = true,
@@ -355,13 +355,13 @@ pub fn textInputRaw(self: *UiContext, hash_string: []const u8, buffer: []u8, buf
     }
     const sig = widget_node.signal;
 
-    self.pushParent(widget_node);
-    defer _ = self.popParent();
+    ui.pushParent(widget_node);
+    defer _ = ui.popParent();
 
     // make input box darker when not in focus
     if (!sig.focused) widget_node.bg_color = math.times(widget_node.bg_color, 0.85);
 
-    const text_node = self.addNodeStringsF(.{
+    const text_node = ui.addNodeStringsF(.{
         .ignore_hash_sep = true,
         .draw_text = true,
         .floating_x = true,
@@ -369,33 +369,33 @@ pub fn textInputRaw(self: *UiContext, hash_string: []const u8, buffer: []u8, buf
     text_node.text_color = vec4{ 0, 0, 0, 1 };
     if (first_time) text_node.rel_pos.diff = vec2{ 0, 0 };
 
-    const cursor_node = self.addNode(.{
+    const cursor_node = ui.addNode(.{
         .no_id = true,
         .draw_background = true,
         .floating_x = true,
         .floating_y = true,
     }, "", .{});
     cursor_node.bg_color = vec4{ 0, 0, 0, 1 };
-    const font_pixel_size = self.topStyle().font_size;
-    const cursor_height = self.font.getScaledMetrics(font_pixel_size).line_advance - UiContext.text_vpadding;
+    const font_pixel_size = ui.topStyle().font_size;
+    const cursor_height = ui.font.getScaledMetrics(font_pixel_size).line_advance - UI.text_vpadding;
     cursor_node.pref_size = [2]Size{ Size.pixels(1, 1), Size.pixels(cursor_height, 1) };
     const text_before_cursor = buffer[0..widget_node.cursor];
-    const partial_text_rect = try self.font.textRect(text_before_cursor, font_pixel_size);
-    cursor_node.rel_pos.diff = text_node.rel_pos.diff + vec2{ partial_text_rect.max[0], 0 } + UiContext.text_padd;
+    const partial_text_rect = try ui.font.textRect(text_before_cursor, font_pixel_size);
+    cursor_node.rel_pos.diff = text_node.rel_pos.diff + vec2{ partial_text_rect.max[0], 0 } + UI.text_padd;
 
     // scroll text if it doesn't fit
     if (!first_time) {
-        if (cursor_node.rel_pos.diff[0] > widget_node.rect.size()[0] - UiContext.text_hpadding) {
-            const overflow = cursor_node.rel_pos.diff[0] - (widget_node.rect.size()[0] - UiContext.text_hpadding);
+        if (cursor_node.rel_pos.diff[0] > widget_node.rect.size()[0] - UI.text_hpadding) {
+            const overflow = cursor_node.rel_pos.diff[0] - (widget_node.rect.size()[0] - UI.text_hpadding);
             text_node.rel_pos.diff[0] -= overflow;
         }
-        if (cursor_node.rel_pos.diff[0] < UiContext.text_hpadding) {
-            const overflow = UiContext.text_hpadding - cursor_node.rel_pos.diff[0];
+        if (cursor_node.rel_pos.diff[0] < UI.text_hpadding) {
+            const overflow = UI.text_hpadding - cursor_node.rel_pos.diff[0];
             text_node.rel_pos.diff[0] += overflow;
         }
     }
 
-    const selection_node = self.addNode(.{
+    const selection_node = ui.addNode(.{
         .no_id = true,
         .draw_background = true,
         .floating_x = true,
@@ -403,13 +403,13 @@ pub fn textInputRaw(self: *UiContext, hash_string: []const u8, buffer: []u8, buf
     }, "", .{});
     selection_node.bg_color = vec4{ 0, 0, 1, 0.25 };
     const text_before_mark = buffer[0..widget_node.mark];
-    const partial_text_rect_mark = try self.font.textRect(text_before_mark, font_pixel_size);
+    const partial_text_rect_mark = try ui.font.textRect(text_before_mark, font_pixel_size);
     const selection_size = @fabs(partial_text_rect_mark.max[0] - partial_text_rect.max[0]);
     selection_node.pref_size = [2]Size{ Size.pixels(selection_size, 1), cursor_node.pref_size[1] };
     selection_node.rel_pos.diff = vec2{
         @min(partial_text_rect_mark.max[0], partial_text_rect.max[0]),
         0,
-    } + UiContext.text_padd;
+    } + UI.text_padd;
 
     if (!sig.focused) return sig;
 
@@ -439,8 +439,8 @@ pub fn textInputRaw(self: *UiContext, hash_string: []const u8, buffer: []u8, buf
         while (idx < buf_len.*) {
             const codepoint_len = try std.unicode.utf8ByteSequenceLength(display_str[idx]);
             const partial_text_buf = display_str[0 .. idx + codepoint_len];
-            const partial_rect = try self.font.textRect(partial_text_buf, font_pixel_size);
-            if (partial_rect.max[0] + UiContext.text_hpadding > sig.mouse_pos[0]) break;
+            const partial_rect = try ui.font.textRect(partial_text_buf, font_pixel_size);
+            if (partial_rect.max[0] + UI.text_hpadding > sig.mouse_pos[0]) break;
             idx += codepoint_len;
         }
 
@@ -450,7 +450,7 @@ pub fn textInputRaw(self: *UiContext, hash_string: []const u8, buffer: []u8, buf
     // TODO: doing a click followed by press and drag in the same timing as a double-click
     // does a selection but using the same "word scan" as the double click code path
 
-    while (self.window_ptr.event_queue.next()) |event| {
+    while (ui.window_ptr.event_queue.next()) |event| {
         const has_selection = widget_node.cursor != widget_node.mark;
         var ev_was_used = true;
         switch (event) {
@@ -511,7 +511,7 @@ pub fn textInputRaw(self: *UiContext, hash_string: []const u8, buffer: []u8, buf
             },
             else => ev_was_used = false,
         }
-        if (ev_was_used) self.window_ptr.event_queue.removeCurrent();
+        if (ev_was_used) ui.window_ptr.event_queue.removeCurrent();
     }
 
     for (text_actions.slice()) |action| {
@@ -521,8 +521,8 @@ pub fn textInputRaw(self: *UiContext, hash_string: []const u8, buffer: []u8, buf
 
         text_ops.replaceRange(buffer, buf_len, .{ .start = text_op.range.start, .end = text_op.range.end }, text_op.replace_str);
         if (text_op.copy_str.len > 0) {
-            const c_str = try self.allocator.dupeZ(u8, text_op.copy_str);
-            defer self.allocator.free(c_str);
+            const c_str = try ui.allocator.dupeZ(u8, text_op.copy_str);
+            defer ui.allocator.free(c_str);
             c.glfwSetClipboardString(null, c_str);
         }
         widget_node.cursor = text_op.byte_cursor;
@@ -532,7 +532,7 @@ pub fn textInputRaw(self: *UiContext, hash_string: []const u8, buffer: []u8, buf
     return sig;
 }
 
-pub fn colorPicker(ui: *UiContext, color: *vec4) void {
+pub fn colorPicker(ui: *UI, color: *vec4) void {
     const square_size = 250;
 
     var hsv = RGBtoHSV(color.*);
@@ -569,10 +569,10 @@ pub fn colorPicker(ui: *UiContext, color: *vec4) void {
         const color_square = ui.addNode(.{ .clickable = true }, "color square", .{
             .pref_size = Size.pixelsExact(square_size, square_size),
             .custom_draw_fn = (struct {
-                pub fn draw(_: *UiContext, shader_inputs: *std.ArrayList(UiContext.ShaderInput), node: *UiContext.Node) error{OutOfMemory}!void {
+                pub fn draw(_: *UI, shader_inputs: *std.ArrayList(UI.ShaderInput), node: *UI.Node) error{OutOfMemory}!void {
                     const hue = @as(*align(1) const vec4, @ptrCast(node.custom_draw_ctx_as_bytes.?.ptr)).*;
                     const hue_color = HSVtoRGB(vec4{ hue[0], 1, 1, 1 });
-                    var rect = UiContext.ShaderInput.fromNode(node);
+                    var rect = UI.ShaderInput.fromNode(node);
                     rect.edge_softness = 0;
                     rect.border_thickness = 0;
                     rect.top_left_color = vec4{ 1, 1, 1, 1 };
@@ -615,8 +615,8 @@ pub fn colorPicker(ui: *UiContext, color: *vec4) void {
         const hue_bar = ui.addNode(.{ .clickable = true, .draw_background = true }, "hue_bar", .{
             .pref_size = Size.pixelsExact(square_size / 10, square_size),
             .custom_draw_fn = (struct {
-                pub fn draw(_: *UiContext, shader_inputs: *std.ArrayList(UiContext.ShaderInput), node: *UiContext.Node) error{OutOfMemory}!void {
-                    var rect = UiContext.ShaderInput.fromNode(node);
+                pub fn draw(_: *UI, shader_inputs: *std.ArrayList(UI.ShaderInput), node: *UI.Node) error{OutOfMemory}!void {
+                    var rect = UI.ShaderInput.fromNode(node);
                     rect.edge_softness = 0;
                     rect.border_thickness = 0;
                     const hue_colors = [_]vec4{
@@ -747,59 +747,74 @@ fn HSVtoRGB(hsva: vec4) vec4 {
     };
 }
 
-pub fn labelF(self: *UiContext, comptime fmt: []const u8, args: anytype) void {
-    const str = self.fmtTmpString(fmt, args);
-    self.label(str);
+/// returns the full path when user chooses a file, `null` otherwise
+// TODO: use some sort of window abstraction to communicate that the file picker
+//       windows got closed without picking a file
+pub fn filePicker(ui: *UI) !?[]const u8 {
+    var cwd_buf: [0x4000]u8 = undefined;
+    const cwd = try std.os.getcwd(&cwd_buf);
+    var dir = try std.fs.openIterableDirAbsolute(cwd, .{ .access_sub_paths = true });
+    defer dir.close();
+    var dir_iter = dir.iterate();
+    while (try dir_iter.next()) |entry| {
+        ui.label(entry.name);
+    }
+    return null;
 }
 
-pub fn labelBoxF(self: *UiContext, comptime fmt: []const u8, args: anytype) void {
-    const str = self.fmtTmpString(fmt, args);
-    self.labelBox(str);
+pub fn labelF(ui: *UI, comptime fmt: []const u8, args: anytype) void {
+    const str = ui.fmtTmpString(fmt, args);
+    ui.label(str);
 }
 
-pub fn textF(self: *UiContext, comptime fmt: []const u8, args: anytype) Signal {
-    const str = self.fmtTmpString(fmt, args);
-    return self.text(str);
+pub fn labelBoxF(ui: *UI, comptime fmt: []const u8, args: anytype) void {
+    const str = ui.fmtTmpString(fmt, args);
+    ui.labelBox(str);
 }
 
-pub fn textBoxF(self: *UiContext, comptime fmt: []const u8, args: anytype) Signal {
-    const str = self.fmtTmpString(fmt, args);
-    return self.textBox(str);
+pub fn textF(ui: *UI, comptime fmt: []const u8, args: anytype) Signal {
+    const str = ui.fmtTmpString(fmt, args);
+    return ui.text(str);
 }
 
-pub fn buttonF(self: *UiContext, comptime fmt: []const u8, args: anytype) Signal {
-    const str = self.fmtTmpString(fmt, args);
-    return self.button(str);
+pub fn textBoxF(ui: *UI, comptime fmt: []const u8, args: anytype) Signal {
+    const str = ui.fmtTmpString(fmt, args);
+    return ui.textBox(str);
 }
 
-pub fn iconButtonF(self: *UiContext, comptime fmt: []const u8, args: anytype) Signal {
-    const str = self.fmtTmpString(fmt, args);
-    return self.iconButton(str);
+pub fn buttonF(ui: *UI, comptime fmt: []const u8, args: anytype) Signal {
+    const str = ui.fmtTmpString(fmt, args);
+    return ui.button(str);
 }
 
-pub fn subtleIconButtonF(self: *UiContext, comptime fmt: []const u8, args: anytype) Signal {
-    const str = self.fmtTmpString(fmt, args);
-    return self.subtleIconButton(str);
+pub fn iconButtonF(ui: *UI, comptime fmt: []const u8, args: anytype) Signal {
+    const str = ui.fmtTmpString(fmt, args);
+    return ui.iconButton(str);
 }
 
-pub fn checkBoxF(self: *UiContext, comptime fmt: []const u8, args: anytype, value: *bool) Signal {
-    const str = self.fmtTmpString(fmt, args);
-    return self.checkBox(str, value);
+pub fn subtleIconButtonF(ui: *UI, comptime fmt: []const u8, args: anytype) Signal {
+    const str = ui.fmtTmpString(fmt, args);
+    return ui.subtleIconButton(str);
 }
 
-pub fn pushLayoutParentF(self: *UiContext, comptime fmt: []const u8, args: anytype, size: [2]Size, layout_axis: Axis) *Node {
-    const str = self.fmtTmpString(fmt, args);
-    return self.pushLayoutParent(str, size, layout_axis);
+pub fn checkBoxF(ui: *UI, comptime fmt: []const u8, args: anytype, value: *bool) Signal {
+    const str = ui.fmtTmpString(fmt, args);
+    return ui.checkBox(str, value);
 }
 
-pub fn pushLayoutParentFlagsF(self: *UiContext, flags: UiContext.Flags, comptime fmt: []const u8, args: anytype, size: [2]Size, layout_axis: Axis) *Node {
-    const str = self.fmtTmpString(fmt, args);
-    return self.pushLayoutParentFlags(flags, str, size, layout_axis);
+pub fn pushLayoutParentF(ui: *UI, comptime fmt: []const u8, args: anytype, size: [2]Size, layout_axis: Axis) *Node {
+    const str = ui.fmtTmpString(fmt, args);
+    return ui.pushLayoutParent(str, size, layout_axis);
 }
 
-pub fn fmtTmpString(self: *UiContext, comptime fmt: []const u8, args: anytype) []const u8 {
-    return std.fmt.allocPrint(self.build_arena.allocator(), fmt, args) catch |e| {
-        self.setErrorInfo(@errorReturnTrace(), @errorName(e));
+pub fn pushLayoutParentFlagsF(ui: *UI, flags: UI.Flags, comptime fmt: []const u8, args: anytype, size: [2]Size, layout_axis: Axis) *Node {
+    const str = ui.fmtTmpString(fmt, args);
+    return ui.pushLayoutParentFlags(flags, str, size, layout_axis);
+}
+
+pub fn fmtTmpString(ui: *UI, comptime fmt: []const u8, args: anytype) []const u8 {
+    return std.fmt.allocPrint(ui.build_arena.allocator(), fmt, args) catch |e| {
+        ui.setErrorInfo(@errorReturnTrace(), @errorName(e));
         return "";
     };
 }

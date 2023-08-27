@@ -8,9 +8,9 @@ const math = @import("math.zig");
 const vec2 = math.vec2;
 const vec4 = math.vec4;
 const Font = @import("Font.zig");
-const UiContext = @import("UiContext.zig");
-const Icons = UiContext.Icons;
-const Size = UiContext.Size;
+const UI = @import("UI.zig");
+const Icons = UI.Icons;
+const Size = UI.Size;
 const Session = @import("Session.zig");
 const Elf = @import("Elf.zig");
 const Dwarf = @import("Dwarf.zig");
@@ -101,32 +101,23 @@ pub fn main() !void {
     gl.depthFunc(gl.LEQUAL);
     gl.enable(gl.LINE_SMOOTH);
 
-    var ui = try UiContext.init(allocator, .{}, &window);
+    var ui = try UI.init(allocator, .{}, &window);
     defer ui.deinit();
-    var dbg_ui_view = try UiContext.DebugView.init(allocator, &window);
+    var dbg_ui_view = try UI.DebugView.init(allocator, &window);
     defer dbg_ui_view.deinit();
 
+    ui.base_style.bg_color = vec4{ 0.24, 0.27, 0.31, 1 };
+    ui.base_style.border_color = vec4{ 0.5, 0.5, 0.5, 0.75 };
+    ui.base_style.text_color = vec4{ 1, 1, 1, 1 };
+    // ui.base_style.corner_radii = math.splat(vec4, 5);
+    ui.base_style.edge_softness = 1;
+    ui.base_style.border_thickness = 2;
     if (cmdline_args.font_scale) |font_scale| {
         ui.base_style.font_size *= font_scale;
     }
 
     var session_opt = if (cmdline_args.exec_path) |path| try Session.init(allocator, path) else null;
     defer if (session_opt) |*session| session.deinit();
-    var totals = [4]usize{ 0, 0, 0, 0 };
-    if (session_opt) |session| {
-        for (session.elf.dwarf.units, 0..) |unit, unit_idx| {
-            std.debug.print("debug unit #{} has: {} variables ({} globals), {} types, {} functions\n", .{
-                unit_idx, unit.variables.len, unit.global_vars.len, unit.types.len, unit.functions.len,
-            });
-            totals[0] += unit.variables.len;
-            totals[1] += unit.global_vars.len;
-            totals[2] += unit.types.len;
-            totals[3] += unit.functions.len;
-        }
-        std.debug.print("totals: {} variables ({} globals), {} types, {} functions\n", .{
-            totals[0], totals[1], totals[2], totals[3],
-        });
-    }
 
     var last_time = @as(f32, @floatCast(c.glfwGetTime()));
 
@@ -144,8 +135,6 @@ pub fn main() !void {
     var memline_buf = InputBuf{};
     var memline_addr: ?usize = null;
 
-    var show_ui_stats = true;
-
     var disasm_texts = std.ArrayList(AsmTextInfo).init(allocator);
     defer {
         for (disasm_texts.items) |text| text.deinit(allocator);
@@ -162,6 +151,9 @@ pub fn main() !void {
     var call_stack_viewer = CallStackViewer.init(allocator);
     defer call_stack_viewer.deinit();
 
+    var show_ui_stats = true;
+    var show_file_picker = false;
+
     var session_cmds = std.ArrayList(SessionCmd).init(allocator);
     defer session_cmds.deinit();
 
@@ -173,16 +165,14 @@ pub fn main() !void {
         var frame_arena = std.heap.ArenaAllocator.init(allocator);
         defer frame_arena.deinit();
 
+        // grab all window/input information we need for this frame
         const framebuf_size = try window.getFramebufferSize();
         width = framebuf_size[0];
         height = framebuf_size[1];
-        gl.viewport(0, 0, @as(i32, @intCast(width)), @as(i32, @intCast(height)));
         //const ratio = @intToFloat(f32, width) / @intToFloat(f32, height);
-
         const cur_time = @as(f32, @floatCast(c.glfwGetTime()));
         const dt = cur_time - last_time;
         last_time = cur_time;
-
         const mouse_pos = try window.getMousePos();
 
         try ui.startBuild(width, height, mouse_pos, &window.event_queue);
@@ -194,8 +184,16 @@ pub fn main() !void {
             main_bar_parent.flags.draw_background = true;
             defer ui.popParentAssert(main_bar_parent);
 
-            _ = ui.checkBox("show UI stats", &show_ui_stats);
+            if (ui.button("Open Executable").clicked) show_file_picker = true;
+            if (show_file_picker) {
+                if (session_opt) |_| @panic("TODO: open multiple binaries");
+                std.debug.print("TODO: open exe\n", .{});
+                _ = try ui.filePicker();
+                // const path = "";
+                // session_opt = try Session.init(allocator, path);
+            }
 
+            _ = ui.checkBox("show UI stats", &show_ui_stats);
             if (show_ui_stats) {
                 const mem_stats = try getMemoryStats(allocator);
                 ui.labelF("#nodes={}, frame_time={d:2.4}ms, mem(ram/virtual/shared): {d:.2}/{d:.2}/{d:.2}, gpa requested bytes: {d:.2}", .{
@@ -210,7 +208,7 @@ pub fn main() !void {
 
             ui.spacer(.x, Size.percent(1, 0));
             ui.pushTmpStyle(.{ .bg_color = vec4{ 1, 0, 0.2, 1 } });
-            if (ui.iconButton(UiContext.Icons.cancel).clicked) break;
+            if (ui.iconButton(UI.Icons.cancel).clicked) break;
         }
 
         const tabs_parent = ui.pushLayoutParent("tabs_parent", Size.fill(1, 1), .x);
@@ -354,6 +352,7 @@ pub fn main() !void {
 
         ui.endBuild(dt);
 
+        gl.viewport(0, 0, @as(i32, @intCast(width)), @as(i32, @intCast(height)));
         gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
         try ui.render();
 
@@ -565,7 +564,7 @@ const FileTab = struct {
         return self.findFile(path);
     }
 
-    pub fn display(self: *FileTab, ui: *UiContext, session_cmds: *std.ArrayList(SessionCmd)) !void {
+    pub fn display(self: *FileTab, ui: *UI, session_cmds: *std.ArrayList(SessionCmd)) !void {
         const trace = tracy.Zone(@src());
         defer trace.End();
         const file_tab_node = ui.pushLayoutParentFlags(.{
@@ -652,7 +651,7 @@ const FileTab = struct {
 
                 const font_pixel_size = ui.topStyle().font_size;
                 const line_size = ui.font.getScaledMetrics(font_pixel_size).line_advance;
-                const mouse_offset = text_node_rect.max[1] - ctx_menu_top_left[1] - UiContext.text_vpadding;
+                const mouse_offset = text_node_rect.max[1] - ctx_menu_top_left[1] - UI.text_vpadding;
                 const line_offset = mouse_offset - text_scroll_node.scroll_offset[1];
                 const mouse_line = @floor(line_offset / line_size);
                 const src_line = @as(u32, @intFromFloat(mouse_line)) + 1;
@@ -706,7 +705,7 @@ const FileTab = struct {
 
 fn doOpenFileBox(
     frame_arena: *std.heap.ArenaAllocator,
-    ui: *UiContext,
+    ui: *UI,
     session_cmds: *std.ArrayList(SessionCmd),
     cwd: []const u8,
     src_file_buf: *InputBuf,
@@ -767,7 +766,7 @@ fn doOpenFileBox(
 
 fn doDisassemblyWindow(
     allocator: std.mem.Allocator,
-    ui: *UiContext,
+    ui: *UI,
     session: Session,
     disasm_texts: *std.ArrayList(AsmTextInfo),
     exec_path: ?[]const u8,
@@ -830,7 +829,7 @@ fn doDisassemblyWindow(
     _ = try showDisassemblyWindow(ui, "main_disasm_window", disasm_text, @as(f32, @floatFromInt(line_idx + 1)));
 }
 
-fn showDisassemblyWindow(ui: *UiContext, label: []const u8, asm_text_info: AsmTextInfo, lock_line: ?f32) !UiContext.Signal {
+fn showDisassemblyWindow(ui: *UI, label: []const u8, asm_text_info: AsmTextInfo, lock_line: ?f32) !UI.Signal {
     // TODO: hightlight box ranges
     const highlight_box: ?FileTab.SrcBox = if (lock_line) |line| FileTab.SrcBox{
         .min = .{ .line = line, .column = 0 },
@@ -849,13 +848,13 @@ const TextDisplayInfo = struct {
 };
 
 fn textDisplay(
-    ui: *UiContext,
+    ui: *UI,
     label: []const u8,
-    size: [2]UiContext.Size,
+    size: [2]UI.Size,
     text_info: TextDisplayInfo,
     lock_line: ?f32,
     boxes: []const FileTab.SrcBox,
-) !UiContext.Signal {
+) !UI.Signal {
     const parent = ui.startScrollRegion(label);
     parent.pref_size = size;
     const parent_sig = parent.signal;
@@ -892,7 +891,7 @@ fn textDisplay(
 
     // hack to cut off scrolling at the ends of text
     const text_size = vec2{ label_node.text_rect.size()[0], line_size * @as(f32, @floatFromInt(total_lines)) };
-    var max_offset = text_size - parent_size + vec2{ 2, 2 } * UiContext.text_padd;
+    var max_offset = text_size - parent_size + vec2{ 2, 2 } * UI.text_padd;
     max_offset = vec2{ @max(max_offset[0], 0), @max(max_offset[1], 0) };
     x_off.* = std.math.clamp(x_off.*, -max_offset[0], 0);
     y_off.* = std.math.clamp(y_off.*, -max_offset[1], 0);
@@ -908,7 +907,7 @@ fn textDisplay(
 
         const text_y_start = parent.rect.size()[1] - y_off.*;
         const line_y_start = @max(0, box.min.line - 1) * line_size;
-        const box_y_top = text_y_start - line_y_start - UiContext.text_padd[1];
+        const box_y_top = text_y_start - line_y_start - UI.text_padd[1];
         const box_y_size = @max(1, box.max.line - box.min.line) * line_size;
 
         const box_node = ui.addNode(.{
@@ -1023,7 +1022,7 @@ fn generateTextInfoForDisassembly(allocator: Allocator, data: []const u8, data_s
     };
 }
 
-fn showRegisters(ui: *UiContext, regs: Session.Registers) void {
+fn showRegisters(ui: *UI, regs: Session.Registers) void {
     const table_regs = .{ "rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp", "rsp", "rip" };
     inline for (table_regs) |reg_name| {
         //ui.labelBoxF(reg_name ++ ": 0x{x:0>16}", .{@field(regs, reg_name)});
@@ -1064,7 +1063,7 @@ const CallStackViewer = struct {
         self.show_vars.deinit();
     }
 
-    pub fn display(self: *CallStackViewer, ui: *UiContext, call_stack: []Session.CallFrame, session: Session) !void {
+    pub fn display(self: *CallStackViewer, ui: *UI, call_stack: []Session.CallFrame, session: Session) !void {
         _ = session;
         for (call_stack, 0..) |frame, idx| {
             const result = try self.show_vars.getOrPut(frame);
@@ -1099,7 +1098,7 @@ const CallStackViewer = struct {
 
 fn doVarTable(
     frame_arena: *std.heap.ArenaAllocator,
-    ui: *UiContext,
+    ui: *UI,
     session_cmds: *std.ArrayList(SessionCmd),
     session: *Session,
     var_buf: *InputBuf,
@@ -1221,7 +1220,7 @@ fn doVarTable(
 
 fn doBreakpointUI(
     frame_arena: *std.heap.ArenaAllocator,
-    ui: *UiContext,
+    ui: *UI,
     session_cmds: *std.ArrayList(SessionCmd),
     session: *Session,
     cwd: []const u8,
@@ -1463,9 +1462,9 @@ fn FuzzySearchOptions(comptime Ctx: type, comptime max_slots: usize) type {
         pub fn present(
             self: *@This(),
             arena: *std.heap.ArenaAllocator,
-            ui: *UiContext,
+            ui: *UI,
             label: []const u8,
-            placement: UiContext.Placement,
+            placement: UI.Placement,
             reverse_order: bool,
         ) !?Ctx {
             const trace = tracy.Zone(@src());
@@ -1568,16 +1567,16 @@ fn FuzzySearchOptions(comptime Ctx: type, comptime max_slots: usize) type {
             highlight_color: vec4,
         };
         pub fn CustomDrawMatchHighlight(
-            ui: *UiContext,
-            shader_inputs: *std.ArrayList(UiContext.ShaderInput),
-            node: *UiContext.Node,
+            ui: *UI,
+            shader_inputs: *std.ArrayList(UI.ShaderInput),
+            node: *UI.Node,
         ) error{OutOfMemory}!void {
             const trace = tracy.Zone(@src());
             defer trace.End();
 
             const draw_ctx = if (node.custom_draw_ctx_as_bytes) |ctx_bytes| ctx: {
                 std.debug.assert(ctx_bytes.len == @sizeOf(CustomDrawMatchHighlightCtx));
-                // note: workaround for the same bug I found with UiContext.ShaderInput in
+                // note: workaround for the same bug I found with UI.ShaderInput in
                 // conjunction with vec4
                 // break :ctx @ptrCast(*align(1) const CustomDrawMatchHighlightCtx, ctx_bytes.ptr).*;
                 var rawbuf: [@sizeOf(CustomDrawMatchHighlightCtx) + 32]u8 = undefined;
@@ -1610,7 +1609,7 @@ fn FuzzySearchOptions(comptime Ctx: type, comptime max_slots: usize) type {
                 const quad = font.buildQuad(char, node.font_size, &cursor) catch |err| switch (err) {
                     error.OutOfMemory => return error.OutOfMemory,
                 };
-                var quad_rect = UiContext.Rect{ .min = quad.points[0].pos, .max = quad.points[2].pos };
+                var quad_rect = UI.Rect{ .min = quad.points[0].pos, .max = quad.points[2].pos };
                 quad_rect.min += text_pos;
                 quad_rect.max += text_pos;
 
@@ -1629,9 +1628,9 @@ fn FuzzySearchOptions(comptime Ctx: type, comptime max_slots: usize) type {
                     .clip_rect_min = node.clip_rect.min,
                     .clip_rect_max = node.clip_rect.max,
                     .which_font = if (is_highlight)
-                        @intFromEnum(UiContext.FontType.text_bold)
+                        @intFromEnum(UI.FontType.text_bold)
                     else
-                        @intFromEnum(UiContext.FontType.text),
+                        @intFromEnum(UI.FontType.text),
                 });
             }
         }
