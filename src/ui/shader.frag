@@ -70,7 +70,11 @@ void main() {
     if (thickness != 0) rect_dist = toBorder(rect_dist, -(thickness / 2), thickness);
 
     FragColor = rect_color;
-    if (softness != 0) FragColor.a *= smoothstep(-softness, softness, -rect_dist);
+    if (softness != 0) {
+        FragColor.a *= smoothstep(-softness, softness, -rect_dist);
+    } else if (rect_dist > 0) {
+        FragColor.a = 0;
+    }
 
     float tex_alpha = 1;
     switch (fs_in.which_font) {

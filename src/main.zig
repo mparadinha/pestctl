@@ -352,10 +352,6 @@ pub fn main() !void {
 
         ui.endBuild(dt);
 
-        gl.viewport(0, 0, @as(i32, @intCast(width)), @as(i32, @intCast(height)));
-        gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-        try ui.render();
-
         // special debug commands
         if (window.event_queue.searchAndRemove(.KeyUp, .{
             .mods = .{ .control = true, .shift = true },
@@ -367,9 +363,6 @@ pub fn main() !void {
             .mods = .{ .control = true, .shift = true },
             .key = c.GLFW_KEY_D,
         })) dbg_ui_view.active = !dbg_ui_view.active;
-        if (dbg_ui_view.active) {
-            try dbg_ui_view.show(&ui, width, height, mouse_pos, &window.event_queue, dt);
-        }
 
         const cur_src_loc = if (session_opt) |s| s.src_loc else null;
         var focused_src_loc = cur_src_loc;
@@ -436,6 +429,13 @@ pub fn main() !void {
             if (session_opt) |*session| try session.fullUpdate();
         }
         session_cmds.clearRetainingCapacity();
+
+        gl.viewport(0, 0, @as(i32, @intCast(width)), @as(i32, @intCast(height)));
+        gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+        try ui.render();
+        if (dbg_ui_view.active) {
+            try dbg_ui_view.show(&ui, width, height, mouse_pos, &window.event_queue, dt);
+        }
 
         window.update();
         frame_idx += 1;

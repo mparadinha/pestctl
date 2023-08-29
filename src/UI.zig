@@ -340,10 +340,8 @@ pub const Rect = struct {
         return .{ .min = bottom_left, .max = bottom_left + calc_size };
     }
 
-    pub fn format(value: Rect, comptime fmt: []const u8, opts: std.fmt.FormatOptions, writer: anytype) !void {
-        _ = opts;
-        _ = fmt;
-        try writer.print("{{ .min={d:.2}, .max={d:.2} }}", .{ value.min, value.max });
+    pub fn format(v: Rect, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+        try writer.print("{{ .min={d:.2}, .max={d:.2} }}", .{ v.min, v.max });
     }
 };
 
@@ -411,6 +409,16 @@ pub const RelativePlacement = struct {
     src: Placement.Tag,
     dst: Placement.Tag,
     diff: vec2 = vec2{ 0, 0 },
+
+    pub fn match(tag: Placement.Tag) RelativePlacement {
+        return .{ .src = tag, .dst = tag };
+    }
+
+    pub fn format(v: RelativePlacement, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+        try writer.print("{{ .src={s}, .dst={s}, .diff={d:4.2} }}", .{
+            @tagName(v.src), @tagName(v.dst), v.diff,
+        });
+    }
 };
 
 pub const Signal = struct {
@@ -579,6 +587,7 @@ pub fn addNodeRawStrings(self: *UI, flags: Flags, display_string_in: []const u8,
     return node;
 }
 
+/// make this new node a new root node (i.e. no parent and no siblings)
 pub fn addNodeAsRoot(self: *UI, flags: Flags, string: []const u8, init_args: anytype) *Node {
     // the `addNode` function is gonna use whatever parent is at the top of the stack by default
     // so we have to trick it into thinking this is the root node
@@ -944,7 +953,7 @@ fn setupTreeForRender(self: *UI, shader_inputs: *std.ArrayList(ShaderInput), roo
     }
 }
 
-// small helper for `UI.render`
+// turn a UI.Node into Shader quads
 fn addShaderInputsForNode(self: *UI, shader_inputs: *std.ArrayList(ShaderInput), node: *Node) !void {
     if (node.custom_draw_fn) |draw_fn| return draw_fn(self, shader_inputs, node);
 
@@ -1417,9 +1426,15 @@ pub fn hashPartOfString(string: []const u8) []const u8 {
 
 pub const DepthFirstNodeIterator = struct {
     cur_node: *Node,
+    first_iteration: bool = true,
     parent_level: usize = 0, // how many times have we gone down the hierarchy
 
     pub fn next(self: *DepthFirstNodeIterator) ?*Node {
+        if (self.first_iteration) {
+            self.first_iteration = false;
+            return self.cur_node;
+        }
+
         if (self.cur_node.child_count > 0) {
             self.parent_level += 1;
             self.cur_node = self.cur_node.first.?;
@@ -1728,6 +1743,7 @@ pub const DebugView = struct {
     node_list_idx: usize,
     node_query_pos: ?vec2,
     anchor_right: bool,
+    show_help: bool,
 
     pub fn init(allocator: Allocator, window_ptr: *Window) !DebugView {
         return DebugView{
@@ -1738,6 +1754,7 @@ pub const DebugView = struct {
             .node_list_idx = 0,
             .node_query_pos = null,
             .anchor_right = false,
+            .show_help = true,
         };
     }
 
@@ -1746,6 +1763,10 @@ pub const DebugView = struct {
     }
 
     pub fn show(self: *DebugView, ui: *UI, width: u32, height: u32, mouse_pos: vec2, events: *Window.EventQueue, dt: f32) !void {
+        // ctrl+shift+h to toggle help menu
+        const ctrl_shift = Window.InputEvent.Modifiers{ .shift = true, .control = true };
+        if (events.searchAndRemove(.KeyDown, .{ .key = c.GLFW_KEY_H, .mods = ctrl_shift }))
+            self.show_help = !self.show_help;
         // scroll up/down to change the highlighted node in the list
         if (events.fetchAndRemove(.MouseScroll, null)) |scroll_ev| {
             if (scroll_ev.y < 0) self.node_list_idx += 1;
@@ -1761,7 +1782,6 @@ pub const DebugView = struct {
             _ = events.removeAt(ev_idx);
         }
         // ctrl+shift+left/right to anchor left/right
-        const ctrl_shift = Window.InputEvent.Modifiers{ .shift = true, .control = true };
         if (events.searchAndRemove(.KeyDown, .{ .key = c.GLFW_KEY_LEFT, .mods = ctrl_shift }))
             self.anchor_right = false;
         if (events.searchAndRemove(.KeyDown, .{ .key = c.GLFW_KEY_RIGHT, .mods = ctrl_shift }))
@@ -1790,6 +1810,7 @@ pub const DebugView = struct {
             .floating_x = true,
             .floating_y = true,
         };
+        self.ui.pushStyle(.{ .border_thickness = 2 });
         for (selected_nodes.items) |node| {
             _ = self.ui.addNode(border_node_flags, "", .{
                 .border_color = vec4{ 1, 0, 0, 0.5 },
@@ -1803,8 +1824,9 @@ pub const DebugView = struct {
             .rel_pos = .{ .src = .btm_left, .dst = .btm_left, .diff = active_node.rect.min },
             .pref_size = Size.fromRect(active_node.rect),
         });
+        _ = self.ui.popStyle();
 
-        self.ui.pushStyle(.{ .font_size = 16 });
+        self.ui.pushStyle(.{ .font_size = 16, .bg_color = vec4{ 0, 0, 0, 0.75 } });
         self.ui.root_node.?.child_layout_axis = .x;
         if (self.anchor_right) self.ui.spacer(.x, Size.percent(1, 0));
         {
@@ -1814,7 +1836,6 @@ pub const DebugView = struct {
                 .clip_children = true,
             }, "", .{
                 .child_layout_axis = .y,
-                .bg_color = vec4{ 0, 0, 0, 0.75 },
                 .pref_size = [2]Size{ Size.percent(0.15, 1), Size.by_children(1) },
             });
             self.ui.pushParent(left_bg_node);
@@ -1837,7 +1858,6 @@ pub const DebugView = struct {
                 .clip_children = true,
             }, "", .{
                 .child_layout_axis = .y,
-                .bg_color = vec4{ 0, 0, 0, 0.75 },
                 .pref_size = [2]Size{ Size.percent(0.5, 1), Size.by_children(1) },
             });
             self.ui.pushParent(right_bg_node);
@@ -1882,6 +1902,23 @@ pub const DebugView = struct {
                     else => self.ui.labelF("{s}={any}", .{ name, value }),
                 }
             }
+        }
+        if (self.show_help) {
+            const help_bg_node = self.ui.addNode(.{
+                .draw_background = true,
+                .clip_children = true,
+            }, "#help_bg_node", .{
+                .child_layout_axis = .y,
+                .pref_size = [2]Size{ Size.by_children(1), Size.by_children(1) },
+            });
+            self.ui.pushParent(help_bg_node);
+            defer self.ui.popParentAssert(help_bg_node);
+
+            self.ui.label("Ctrl+Shift+H            -> toggle this help menu");
+            self.ui.label("Ctrl+Shift+D            -> toggle dbg UI");
+            self.ui.label("scroll up/down          -> choose highlighed node");
+            self.ui.label("Ctrl+Shift+scroll_click -> freezy mouse position");
+            self.ui.label("Ctrl+Shift+Left/Right   -> anchor left/right");
         }
 
         self.ui.endBuild(dt);
