@@ -371,10 +371,10 @@ pub const Placement = union(enum) {
         };
     }
 
-    pub fn convertTo(self: Placement, new_tag: Tag, size: vec2) Placement {
+    pub fn convertTo(self: Placement, new_tag: Tag, rect_size: vec2) Placement {
         if (self == new_tag) return self;
-        const center = self.getCenter(size);
-        const half_size = size / vec2{ 2, 2 };
+        const center = self.getCenter(rect_size);
+        const half_size = rect_size / vec2{ 2, 2 };
         return Placement.init(new_tag, switch (new_tag) {
             .top_left => center + vec2{ -half_size[0], half_size[1] },
             .btm_left => center - half_size,
@@ -388,8 +388,8 @@ pub const Placement = union(enum) {
         });
     }
 
-    pub fn getCenter(self: Placement, size: vec2) vec2 {
-        const half_size = size / vec2{ 2, 2 };
+    pub fn getCenter(self: Placement, rect_size: vec2) vec2 {
+        const half_size = rect_size / vec2{ 2, 2 };
         return switch (self) {
             .top_left => |tl| tl + vec2{ half_size[0], -half_size[1] },
             .btm_left => |bl| bl + half_size,
@@ -593,12 +593,9 @@ pub fn addNodeAsRoot(self: *UI, flags: Flags, string: []const u8, init_args: any
     // so we have to trick it into thinking this is the root node
     const saved_stack_len = self.parent_stack.len();
     self.parent_stack.array_list.items.len = 0;
+    defer self.parent_stack.array_list.items.len = saved_stack_len;
 
     const node = self.addNode(flags, string, init_args);
-
-    self.parent_stack.array_list.items.len = saved_stack_len;
-    self.pushParent(node);
-
     return node;
 }
 
@@ -679,12 +676,9 @@ pub fn startBuild(self: *UI, screen_w: u32, screen_h: u32, mouse_pos: vec2, even
     self.style_stack.clear();
     try self.style_stack.push(self.base_style);
 
-    const root_pref_sizes = [2]Size{ Size.pixels(screen_size[0], 1), Size.pixels(screen_size[1], 1) };
-    const whole_screen_rect = Rect{ .min = vec2{ 0, 0 }, .max = screen_size };
     self.root_node = try self.addNodeRaw(.{ .clip_children = true }, "###INTERNAL_ROOT_NODE", .{
-        .pref_size = root_pref_sizes,
-        .rect = whole_screen_rect,
-        .clip_rect = whole_screen_rect,
+        .pref_size = Size.pixelsExact(screen_size[0], screen_size[1]),
+        .rect = Rect{ .min = vec2{ 0, 0 }, .max = screen_size },
     });
     try self.parent_stack.push(self.root_node.?);
 
@@ -695,9 +689,13 @@ pub fn startBuild(self: *UI, screen_w: u32, screen_h: u32, mouse_pos: vec2, even
     self.first_error_trace = null;
 
     var mouse_cursor = Window.CursorType.arrow;
-    if (self.focused_node_key) |key| mouse_cursor = self.node_table.getFromHash(key).?.cursor_type;
-    if (self.hot_node_key) |key| mouse_cursor = self.node_table.getFromHash(key).?.cursor_type;
-    if (self.active_node_key) |key| mouse_cursor = self.node_table.getFromHash(key).?.cursor_type;
+    for ([_]?NodeKey{
+        self.focused_node_key,
+        self.hot_node_key,
+        self.active_node_key,
+    }) |node_key| {
+        if (node_key) |key| mouse_cursor = self.node_table.getFromHash(key).?.cursor_type;
+    }
     self.window_ptr.setCursor(mouse_cursor);
 }
 
@@ -709,7 +707,8 @@ pub fn endBuild(self: *UI, dt: f32) void {
 
     _ = self.style_stack.pop().?;
     const parent = self.parent_stack.pop().?;
-    std.debug.assert(parent == self.root_node.?);
+    if (parent != self.root_node.?)
+        std.debug.panic("parent_stack should be empty but '#{s}' was left behind\n", .{parent.hash_string});
 
     std.debug.assert(self.parent_stack.len() == 0);
 
@@ -1288,8 +1287,6 @@ fn solveViolationsWorkFn(self: *UI, node: *Node, axis: Axis) void {
 }
 
 fn solveFinalPosWorkFn(self: *UI, node: *Node, axis: Axis) void {
-    _ = self;
-
     const axis_idx: usize = @intFromEnum(axis);
     const is_layout_axis = (axis == node.child_layout_axis);
 
@@ -1299,12 +1296,15 @@ fn solveFinalPosWorkFn(self: *UI, node: *Node, axis: Axis) void {
             .y => node.flags.floating_y,
         };
         if (is_floating) {
-            const placement = Placement.init(node.rel_pos.src, node.rel_pos.diff);
-            const bottom_left = placement.convertTo(.btm_left, node.calc_size).value();
-            node.calc_rel_pos[axis_idx] = bottom_left[axis_idx];
+            const calc_rel_pos = Placement.init(node.rel_pos.src, node.rel_pos.diff)
+                .convertTo(.btm_left, node.calc_size)
+                .convertTo(node.rel_pos.dst, self.screen_size)
+                .value();
+            node.calc_rel_pos[axis_idx] = calc_rel_pos[axis_idx];
         }
         node.rect.min[axis_idx] = node.calc_rel_pos[axis_idx];
         node.rect.max[axis_idx] = node.calc_rel_pos[axis_idx] + node.calc_size[axis_idx];
+        node.clip_rect = node.rect;
     }
 
     if (node.child_count == 0) return;

@@ -191,24 +191,30 @@ pub fn endTooltip(ui: *UI) void {
     std.debug.assert(parent == ui.tooltip_root_node);
 }
 
-pub fn startWindow(ui: *UI, hash_string: []const u8) *Node {
-    const whole_screen_size = [2]Size{ Size.pixels(ui.screen_size[0], 1), Size.pixels(ui.screen_size[1], 1) };
-    const node = ui.addNodeAsRoot(.{
+pub fn startWindow(
+    ui: *UI,
+    hash_string: []const u8,
+    size: [2]Size,
+    pos: UI.RelativePlacement,
+) *Node {
+    const window_root = ui.addNodeAsRoot(.{
         .clip_children = true,
-        .no_id = true,
+        .floating_x = true,
+        .floating_y = true,
     }, hash_string, .{
-        .pref_size = whole_screen_size,
+        .pref_size = size,
+        .rel_pos = pos,
     });
+    ui.pushParent(window_root);
 
-    ui.window_roots.append(node) catch |e| {
+    ui.window_roots.append(window_root) catch |e|
         ui.setErrorInfo(@errorReturnTrace(), @errorName(e));
-    };
 
-    return node;
+    return window_root;
 }
 
 pub fn endWindow(ui: *UI, window_root: *Node) void {
-    std.debug.assert(ui.popParent() == window_root);
+    ui.popParentAssert(window_root);
 }
 
 /// returns the new parent (which gets pushed on the parent stack) for this region
