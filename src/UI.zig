@@ -739,7 +739,21 @@ pub fn endBuild(self: *UI, dt: f32) void {
         node_ptr.active_trans += (active_target - node_ptr.active_trans) * fast_rate;
     }
 
+    // do all the layout
+    self.layoutTree(self.root_node.?);
+    for (self.window_roots.items) |node| self.layoutTree(node);
+    if (self.ctx_menu_root_node) |node| self.layoutTree(node);
+    if (self.tooltip_root_node) |node| self.layoutTree(node);
+
     self.frame_idx += 1;
+}
+
+fn layoutTree(self: *UI, root: *Node) void {
+    self.solveIndependentSizes(root);
+    self.solveDownwardDependent(root);
+    self.solveUpwardDependent(root);
+    self.solveViolations(root);
+    self.solveFinalPos(root);
 }
 
 fn computeSignalsForTree(self: *UI, root: *Node) !void {
@@ -940,13 +954,6 @@ pub fn render(self: *UI) !void {
 }
 
 fn setupTreeForRender(self: *UI, shader_inputs: *std.ArrayList(ShaderInput), root: *Node) !void {
-    // do the whole layout right before rendering
-    self.solveIndependentSizes(root);
-    self.solveDownwardDependent(root);
-    self.solveUpwardDependent(root);
-    self.solveViolations(root);
-    self.solveFinalPos(root);
-
     var node_iterator = DepthFirstNodeIterator{ .cur_node = root };
     while (node_iterator.next()) |node| {
         try self.addShaderInputsForNode(shader_inputs, node);
