@@ -14,6 +14,7 @@ const Rect = UI.Rect;
 const Size = UI.Size;
 const Axis = UI.Axis;
 const Placement = UI.Placement;
+const RelativePlacement = UI.RelativePlacement;
 const Icons = UI.Icons;
 const text_ops = @import("text_ops.zig");
 const TextAction = text_ops.TextAction;
@@ -153,8 +154,8 @@ pub fn startCtxMenu(ui: *UI, placement: Placement) void {
     }, "###INTERNAL_CTX_MENU_ROOT_NODE", .{
         .pref_size = ctx_menu_size,
         .rel_pos = .{
-            .src = std.meta.activeTag(placement),
-            .dst = .btm_left,
+            .target = std.meta.activeTag(placement),
+            .anchor = .btm_left,
             .diff = placement.value(),
         },
     });
@@ -232,7 +233,7 @@ pub fn endScrollRegion(ui: *UI, parent: *Node, start_scroll: f32, end_scroll: f3
     bar_node.child_layout_axis = .y;
     bar_node.pref_size = [2]Size{ Size.by_children(1), Size.percent(1, 0) };
     bar_node.bg_color = vec4{ 0, 0, 0, 0.3 };
-    bar_node.rel_pos = .{ .src = .top_right, .dst = .top_right };
+    bar_node.rel_pos = RelativePlacement.match(.top_right);
     {
         ui.pushParent(bar_node);
         defer std.debug.assert(ui.popParent() == bar_node);
@@ -264,7 +265,7 @@ pub fn endScrollRegion(ui: *UI, parent: *Node, start_scroll: f32, end_scroll: f3
                 .font_type = .icon,
             });
             const icon_size = bar_icon_node.text_rect.size()[1];
-            bar_icon_node.rel_pos = .{ .src = .top_left, .dst = .top_left };
+            bar_icon_node.rel_pos = RelativePlacement.match(.top_left);
             bar_icon_node.rel_pos.diff[1] = if (bar_region_size > 0) blk: {
                 const scroll_pct = std.math.clamp((parent.scroll_offset[1] - start_scroll) / scroll_size, 0, 1);
                 break :blk -std.math.clamp(
@@ -306,7 +307,7 @@ pub fn dropDownList(ui: *UI, hash_string: []const u8, options: []const []const u
             .floating_y = true,
         }, "tmp_opts_window_parent", .{
             .pref_size = opts_parent_size,
-            .rel_pos = .{ .src = .top_left, .dst = .btm_left, .diff = choice_parent.rect.min },
+            .rel_pos = .{ .target = .top_left, .anchor = .btm_left, .diff = choice_parent.rect.min },
         });
         ui.pushParent(opts_parent);
         defer std.debug.assert(ui.popParent() == opts_parent);

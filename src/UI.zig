@@ -404,19 +404,32 @@ pub const Placement = union(enum) {
     }
 };
 
-/// defines a placement such that `src` plus `diff` is `dst`
+/// defines a placement such that `anchor` plus `diff` is `target`
+/// `anchor` usually refers to some parent, and `target` to the thing we want to place
 pub const RelativePlacement = struct {
-    src: Placement.Tag,
-    dst: Placement.Tag,
+    target: Placement.Tag,
+    anchor: Placement.Tag,
     diff: vec2 = vec2{ 0, 0 },
 
     pub fn match(tag: Placement.Tag) RelativePlacement {
-        return .{ .src = tag, .dst = tag };
+        return .{ .target = tag, .anchor = tag };
+    }
+
+    pub fn simple(diff: vec2) RelativePlacement {
+        return .{ .target = .btm_left, .anchor = .btm_left, .diff = diff };
+    }
+
+    /// given the sizes of the two objects we can calculate their relative position
+    pub fn calcRelativePos(rel_placement: RelativePlacement, target_size: vec2, anchor_size: vec2) vec2 {
+        return Placement.init(rel_placement.target, rel_placement.diff)
+            .convertTo(.btm_left, target_size)
+            .convertTo(rel_placement.anchor, anchor_size)
+            .value();
     }
 
     pub fn format(v: RelativePlacement, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
-        try writer.print("{{ .src={s}, .dst={s}, .diff={d:4.2} }}", .{
-            @tagName(v.src), @tagName(v.dst), v.diff,
+        try writer.print("{{ .target={s}, .anchor={s}, .diff={d:4.2} }}", .{
+            @tagName(v.target), @tagName(v.anchor), v.diff,
         });
     }
 };
@@ -555,7 +568,7 @@ pub fn addNodeRawStrings(self: *UI, flags: Flags, display_string_in: []const u8,
     if (!lookup_result.found_existing) {
         node.signal = try self.computeNodeSignal(node);
         node.first_frame_touched = self.frame_idx;
-        node.rel_pos = .{ .src = .btm_left, .dst = .btm_left, .diff = vec2{ 0, 0 } };
+        node.rel_pos = RelativePlacement.match(.btm_left);
         node.last_click_time = 0;
         node.last_double_click_time = 0;
         node.scroll_offset = vec2{ 0, 0 };
@@ -1292,10 +1305,7 @@ fn solveFinalPosWorkFn(self: *UI, node: *Node, axis: Axis) void {
             .y => node.flags.floating_y,
         };
         if (is_floating) {
-            const calc_rel_pos = Placement.init(node.rel_pos.src, node.rel_pos.diff)
-                .convertTo(.btm_left, node.calc_size)
-                .convertTo(node.rel_pos.dst, self.screen_size)
-                .value();
+            const calc_rel_pos = node.rel_pos.calcRelativePos(node.calc_size, self.screen_size);
             node.calc_rel_pos[axis_idx] = calc_rel_pos[axis_idx];
         }
         node.rect.min[axis_idx] = node.calc_rel_pos[axis_idx];
@@ -1320,10 +1330,7 @@ fn solveFinalPosWorkFn(self: *UI, node: *Node, axis: Axis) void {
             .y => child_node.flags.floating_y,
         };
         if (is_floating) {
-            const calc_rel_pos = Placement.init(child_node.rel_pos.src, child_node.rel_pos.diff)
-                .convertTo(.btm_left, child_node.calc_size)
-                .convertTo(child_node.rel_pos.dst, node.calc_size)
-                .value();
+            const calc_rel_pos = child_node.rel_pos.calcRelativePos(child_node.calc_size, node.calc_size);
             child_node.calc_rel_pos[axis_idx] = calc_rel_pos[axis_idx];
             continue;
         }
@@ -1820,14 +1827,14 @@ pub const DebugView = struct {
         for (selected_nodes.items) |node| {
             _ = self.ui.addNode(border_node_flags, "", .{
                 .border_color = vec4{ 1, 0, 0, 0.5 },
-                .rel_pos = .{ .src = .btm_left, .dst = .btm_left, .diff = node.rect.min },
+                .rel_pos = RelativePlacement.simple(node.rect.min),
                 .pref_size = Size.fromRect(node.rect),
             });
         }
         // green border for the node selected from the list (separated so it always draws on top)
         _ = self.ui.addNode(border_node_flags, "", .{
             .border_color = vec4{ 0, 1, 0, 0.5 },
-            .rel_pos = .{ .src = .btm_left, .dst = .btm_left, .diff = active_node.rect.min },
+            .rel_pos = RelativePlacement.simple(active_node.rect.min),
             .pref_size = Size.fromRect(active_node.rect),
         });
         _ = self.ui.popStyle();

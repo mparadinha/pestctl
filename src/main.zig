@@ -615,7 +615,7 @@ const FileTab = struct {
                     .draw_text = true,
                     .floating_y = true,
                 }, lines_text, .{});
-                line_text_node.rel_pos = .{ .src = .top_left, .dst = .top_left };
+                line_text_node.rel_pos = UI.RelativePlacement.match(.top_left);
 
                 break :blk line_text_node;
             };
@@ -897,11 +897,10 @@ fn textDisplay(
     x_off.* = std.math.clamp(x_off.*, -max_offset[0], 0);
     y_off.* = std.math.clamp(y_off.*, -max_offset[1], 0);
 
-    label_node.rel_pos = .{
-        .src = .top_left,
-        .dst = .top_left,
-        .diff = vec2{ x_off.*, -y_off.* - @as(f32, @floatFromInt(partial_start_line)) * line_size },
-    };
+    label_node.rel_pos = UI.RelativePlacement.simple(vec2{
+        x_off.*,
+        y_off.* + @as(f32, @floatFromInt(partial_start_line)) * line_size,
+    });
 
     for (boxes) |box| {
         if (box.min.line == 0 and box.max.line == 0) break;
