@@ -1023,9 +1023,9 @@ fn addShaderInputsForNode(self: *UI, shader_inputs: *std.ArrayList(ShaderInput),
             .icon => &self.icon_font,
         };
 
-        var text_pos = self.textPosFromNode(node);
+        var text_base = self.textPosFromNode(node);
         if (node.flags.draw_active_effects) {
-            text_pos[1] -= 0.1 * node.font_size * node.active_trans;
+            text_base[1] -= (self.textPadding(node)[1] / 2) * node.active_trans;
         }
 
         const display_text = node.display_string;
@@ -1034,8 +1034,8 @@ fn addShaderInputsForNode(self: *UI, shader_inputs: *std.ArrayList(ShaderInput),
         defer self.allocator.free(quads);
         for (quads) |quad| {
             var quad_rect = Rect{ .min = quad.points[0].pos, .max = quad.points[2].pos };
-            quad_rect.min += text_pos;
-            quad_rect.max += text_pos;
+            quad_rect.min += text_base;
+            quad_rect.max += text_base;
 
             try shader_inputs.append(.{
                 .btm_left_pos = quad_rect.min,
@@ -1129,7 +1129,6 @@ fn solveFinalPos(self: *UI, node: *Node) void {
 }
 
 fn solveIndependentSizesWorkFn(self: *UI, node: *Node, axis: Axis) void {
-    _ = self;
     const axis_idx: usize = @intFromEnum(axis);
     switch (node.pref_size[axis_idx]) {
         .pixels => |pixels| node.calc_size[axis_idx] = pixels.value,
@@ -1145,10 +1144,7 @@ fn solveIndependentSizesWorkFn(self: *UI, node: *Node, axis: Axis) void {
             //};
             const text_rect = node.text_rect;
             const text_size = text_rect.max - text_rect.min;
-            const text_padding = switch (axis) {
-                .x => text_hpadding,
-                .y => text_vpadding,
-            };
+            const text_padding = self.textPadding(node)[axis_idx];
             node.calc_size[axis_idx] = text_size[axis_idx] + 2 * text_padding;
         },
         else => {},
@@ -1381,29 +1377,32 @@ fn layoutRecurseHelperPost(comptime work_fn: LayoutWorkFn, args: LayoutWorkFnArg
     work_fn(args.self, args.node, args.axis);
 }
 
-pub const text_hpadding: f32 = 4;
-pub const text_vpadding: f32 = 4;
-pub const text_padd = vec2{ text_hpadding, text_vpadding };
+pub fn textPadding(_: *UI, node: *Node) vec2 {
+    // TODO: I'm not sure the `@round` should be here. I think this is same problem
+    //       as the text appearing fuzzy on certain specific window resolutions
+    return @splat(@round(node.font_size * 0.2));
+}
 
+/// calculate the origin of a node's text box in absolute coordinates
 pub fn textPosFromNode(self: *UI, node: *Node) vec2 {
-    _ = self;
-
     const node_size = node.rect.size();
     const text_rect = node.text_rect;
     const text_size = text_rect.size();
+    const text_padd = self.textPadding(node);
 
+    // offset from left-side of node rect to start (i.e. left) of text box
     const rel_text_x = switch (node.text_align) {
-        .left => text_hpadding,
+        .left => text_padd[0],
         .center => (node_size[0] / 2) - (text_size[0] / 2),
-        .right => node_size[0] - text_hpadding - text_size[0],
+        .right => node_size[0] - text_padd[0] - text_size[0],
     };
 
-    const box_middle = node.rect.min + (node_size / vec2{ 2, 2 });
+    // offset from the text's y=0 to middle of the whole text rect
+    const text_to_center_y = text_rect.max[1] - (text_size[1] / 2);
+    // offset from bottom of node rect to start (i.e. bottom) of text box
+    const rel_text_y = (node_size[1] / 2) - text_to_center_y;
 
-    return vec2{
-        node.rect.min[0] + rel_text_x,
-        box_middle[1] + (text_size[1] / 2) - text_rect.max[1],
-    };
+    return node.rect.min + vec2{ rel_text_x, rel_text_y };
 }
 
 pub fn setErrorInfo(self: *UI, trace: ?*std.builtin.StackTrace, name: []const u8) void {

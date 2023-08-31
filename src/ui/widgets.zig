@@ -15,8 +15,6 @@ const Size = UI.Size;
 const Axis = UI.Axis;
 const Placement = UI.Placement;
 const Icons = UI.Icons;
-const text_hpadding = UI.text_hpadding;
-const text_vpadding = UI.text_vpadding;
 const text_ops = @import("text_ops.zig");
 const TextAction = text_ops.TextAction;
 
@@ -383,20 +381,21 @@ pub fn textInputRaw(ui: *UI, hash_string: []const u8, buffer: []u8, buf_len: *us
     }, "", .{});
     cursor_node.bg_color = vec4{ 0, 0, 0, 1 };
     const font_pixel_size = ui.topStyle().font_size;
-    const cursor_height = ui.font.getScaledMetrics(font_pixel_size).line_advance - UI.text_vpadding;
+    const text_padd = ui.textPadding(text_node);
+    const cursor_height = ui.font.getScaledMetrics(font_pixel_size).line_advance - text_padd[1];
     cursor_node.pref_size = [2]Size{ Size.pixels(1, 1), Size.pixels(cursor_height, 1) };
     const text_before_cursor = buffer[0..widget_node.cursor];
     const partial_text_rect = try ui.font.textRect(text_before_cursor, font_pixel_size);
-    cursor_node.rel_pos.diff = text_node.rel_pos.diff + vec2{ partial_text_rect.max[0], 0 } + UI.text_padd;
+    cursor_node.rel_pos.diff = text_node.rel_pos.diff + vec2{ partial_text_rect.max[0], 0 } + text_padd;
 
     // scroll text if it doesn't fit
     if (!first_time) {
-        if (cursor_node.rel_pos.diff[0] > widget_node.rect.size()[0] - UI.text_hpadding) {
-            const overflow = cursor_node.rel_pos.diff[0] - (widget_node.rect.size()[0] - UI.text_hpadding);
+        if (cursor_node.rel_pos.diff[0] > widget_node.rect.size()[0] - text_padd[0]) {
+            const overflow = cursor_node.rel_pos.diff[0] - (widget_node.rect.size()[0] - text_padd[0]);
             text_node.rel_pos.diff[0] -= overflow;
         }
-        if (cursor_node.rel_pos.diff[0] < UI.text_hpadding) {
-            const overflow = UI.text_hpadding - cursor_node.rel_pos.diff[0];
+        if (cursor_node.rel_pos.diff[0] < text_padd[0]) {
+            const overflow = text_padd[0] - cursor_node.rel_pos.diff[0];
             text_node.rel_pos.diff[0] += overflow;
         }
     }
@@ -415,7 +414,7 @@ pub fn textInputRaw(ui: *UI, hash_string: []const u8, buffer: []u8, buf_len: *us
     selection_node.rel_pos.diff = vec2{
         @min(partial_text_rect_mark.max[0], partial_text_rect.max[0]),
         0,
-    } + UI.text_padd;
+    } + ui.textPadding(selection_node);
 
     if (!sig.focused) return sig;
 
@@ -446,7 +445,7 @@ pub fn textInputRaw(ui: *UI, hash_string: []const u8, buffer: []u8, buf_len: *us
             const codepoint_len = try std.unicode.utf8ByteSequenceLength(display_str[idx]);
             const partial_text_buf = display_str[0 .. idx + codepoint_len];
             const partial_rect = try ui.font.textRect(partial_text_buf, font_pixel_size);
-            if (partial_rect.max[0] + UI.text_hpadding > sig.mouse_pos[0]) break;
+            if (partial_rect.max[0] + text_padd[0] > sig.mouse_pos[0]) break;
             idx += codepoint_len;
         }
 

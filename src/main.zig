@@ -651,7 +651,7 @@ const FileTab = struct {
 
                 const font_pixel_size = ui.topStyle().font_size;
                 const line_size = ui.font.getScaledMetrics(font_pixel_size).line_advance;
-                const mouse_offset = text_node_rect.max[1] - ctx_menu_top_left[1] - UI.text_vpadding;
+                const mouse_offset = text_node_rect.max[1] - ctx_menu_top_left[1] - ui.textPadding(text_scroll_node)[1];
                 const line_offset = mouse_offset - text_scroll_node.scroll_offset[1];
                 const mouse_line = @floor(line_offset / line_size);
                 const src_line = @as(u32, @intFromFloat(mouse_line)) + 1;
@@ -891,7 +891,8 @@ fn textDisplay(
 
     // hack to cut off scrolling at the ends of text
     const text_size = vec2{ label_node.text_rect.size()[0], line_size * @as(f32, @floatFromInt(total_lines)) };
-    var max_offset = text_size - parent_size + vec2{ 2, 2 } * UI.text_padd;
+    const text_padd = ui.textPadding(label_node);
+    var max_offset = text_size - parent_size + vec2{ 2, 2 } * text_padd;
     max_offset = vec2{ @max(max_offset[0], 0), @max(max_offset[1], 0) };
     x_off.* = std.math.clamp(x_off.*, -max_offset[0], 0);
     y_off.* = std.math.clamp(y_off.*, -max_offset[1], 0);
@@ -907,7 +908,7 @@ fn textDisplay(
 
         const text_y_start = parent.rect.size()[1] - y_off.*;
         const line_y_start = @max(0, box.min.line - 1) * line_size;
-        const box_y_top = text_y_start - line_y_start - UI.text_padd[1];
+        const box_y_top = text_y_start - line_y_start - text_padd[1];
         const box_y_size = @max(1, box.max.line - box.min.line) * line_size;
 
         const box_node = ui.addNode(.{
