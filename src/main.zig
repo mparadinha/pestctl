@@ -69,7 +69,6 @@ pub const SessionCmd = union(enum) {
 };
 
 var show_ctx_menu = false;
-var ctx_menu_top_left = @as(vec2, undefined);
 
 pub fn main() !void {
     var general_purpose_allocator = std.heap.GeneralPurposeAllocator(.{
@@ -448,7 +447,7 @@ fn Buffer(comptime capacity: usize) type {
         buffer: [capacity]u8 = [_]u8{0} ** capacity,
         len: usize = 0,
 
-        pub fn slice(self: InputBuf) []const u8 {
+        pub fn slice(self: @This()) []const u8 {
             return self.buffer[0..self.len];
         }
     };
@@ -641,17 +640,17 @@ const FileTab = struct {
             const right_click = ui.events.searchAndRemove(.MouseUp, c.GLFW_MOUSE_BUTTON_RIGHT);
             if (right_click and (text_sig.hovering or line_sig.hovering)) {
                 show_ctx_menu = true;
-                ctx_menu_top_left = ui.mouse_pos;
             }
             if (show_ctx_menu) {
                 const ctx_menu_trace = tracy.ZoneN(@src(), "file ctx_menu");
                 defer ctx_menu_trace.End();
-                ui.startCtxMenu(.{ .top_left = ctx_menu_top_left });
-                const ctx_menu_node = ui.topParent();
+                ui.startCtxMenu(null);
+                defer ui.endCtxMenu();
+                const ctx_menu_rect = ui.ctx_menu_root_node.?.rect;
 
                 const font_pixel_size = ui.topStyle().font_size;
                 const line_size = ui.font.getScaledMetrics(font_pixel_size).line_advance;
-                const mouse_offset = text_node_rect.max[1] - ctx_menu_top_left[1] - ui.textPadding(text_scroll_node)[1];
+                const mouse_offset = text_node_rect.max[1] - ctx_menu_rect.get(.top_left)[1] - ui.textPadding(text_scroll_node)[1];
                 const line_offset = mouse_offset - text_scroll_node.scroll_offset[1];
                 const mouse_line = @floor(line_offset / line_size);
                 const src_line = @as(u32, @intFromFloat(mouse_line)) + 1;
@@ -667,10 +666,8 @@ const FileTab = struct {
                 }
 
                 if (ui.events.match(.MouseDown, {})) |_| {
-                    if (!ctx_menu_node.rect.contains(ui.mouse_pos)) show_ctx_menu = false;
+                    if (!ctx_menu_rect.contains(ui.mouse_pos)) show_ctx_menu = false;
                 }
-
-                ui.endCtxMenu();
             }
 
             // scroll the line numbers with the src text
@@ -754,7 +751,7 @@ fn doOpenFileBox(
                 frame_arena,
                 ui,
                 "filepath_chooser",
-                .{ .top_left = text_input_node.rect.min },
+                UI.RelativePlacement.absolute(.{ .top_left = text_input_node.rect.min }),
                 false,
             );
             if (choice) |file_ctx| {
@@ -1167,7 +1164,7 @@ fn doVarTable(
                 frame_arena,
                 ui,
                 "var_table_chooser",
-                .{ .top_left = text_input_node.rect.min },
+                UI.RelativePlacement.absolute(.{ .top_left = text_input_node.rect.min }),
                 false,
             );
             if (choice) |var_ctx| {
@@ -1293,7 +1290,7 @@ fn doBreakpointUI(
                 frame_arena,
                 ui,
                 "break_func_chooser",
-                .{ .btm_left = vec2{ text_input_node.rect.min[0], text_input_node.rect.max[1] } },
+                UI.RelativePlacement.absolute(.{ .btm_left = text_input_node.rect.get(.top_left) }),
                 true,
             );
             if (choice) |func_ctx| {
@@ -1377,7 +1374,7 @@ fn fuzzyScore(pattern: []const u8, test_str: []const u8) f32 {
     var score: f32 = 0;
 
     const to_lower_lut = comptime lut: {
-        var table: [128]u8 = undefined;
+        var table: [256]u8 = undefined;
         for (&table, 0..) |*entry, char| {
             entry.* = if ('A' <= char and char <= 'Z') char + 32 else char;
         }
@@ -1464,7 +1461,7 @@ fn FuzzySearchOptions(comptime Ctx: type, comptime max_slots: usize) type {
             arena: *std.heap.ArenaAllocator,
             ui: *UI,
             label: []const u8,
-            placement: UI.Placement,
+            placement: UI.RelativePlacement,
             reverse_order: bool,
         ) !?Ctx {
             const trace = tracy.Zone(@src());
@@ -1491,16 +1488,16 @@ fn FuzzySearchOptions(comptime Ctx: type, comptime max_slots: usize) type {
                 }
             }
 
-            ui.startCtxMenu(placement); // TODO: use the new ui "windows"
-            defer ui.endCtxMenu();
-
-            const children_size = [2]Size{ Size.by_children(1), Size.by_children(1) };
-            const bg_color = vec4{ 0, 0, 0, 0.85 };
-            const bg_node = ui.addNode(.{ .no_id = true, .draw_background = true }, "", .{
-                .bg_color = bg_color,
-                .pref_size = children_size,
+            const bg_node = ui.addNodeAsRoot(.{
+                .no_id = true,
+                .draw_background = true,
+            }, "", .{
+                .bg_color = vec4{ 0, 0, 0, 0.85 },
+                .pref_size = [2]Size{ Size.by_children(1), Size.by_children(1) },
+                .rel_pos = placement,
             });
             ui.pushParent(bg_node);
+            try ui.window_roots.append(bg_node);
             defer ui.popParentAssert(bg_node);
 
             for (self.slots[0..self.slots_filled], 0..) |entry, idx| {

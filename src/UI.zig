@@ -227,7 +227,6 @@ pub const Node = struct {
     last_click_time: f32, // used for double click checks
     last_double_click_time: f32, // used for triple click checks
     scroll_offset: vec2,
-    toggle: bool,
 };
 
 pub const CustomDrawFn = *const fn (
@@ -340,6 +339,10 @@ pub const Rect = struct {
         return .{ .min = bottom_left, .max = bottom_left + calc_size };
     }
 
+    pub fn get(self: Rect, place: Placement.Tag) vec2 {
+        return (Placement{ .btm_left = self.min }).convertTo(place, self.size()).value();
+    }
+
     pub fn format(v: Rect, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
         try writer.print("{{ .min={d:.2}, .max={d:.2} }}", .{ v.min, v.max });
     }
@@ -417,6 +420,10 @@ pub const RelativePlacement = struct {
 
     pub fn simple(diff: vec2) RelativePlacement {
         return .{ .target = .btm_left, .anchor = .btm_left, .diff = diff };
+    }
+
+    pub fn absolute(placement: Placement) RelativePlacement {
+        return .{ .target = std.meta.activeTag(placement), .anchor = .btm_left, .diff = placement.value() };
     }
 
     /// given the sizes of the two objects we can calculate their relative position
@@ -1300,14 +1307,8 @@ fn solveFinalPosWorkFn(self: *UI, node: *Node, axis: Axis) void {
     const is_layout_axis = (axis == node.child_layout_axis);
 
     if (node.parent == null) {
-        const is_floating = switch (axis) {
-            .x => node.flags.floating_x,
-            .y => node.flags.floating_y,
-        };
-        if (is_floating) {
-            const calc_rel_pos = node.rel_pos.calcRelativePos(node.calc_size, self.screen_size);
-            node.calc_rel_pos[axis_idx] = calc_rel_pos[axis_idx];
-        }
+        const calc_rel_pos = node.rel_pos.calcRelativePos(node.calc_size, self.screen_size);
+        node.calc_rel_pos[axis_idx] = calc_rel_pos[axis_idx];
         node.rect.min[axis_idx] = node.calc_rel_pos[axis_idx];
         node.rect.max[axis_idx] = node.calc_rel_pos[axis_idx] + node.calc_size[axis_idx];
         node.clip_rect = node.rect;

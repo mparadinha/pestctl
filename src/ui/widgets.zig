@@ -142,67 +142,68 @@ pub fn pushLayoutParentFlags(
     return node;
 }
 
-// don't forget to call `endCtxMenu`
-// TODO: maybe turn this into a generic window function and ctx menu would simply be a special case of a window
-pub fn startCtxMenu(ui: *UI, placement: Placement) void {
-    const ctx_menu_size = [2]Size{ Size.by_children(1), Size.by_children(1) };
-    const ctx_menu_root = ui.addNodeAsRoot(.{
+pub fn startCtxMenu(ui: *UI, pos: ?RelativePlacement) void {
+    const root = ui.addNodeAsRoot(.{
         .clip_children = true,
+        .draw_border = true,
+        .draw_background = true,
         .floating_x = true,
         .floating_y = true,
-        .selectable = true,
-    }, "###INTERNAL_CTX_MENU_ROOT_NODE", .{
-        .pref_size = ctx_menu_size,
-        .rel_pos = .{
-            .target = std.meta.activeTag(placement),
-            .anchor = .btm_left,
-            .diff = placement.value(),
-        },
+    }, "INTERNAL_CTX_MENU_ROOT_NODE", .{
+        .pref_size = [2]Size{ Size.by_children(1), Size.by_children(1) },
+        .bg_color = vec4{ 0, 0, 0, 0.75 },
+        .corner_radii = vec4{ 4, 4, 4, 4 },
     });
-    ui.ctx_menu_root_node = ctx_menu_root;
+    if (pos) |p|
+        root.rel_pos = p
+    else if (root.first_frame_touched == ui.frame_idx)
+        root.rel_pos = RelativePlacement.absolute(.{ .top_left = ui.mouse_pos });
+
+    ui.pushParent(root);
+    ui.ctx_menu_root_node = root;
 }
 
 pub fn endCtxMenu(ui: *UI) void {
-    const parent = ui.popParent();
-    std.debug.assert(parent == ui.ctx_menu_root_node);
+    ui.popParentAssert(ui.ctx_menu_root_node.?);
 }
 
-pub fn startTooltip(ui: *UI, placement: Placement) void {
-    const tooltip_size = [2]Size{ Size.by_children(1), Size.by_children(1) };
-    const tooltip_root = ui.addNodeAsRoot(.{
+pub fn startTooltip(ui: *UI, pos: ?RelativePlacement) void {
+    const root = ui.addNodeAsRoot(.{
         .clip_children = true,
+        .draw_border = true,
+        .draw_background = true,
         .floating_x = true,
         .floating_y = true,
-        .selectable = true,
-    }, "###INTERNAL_TOOLTIP_ROOT_NODE", .{
-        .pref_size = tooltip_size,
-        .rel_pos = .{
-            .src = std.meta.activeTag(placement),
-            .dst = .btm_left,
-            .diff = placement.value(),
-        },
+    }, "INTERNAL_TOOLTIP_ROOT_NODE", .{
+        .pref_size = [2]Size{ Size.by_children(1), Size.by_children(1) },
+        .bg_color = vec4{ 0, 0, 0, 0.75 },
+        .corner_radii = vec4{ 4, 4, 4, 4 },
+        .rel_pos = pos orelse RelativePlacement.absolute(.{ .top_left = ui.mouse_pos }),
     });
-    ui.tooltip_root_node = tooltip_root;
+    ui.pushParent(root);
+    ui.tooltip_root_node = root;
 }
 
 pub fn endTooltip(ui: *UI) void {
-    const parent = ui.popParent();
-    std.debug.assert(parent == ui.tooltip_root_node);
+    ui.popParentAssert(ui.tooltip_root_node.?);
 }
 
 pub fn startWindow(
     ui: *UI,
     hash_string: []const u8,
     size: [2]Size,
-    pos: UI.RelativePlacement,
+    pos: RelativePlacement,
 ) *Node {
     const window_root = ui.addNodeAsRoot(.{
         .clip_children = true,
+        .draw_border = true,
+        .draw_background = true,
         .floating_x = true,
         .floating_y = true,
     }, hash_string, .{
         .pref_size = size,
         .rel_pos = pos,
+        .bg_color = vec4{ 0, 0, 0, 0.75 },
     });
     ui.pushParent(window_root);
 
