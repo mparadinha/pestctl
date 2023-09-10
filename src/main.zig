@@ -91,14 +91,7 @@ pub fn main() !void {
     var window = try Window.init(allocator, width, height, "pestctl");
     window.finishSetup();
     defer window.deinit();
-    // GL state that we never change
-    gl.clearColor(0.75, 0.36, 0.38, 1);
-    gl.enable(gl.CULL_FACE);
-    gl.enable(gl.BLEND);
-    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-    gl.enable(gl.DEPTH_TEST);
-    gl.depthFunc(gl.LEQUAL);
-    gl.enable(gl.LINE_SMOOTH);
+    var clear_color = vec4{ 0.75, 0.36, 0.38, 1 };
 
     var ui = try UI.init(allocator, .{}, &window);
     defer ui.deinit();
@@ -430,6 +423,7 @@ pub fn main() !void {
         session_cmds.clearRetainingCapacity();
 
         gl.viewport(0, 0, @as(i32, @intCast(width)), @as(i32, @intCast(height)));
+        gl.clearColor(clear_color[0], clear_color[1], clear_color[2], clear_color[3]);
         gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
         try ui.render();
         if (dbg_ui_view.active) {

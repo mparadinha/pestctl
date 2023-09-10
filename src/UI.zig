@@ -954,11 +954,37 @@ pub fn render(self: *UI) !void {
         field_offset += @sizeOf(field.type);
     }
 
-    // always draw on top of whatever was on screen, no matter what
-    var saved_depth_func: c_int = undefined;
-    gl.getIntegerv(gl.DEPTH_FUNC, &saved_depth_func);
-    defer gl.depthFunc(@as(c_uint, @intCast(saved_depth_func)));
-    gl.depthFunc(gl.ALWAYS);
+    // save current blend state and set it how we need it
+    const blend_was_on = gl.isEnabled(gl.BLEND) == gl.TRUE;
+    var saved_state: struct {
+        BLEND_SRC_RGB: u32,
+        BLEND_SRC_ALPHA: u32,
+        BLEND_DST_RGB: u32,
+        BLEND_DST_ALPHA: u32,
+        BLEND_EQUATION_RGB: u32,
+        BLEND_EQUATION_ALPHA: u32,
+    } = undefined;
+    inline for (@typeInfo(@TypeOf(saved_state)).Struct.fields) |field| {
+        gl.getIntegerv(@field(gl, field.name), @ptrCast(&@field(saved_state, field.name)));
+    }
+    defer {
+        if (blend_was_on) gl.enable(gl.BLEND) else gl.disable(gl.BLEND);
+        gl.blendFuncSeparate(
+            saved_state.BLEND_SRC_RGB,
+            saved_state.BLEND_DST_RGB,
+            saved_state.BLEND_SRC_ALPHA,
+            saved_state.BLEND_DST_ALPHA,
+        );
+        gl.blendEquationSeparate(saved_state.BLEND_EQUATION_RGB, saved_state.BLEND_EQUATION_ALPHA);
+    }
+    gl.enable(gl.BLEND);
+    gl.blendFuncSeparate(
+        gl.SRC_ALPHA,
+        gl.ONE_MINUS_SRC_ALPHA,
+        gl.SRC_ALPHA,
+        gl.ONE_MINUS_SRC_ALPHA,
+    );
+    gl.blendEquationSeparate(gl.FUNC_ADD, gl.MAX);
 
     self.generic_shader.bind();
     self.generic_shader.set("screen_size", self.screen_size);
