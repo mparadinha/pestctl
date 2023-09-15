@@ -184,7 +184,7 @@ const CharData = struct {
 const CharMap = std.HashMap(CharKey, CharData, struct {
     pub fn hash(self: @This(), key: CharKey) u64 {
         _ = self;
-        return (@as(u64, @intCast(key.codepoint)) << 32) | @as(u32, @bitCast(key.size));
+        return std.hash.Wyhash.hash(0, std.mem.asBytes(&key));
     }
     pub fn eql(self: @This(), key_a: CharKey, key_b: CharKey) bool {
         _ = self;

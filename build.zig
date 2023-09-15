@@ -7,8 +7,8 @@ pub fn build(b: *std.build.Builder) void {
 
     const use_tracy = b.option(bool, "tracy", "Enable Tracy profiling") orelse false;
 
-    const glfw_dep = b.dependency("libglfw3", .{ .target = target, .optimize = optimize });
-    const zydis_dep = b.dependency("Zydis", .{ .target = target, .optimize = optimize });
+    const glfw_dep = b.dependency("libglfw3", .{ .target = target, .optimize = .ReleaseSafe });
+    const zydis_dep = b.dependency("Zydis", .{ .target = target, .optimize = .ReleaseSafe });
 
     var exe = b.addExecutable(.{
         .name = "pestctl",
