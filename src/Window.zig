@@ -180,6 +180,7 @@ pub fn getModifiers(self: *Window) InputEvent.Modifiers {
         .super = self.keyPressed(c.GLFW_KEY_LEFT_SUPER) or
             self.keyPressed(c.GLFW_KEY_RIGHT_SUPER),
         // TODO: these two need their state to be preserved, this is probably wrong
+        // or maybe we use `glfwSetInputMode(window, GLFW_LOCK_KEY_MODS, GLFW_TRUE)`
         // TODO: check these two!
         .caps_lock = self.keyPressed(c.GLFW_KEY_CAPS_LOCK),
         .num_lock = self.keyPressed(c.GLFW_KEY_NUM_LOCK),
@@ -214,18 +215,22 @@ fn glfw_error_callback(error_code: c_int, error_msg: [*c]const u8) callconv(.C) 
     std.debug.print("glfw error (code={}): {s}", .{ error_code, error_msg });
 }
 
-fn glfw_key_callback(glfw_window: ?*c.GLFWwindow, key: i32, scancode: i32, action: i32, mods: i32) callconv(.C) void {
-    const self = @as(*align(8) Window, @ptrCast(@alignCast(c.glfwGetWindowUserPointer(glfw_window).?)));
-
-    if (key == c.GLFW_KEY_UNKNOWN) return;
-    const key_ev = InputEvent.KeyEvent{ .key = key, .mods = .{
+fn modifiersFromGLFWbits(mods: i32) InputEvent.Modifiers {
+    return .{
         .shift = (mods & c.GLFW_MOD_SHIFT) != 0,
         .control = (mods & c.GLFW_MOD_CONTROL) != 0,
         .alt = (mods & c.GLFW_MOD_ALT) != 0,
         .super = (mods & c.GLFW_MOD_SUPER) != 0,
         .caps_lock = (mods & c.GLFW_MOD_CAPS_LOCK) != 0,
         .num_lock = (mods & c.GLFW_MOD_NUM_LOCK) != 0,
-    } };
+    };
+}
+
+fn glfw_key_callback(glfw_window: ?*c.GLFWwindow, key: i32, scancode: i32, action: i32, mods: i32) callconv(.C) void {
+    const self: *Window = @ptrCast(@alignCast(c.glfwGetWindowUserPointer(glfw_window).?));
+
+    if (key == c.GLFW_KEY_UNKNOWN) return;
+    const key_ev = InputEvent.KeyEvent{ .key = key, .mods = modifiersFromGLFWbits(mods) };
     if (action == c.GLFW_PRESS)
         self.event_queue.append(.{ .KeyDown = key_ev }) catch unreachable;
     if (action == c.GLFW_RELEASE)
@@ -237,7 +242,7 @@ fn glfw_key_callback(glfw_window: ?*c.GLFWwindow, key: i32, scancode: i32, actio
 }
 
 fn glfw_mouse_button_callback(glfw_window: ?*c.GLFWwindow, button: i32, action: i32, mods: i32) callconv(.C) void {
-    const self = @as(*align(8) Window, @ptrCast(@alignCast(c.glfwGetWindowUserPointer(glfw_window).?)));
+    const self: *Window = @ptrCast(@alignCast(c.glfwGetWindowUserPointer(glfw_window).?));
     if (action == c.GLFW_PRESS)
         self.event_queue.append(.{ .MouseDown = button }) catch unreachable;
     if (action == c.GLFW_RELEASE)
@@ -246,7 +251,7 @@ fn glfw_mouse_button_callback(glfw_window: ?*c.GLFWwindow, button: i32, action: 
 }
 
 fn glfw_cursor_pos_callback(glfw_window: ?*c.GLFWwindow, xpos: f64, ypos: f64) callconv(.C) void {
-    const self = @as(*align(8) Window, @ptrCast(@alignCast(c.glfwGetWindowUserPointer(glfw_window).?)));
+    const self: *Window = @ptrCast(@alignCast(c.glfwGetWindowUserPointer(glfw_window).?));
 
     const held_mouse_button: ?i32 =
         if (c.glfwGetMouseButton(self.handle, c.GLFW_MOUSE_BUTTON_LEFT) == c.GLFW_TRUE)
@@ -266,16 +271,16 @@ fn glfw_cursor_pos_callback(glfw_window: ?*c.GLFWwindow, xpos: f64, ypos: f64) c
 }
 
 fn glfw_scroll_callback(glfw_window: ?*c.GLFWwindow, xoffset: f64, yoffset: f64) callconv(.C) void {
-    const self = @as(*align(8) Window, @ptrCast(@alignCast(c.glfwGetWindowUserPointer(glfw_window).?)));
+    const self: *Window = @ptrCast(@alignCast(c.glfwGetWindowUserPointer(glfw_window).?));
     self.event_queue.append(.{ .MouseScroll = .{
         .x = @as(f32, @floatCast(xoffset)),
         .y = @as(f32, @floatCast(yoffset)),
-        .shift_held = self.keyPressed(c.GLFW_KEY_LEFT_SHIFT) or self.keyPressed(c.GLFW_KEY_RIGHT_SHIFT),
+        .mods = self.getModifiers(),
     } }) catch unreachable;
 }
 
 fn glfw_char_callback(glfw_window: ?*c.GLFWwindow, codepoint: u32) callconv(.C) void {
-    const self = @as(*align(8) Window, @ptrCast(@alignCast(c.glfwGetWindowUserPointer(glfw_window).?)));
+    const self: *Window = @ptrCast(@alignCast(c.glfwGetWindowUserPointer(glfw_window).?));
     self.event_queue.append(.{ .Char = codepoint }) catch unreachable;
 }
 
@@ -286,7 +291,7 @@ pub const InputEvent = union(enum) {
     MouseUp: i32,
     MouseDown: i32,
     MouseDrag: struct { x: f32, y: f32, held_button: i32 }, // NOTE: this uses GLFW mouse coordinates that are relative to top-left corner
-    MouseScroll: struct { x: f32, y: f32, shift_held: bool },
+    MouseScroll: struct { x: f32, y: f32, mods: Modifiers },
     GamepadUp: usize,
     GamepadDown: usize,
     Char: u32, // unicode codepoint
@@ -303,6 +308,7 @@ pub const InputEvent = union(enum) {
     //    mods: Modifiers,
     //};
 
+    // TODO: handle both left & right alt/shift/control
     pub const Modifiers = struct {
         shift: bool = false,
         control: bool = false,
@@ -314,16 +320,7 @@ pub const InputEvent = union(enum) {
 
     pub fn payload(self: InputEvent, comptime T: Tag) Payload(T) {
         return switch (T) {
-            .KeyUp => self.KeyUp,
-            .KeyDown => self.KeyDown,
-            .KeyRepeat => self.KeyRelease,
-            .MouseUp => self.MouseUp,
-            .MouseDown => self.MouseDown,
-            .MouseDrag => self.MouseDrag,
-            .MouseScroll => self.MouseScroll,
-            .GamepadUp => self.GamepadUp,
-            .GamepadDown => self.GamepadDown,
-            .Char => self.Char,
+            inline else => @field(self, @tagName(T)),
         };
     }
 

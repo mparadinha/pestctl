@@ -218,11 +218,14 @@ pub fn endWindow(ui: *UI, window_root: *Node) void {
 }
 
 /// returns the new parent (which gets pushed on the parent stack) for this region
+// TODO: scrolling in x direction as well
 pub fn startScrollRegion(ui: *UI, hash_string: []const u8) *Node {
     const parent = ui.addNodeF(.{
-        .scrollable = true,
+        .scroll_children_y = true,
         .clip_children = true,
-    }, "###{s}:scroll_region_parent", .{hash_string}, .{ .child_layout_axis = .y });
+    }, "###{s}:scroll_region_parent", .{hash_string}, .{
+        .child_layout_axis = .y,
+    });
     ui.pushParent(parent);
     return parent;
 }
@@ -281,7 +284,7 @@ pub fn endScrollRegion(ui: *UI, parent: *Node, start_scroll: f32, end_scroll: f3
         if (down_btn.held_down) parent.scroll_offset[1] -= 50;
     }
 
-    std.debug.assert(ui.popParent() == parent);
+    ui.popParentAssert(parent);
 }
 
 // TODO
@@ -752,21 +755,6 @@ fn HSVtoRGB(hsva: vec4) vec4 {
         rgb_l[2] + m,
         hsva[3],
     };
-}
-
-/// returns the full path when user chooses a file, `null` otherwise
-// TODO: use some sort of window abstraction to communicate that the file picker
-//       windows got closed without picking a file
-pub fn filePicker(ui: *UI) !?[]const u8 {
-    var cwd_buf: [0x4000]u8 = undefined;
-    const cwd = try std.os.getcwd(&cwd_buf);
-    var dir = try std.fs.openIterableDirAbsolute(cwd, .{ .access_sub_paths = true });
-    defer dir.close();
-    var dir_iter = dir.iterate();
-    while (try dir_iter.next()) |entry| {
-        ui.label(entry.name);
-    }
-    return null;
 }
 
 pub fn labelF(ui: *UI, comptime fmt: []const u8, args: anytype) void {

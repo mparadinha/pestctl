@@ -155,7 +155,8 @@ pub fn deinit(self: *UI) void {
 pub const Flags = packed struct {
     clickable: bool = false,
     selectable: bool = false, // maintains focus when clicked
-    scrollable: bool = false, // makes it so scroll wheel updates the Node.scroll_offset
+    scroll_children_x: bool = false,
+    scroll_children_y: bool = false,
 
     clip_children: bool = false,
     draw_text: bool = false,
@@ -447,12 +448,12 @@ pub const Signal = struct {
     released: bool,
     double_clicked: bool,
     triple_clicked: bool,
-    mouse_pos: vec2, // these are relative to bottom-left corner of node
     hovering: bool,
     held_down: bool,
     enter_pressed: bool,
-    mouse_drag: ?Rect, // relative coordinates, just like `Signal.mouse_pos`
-    scroll_offset: vec2,
+    mouse_pos: vec2, // these are relative to bottom-left corner of node
+    // mouse_drag: ?Rect, // relative coordinates, just like `Signal.mouse_pos`
+    scroll_amount: vec2, // positive means scrolling up/left
     focused: bool,
 };
 
@@ -789,16 +790,20 @@ pub fn computeNodeSignal(self: *UI, node: *Node) !Signal {
         .released = false,
         .double_clicked = false,
         .triple_clicked = false,
-        .mouse_pos = (try self.window_ptr.getMousePos()) - node.rect.min,
         .hovering = false,
         .held_down = false,
         .enter_pressed = false,
-        .mouse_drag = null,
-        .scroll_offset = vec2{ 0, 0 },
+        .mouse_pos = self.mouse_pos - node.rect.min,
+        // .mouse_drag = null,
+        .scroll_amount = vec2{ 0, 0 },
         .focused = false,
     };
 
-    const is_interactable = node.flags.clickable or node.flags.selectable or node.flags.scrollable;
+    const is_interactable =
+        node.flags.clickable or
+        node.flags.selectable or
+        node.flags.scroll_children_x or
+        node.flags.scroll_children_y;
     if (!is_interactable) return signal;
 
     const mouse_is_over = node.rect.contains(self.mouse_pos);
@@ -853,8 +858,6 @@ pub fn computeNodeSignal(self: *UI, node: *Node) !Signal {
             used_mouse_up_ev = true;
         }
 
-        // TODO: maybe we should remove the whole enter_pressed thing
-        // and just have it use the clicked one instead?
         if (is_focused and enter_up_ev != null) {
             signal.enter_pressed = true;
             used_enter_up_ev = true;
@@ -862,16 +865,15 @@ pub fn computeNodeSignal(self: *UI, node: *Node) !Signal {
         }
     }
 
-    if (node.flags.scrollable) {
-        if (is_hot) {
-            // HACK for scrollable regions. we should remove the event when consuming it
-            // I prob need to implement "floating" (whatever that is)
-            if (self.events.fetch(.MouseScroll, null)) |ev| {
-                var scroll_off = vec2{ ev.x, ev.y };
-                if (ev.shift_held) scroll_off = vec2{ ev.y, ev.x };
-                node.scroll_offset += math.times(scroll_off, 50);
-                signal.scroll_offset = scroll_off;
-            }
+    const is_scrollable = node.flags.scroll_children_x or node.flags.scroll_children_y;
+    if (is_scrollable and is_hot) {
+        if (self.events.fetchAndRemove(.MouseScroll, null)) |ev| {
+            var scroll = math.times(vec2{ ev.x, ev.y }, 50);
+            if (!node.flags.scroll_children_x) scroll[0] = 0;
+            if (!node.flags.scroll_children_y) scroll[1] = 0;
+            // TODO: add support for x-scrolling by holding shift
+            signal.scroll_amount = scroll;
+            node.scroll_offset += vec2{ 1, -1 } * scroll;
         }
     }
 
@@ -1245,13 +1247,11 @@ fn solveDownwardDependentWorkFn(self: *UI, node: *Node, axis: Axis) void {
 }
 
 fn solveUpwardDependentWorkFn(self: *UI, node: *Node, axis: Axis) void {
-    _ = self;
     const axis_idx: usize = @intFromEnum(axis);
     switch (node.pref_size[axis_idx]) {
         .percent => |percent| {
-            if (node.parent) |parent| {
-                node.calc_size[axis_idx] = @round(parent.calc_size[axis_idx] * percent.value);
-            }
+            const parent_size = if (node.parent) |p| p.calc_size else self.screen_size;
+            node.calc_size[axis_idx] = @round(parent_size[axis_idx] * percent.value);
         },
         else => {},
     }
@@ -1273,11 +1273,10 @@ fn solveViolationsWorkFn(self: *UI, node: *Node, axis: Axis) void {
     var other_children = std.BoundedArray(*Node, 1000).init(0) catch unreachable;
     var child = node.first;
     while (child) |child_node| : (child = child_node.next) {
-        const is_floating = switch (axis) {
+        if (switch (axis) {
             .x => child_node.flags.floating_x,
             .y => child_node.flags.floating_y,
-        };
-        if (is_floating) continue;
+        }) continue;
 
         const strictness = child_node.pref_size[axis_idx].getStrictness();
         const child_size = child_node.calc_size[axis_idx];
@@ -1313,24 +1312,39 @@ fn solveViolationsWorkFn(self: *UI, node: *Node, axis: Axis) void {
     // if there's still overflow, shrink the other children as much as we can
     // (proportionally to their strictness values, i.e least strict shrinks the most)
     if (overflow > 0) {
+        var removed_amount: f32 = 0;
         for (other_children.slice()) |child_node| {
             const strictness = child_node.pref_size[axis_idx].getStrictness();
             if (strictness == 1) continue;
             const child_size = child_node.calc_size[axis_idx];
             const child_take_budget = child_size * strictness;
             const leeway_percent = (1 - strictness) / other_children_leeway;
-            const remove_amount = if (is_layout_axis)
+            const desired_remove_amount = if (is_layout_axis)
                 @round(overflow * leeway_percent)
             else
                 @max(0, child_size - node.calc_size[axis_idx]);
-            child_node.calc_size[axis_idx] -= @min(child_take_budget, remove_amount);
+            const true_remove_amount = @min(child_take_budget, desired_remove_amount);
+            child_node.calc_size[axis_idx] -= true_remove_amount;
+            removed_amount += true_remove_amount;
         }
+        overflow -= removed_amount;
+        std.debug.assert(overflow >= 0); // if overflow is negative we removed too much somewhere
     }
+
+    // constrain scrolling to children size, i.e. don't scroll more than is possible
+    node.scroll_offset[axis_idx] = switch (axis) {
+        .x => std.math.clamp(node.scroll_offset[axis_idx], -overflow, 0),
+        .y => std.math.clamp(node.scroll_offset[axis_idx], 0, overflow),
+    };
 }
 
 fn solveFinalPosWorkFn(self: *UI, node: *Node, axis: Axis) void {
     const axis_idx: usize = @intFromEnum(axis);
     const is_layout_axis = (axis == node.child_layout_axis);
+    const is_scrollable_axis = switch (axis) {
+        .x => node.flags.scroll_children_x,
+        .y => node.flags.scroll_children_y,
+    };
 
     if (node.parent == null) {
         const calc_rel_pos = node.rel_pos.calcRelativePos(node.calc_size, self.screen_size);
@@ -1343,10 +1357,12 @@ fn solveFinalPosWorkFn(self: *UI, node: *Node, axis: Axis) void {
     if (node.child_count == 0) return;
 
     // start layout at the top left
-    const start_rel_pos: f32 = switch (axis) {
+    var start_rel_pos: f32 = switch (axis) {
         .x => 0,
         .y => node.calc_size[1],
     };
+    // when `scroll_children` is enabled start layout at an offset
+    if (is_scrollable_axis) start_rel_pos += node.scroll_offset[axis_idx];
 
     // position all the children
     var rel_pos: f32 = start_rel_pos;
@@ -1933,8 +1949,8 @@ pub const DebugView = struct {
                                 _ = try buf.writer().write(signal_field.name ++ ", ");
                             }
                         }
-                        self.ui.labelF("{s}={{{s}.mouse_pos={d}, .mouse_drag={?d}, .scroll_offset={d}}}", .{
-                            name, buf.slice(), value.mouse_pos, value.mouse_drag, value.scroll_offset,
+                        self.ui.labelF("{s}={{{s}.mouse_pos={d}, .scroll_amount={d}}}", .{
+                            name, buf.slice(), value.mouse_pos, value.scroll_amount,
                         });
                     },
                     []const u8 => self.ui.labelF("{s}=\"{s}\"", .{ name, value }),

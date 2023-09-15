@@ -15,6 +15,7 @@ const Session = @import("Session.zig");
 const Elf = @import("Elf.zig");
 const Dwarf = @import("Dwarf.zig");
 const SrcLoc = Dwarf.SrcLoc;
+const widgets = @import("app_widgets.zig");
 
 const tracy = @import("tracy.zig");
 
@@ -126,6 +127,10 @@ pub fn main() !void {
     defer func_search.deinit();
     var memline_buf = InputBuf{};
     var memline_addr: ?usize = null;
+    var file_picker: ?widgets.FilePicker = null;
+    defer if (file_picker) |picker| picker.deinit();
+
+    var show_ui_stats = true;
 
     var disasm_texts = std.ArrayList(AsmTextInfo).init(allocator);
     defer {
@@ -142,9 +147,6 @@ pub fn main() !void {
     var widget_tab_active_idx: usize = 1;
     var call_stack_viewer = CallStackViewer.init(allocator);
     defer call_stack_viewer.deinit();
-
-    var show_ui_stats = true;
-    var show_file_picker = false;
 
     var session_cmds = std.ArrayList(SessionCmd).init(allocator);
     defer session_cmds.deinit();
@@ -176,13 +178,15 @@ pub fn main() !void {
             main_bar_parent.flags.draw_background = true;
             defer ui.popParentAssert(main_bar_parent);
 
-            if (ui.button("Open Executable").clicked) show_file_picker = true;
-            if (show_file_picker) {
+            if (ui.button("Open Executable").clicked and file_picker == null)
+                file_picker = try widgets.FilePicker.init(allocator, cwd);
+            if (file_picker) |*picker| {
                 if (session_opt) |_| @panic("TODO: open multiple binaries");
-                std.debug.print("TODO: open exe\n", .{});
-                _ = try ui.filePicker();
-                // const path = "";
-                // session_opt = try Session.init(allocator, path);
+                if (try picker.show(&ui)) |path| {
+                    session_opt = try Session.init(allocator, path);
+                    picker.deinit();
+                    file_picker = null;
+                }
             }
 
             _ = ui.checkBox("show UI stats", &show_ui_stats);
@@ -212,7 +216,7 @@ pub fn main() !void {
         {
             try doOpenFileBox(&frame_arena, &ui, &session_cmds, cwd, &src_file_buf, &src_file_search);
             try file_tab.display(&ui, &session_cmds);
-            if (session_opt) |session| try doDisassemblyWindow(allocator, &ui, session, &disasm_texts, cmdline_args.exec_path);
+            if (session_opt) |session| try doDisassemblyWindow(allocator, &ui, session, &disasm_texts);
         }
         ui.popParentAssert(left_side_parent);
 
@@ -586,7 +590,7 @@ const FileTab = struct {
 
             const line_scroll_size = [2]Size{ Size.by_children(1), Size.percent(1, 0) };
             const line_scroll_parent = ui.pushLayoutParentFlagsF(.{
-                .scrollable = true,
+                .scroll_children_y = true,
                 .clip_children = true,
             }, "{s}::line_scroll_parent", .{file.path}, line_scroll_size, .y);
             const line_sig = line_scroll_parent.signal;
@@ -625,7 +629,7 @@ const FileTab = struct {
             const text_scroll_node = file_box_parent.last.?;
 
             // if we manually scroll the text stop the line locking
-            if (text_sig.scroll_offset[0] != 0 or text_sig.scroll_offset[1] != 0) {
+            if (text_sig.scroll_amount[0] != 0 or text_sig.scroll_amount[1] != 0) {
                 file.lock_line = null;
                 file.target_lock_line = null;
             }
@@ -760,7 +764,6 @@ fn doDisassemblyWindow(
     ui: *UI,
     session: Session,
     disasm_texts: *std.ArrayList(AsmTextInfo),
-    exec_path: ?[]const u8,
 ) !void {
     const rip = session.regs.rip;
 
@@ -776,7 +779,7 @@ fn doDisassemblyWindow(
         } else null;
 
         const section_addr_range: ?[2]usize = blk: {
-            var file = try std.fs.cwd().openFile(exec_path.?, .{});
+            var file = try std.fs.cwd().openFile(session.exec_path, .{});
             defer file.close();
             const header = try std.elf.Header.read(file);
             std.debug.assert(header.is_64);
