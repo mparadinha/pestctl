@@ -542,7 +542,7 @@ pub fn textInputRaw(ui: *UI, hash_string: []const u8, buffer: []u8, buf_len: *us
     return sig;
 }
 
-pub fn colorPicker(ui: *UI, color: *vec4) void {
+pub fn colorPicker(ui: *UI, hash_str: []const u8, color: *vec4) void {
     const square_size = 250;
 
     var hsv = RGBtoHSV(color.*);
@@ -560,8 +560,9 @@ pub fn colorPicker(ui: *UI, color: *vec4) void {
     // this padding is so scuffed; TODO: maybe introduce some new `Size` for this type of deal
     ui.spacer(.x, Size.pixels(5, 1));
     defer ui.spacer(.x, Size.pixels(5, 1));
-    _ = ui.pushLayoutParent(
-        "aaaaaaaaaaaaaaaaa",
+    _ = ui.pushLayoutParentF(
+        "{s}_padd_parent",
+        .{hash_str},
         [2]Size{ Size.by_children(1), Size.by_children(1) },
         .y,
     );
@@ -569,14 +570,15 @@ pub fn colorPicker(ui: *UI, color: *vec4) void {
     ui.spacer(.y, Size.pixels(5, 1));
     defer ui.spacer(.y, Size.pixels(4, 1)); // TODO: why won't 5 work here? maybe there's smth wrong w/ spacers?
     {
-        const color_part_parent = ui.pushLayoutParent(
-            "color_picker_part",
+        const color_part_parent = ui.pushLayoutParentF(
+            "{s}_color_picker_part",
+            .{hash_str},
             [2]Size{ Size.by_children(1), Size.by_children(1) },
             .x,
         );
         defer ui.popParentAssert(color_part_parent);
 
-        const color_square = ui.addNode(.{ .clickable = true }, "color square", .{
+        const color_square = ui.addNodeF(.{ .clickable = true }, "{s}_color_square", .{hash_str}, .{
             .pref_size = Size.pixelsExact(square_size, square_size),
             .custom_draw_fn = (struct {
                 pub fn draw(_: *UI, shader_inputs: *std.ArrayList(UI.ShaderInput), node: *UI.Node) error{OutOfMemory}!void {
@@ -622,7 +624,7 @@ pub fn colorPicker(ui: *UI, color: *vec4) void {
 
         ui.spacer(.x, Size.pixels(3, 1));
 
-        const hue_bar = ui.addNode(.{ .clickable = true, .draw_background = true }, "hue_bar", .{
+        const hue_bar = ui.addNodeF(.{ .clickable = true, .draw_background = true }, "{s}_hue_bar", .{hash_str}, .{
             .pref_size = Size.pixelsExact(square_size / 10, square_size),
             .custom_draw_fn = (struct {
                 pub fn draw(_: *UI, shader_inputs: *std.ArrayList(UI.ShaderInput), node: *UI.Node) error{OutOfMemory}!void {

@@ -875,13 +875,13 @@ fn textDisplay(
         text_info.line_offsets[partial_end_line];
     const partial_text = text_info.content[partial_start_idx..partial_end_idx];
 
-    const label_node = ui.addNodeStrings(.{
+    const label_node = ui.addNode(.{
         .no_id = true,
         .ignore_hash_sep = true,
         .draw_text = true,
         .floating_x = true,
         .floating_y = true,
-    }, partial_text, label, .{});
+    }, partial_text, .{});
 
     // hack to cut off scrolling at the ends of text
     const text_size = vec2{ label_node.text_rect.size()[0], line_size * @as(f32, @floatFromInt(total_lines)) };
