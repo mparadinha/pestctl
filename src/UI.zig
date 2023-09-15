@@ -516,19 +516,34 @@ pub fn addNodeStringsF(
 }
 
 pub fn addNodeRaw(self: *UI, flags: Flags, string: []const u8, init_args: anytype) !*Node {
+    const arena = self.build_arena.allocator();
+
     const display_string = if (flags.ignore_hash_sep) string else displayPartOfString(string);
     const hash_string = if (flags.no_id) blk: {
         // for `no_id` nodes we use a random number as the hash string, so they don't clobber each other
-        break :blk hashPartOfString(&randomString(&self.prng));
-    } else if (flags.ignore_hash_sep) string else hashPartOfString(string);
+        break :blk &randomString(&self.prng);
+    } else if (flags.ignore_hash_sep) string else blk: {
+        // to allow for nodes with different parents to have the same name we
+        // combine the node's hash string with the hash string of the first parent
+        // to have a stable one (i.e. *not* `no-id`).
+        const parent_hash_str = parent_str: {
+            var parent = self.parent_stack.top() orelse break :parent_str "";
+            while (parent.flags.no_id) parent = parent.parent orelse
+                @panic("at some point the root should have a stable name");
+            break :parent_str parent.hash_string;
+        };
+        break :blk try std.fmt.allocPrint(arena, "{s}::{s}", .{
+            parent_hash_str, hashPartOfString(string),
+        });
+    };
 
     return self.addNodeRawStrings(flags, display_string, hash_string, init_args);
 }
 
 pub fn addNodeRawStrings(self: *UI, flags: Flags, display_string_in: []const u8, hash_string_in: []const u8, init_args: anytype) !*Node {
-    const allocator = self.build_arena.allocator();
-    const display_string = try allocator.dupe(u8, display_string_in);
-    const hash_string = try allocator.dupe(u8, hash_string_in);
+    const arena = self.build_arena.allocator();
+    const display_string = try arena.dupe(u8, display_string_in);
+    const hash_string = try arena.dupe(u8, hash_string_in);
 
     const node_key = self.node_table.ctx.hash(hash_string);
     if (std.mem.indexOfScalar(NodeKey, self.node_keys_this_frame.items, node_key)) |_| {
@@ -598,7 +613,7 @@ pub fn addNodeRawStrings(self: *UI, flags: Flags, display_string_in: []const u8,
 
     // save the custom draw context if needed
     if (node.custom_draw_ctx_as_bytes) |ctx_bytes|
-        node.custom_draw_ctx_as_bytes = try allocator.dupe(u8, ctx_bytes);
+        node.custom_draw_ctx_as_bytes = try arena.dupe(u8, ctx_bytes);
 
     if (self.auto_pop_style) {
         _ = self.popStyle();
