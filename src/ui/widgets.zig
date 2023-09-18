@@ -808,10 +808,3 @@ pub fn pushLayoutParentFlagsF(ui: *UI, flags: UI.Flags, comptime fmt: []const u8
     const str = ui.fmtTmpString(fmt, args);
     return ui.pushLayoutParentFlags(flags, str, size, layout_axis);
 }
-
-pub fn fmtTmpString(ui: *UI, comptime fmt: []const u8, args: anytype) []const u8 {
-    return std.fmt.allocPrint(ui.build_arena.allocator(), fmt, args) catch |e| {
-        ui.setErrorInfo(@errorReturnTrace(), @errorName(e));
-        return "";
-    };
-}

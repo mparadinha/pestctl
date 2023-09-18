@@ -15,6 +15,8 @@ pub usingnamespace @import("ui/widgets.zig");
 
 const build_opts = @import("build_opts");
 
+const tracy = @import("tracy.zig");
+
 allocator: Allocator,
 generic_shader: gfx.Shader,
 font: Font,
@@ -458,10 +460,6 @@ pub const Signal = struct {
 };
 
 pub fn addNode(self: *UI, flags: Flags, string: []const u8, init_args: anytype) *Node {
-    if (!std.unicode.utf8ValidateSlice(string)) {
-        std.debug.panic("`string` passed in for Node is not valid utf8:\n{}", .{std.fmt.fmtSliceEscapeLower(string)});
-    }
-
     const node = self.addNodeRaw(flags, string, init_args) catch |e| blk: {
         self.setErrorInfo(@errorReturnTrace(), @errorName(e));
         break :blk self.root_node.?;
@@ -470,22 +468,11 @@ pub fn addNode(self: *UI, flags: Flags, string: []const u8, init_args: anytype) 
 }
 
 pub fn addNodeF(self: *UI, flags: Flags, comptime fmt: []const u8, args: anytype, init_args: anytype) *Node {
-    const str = std.fmt.allocPrint(self.allocator, fmt, args) catch |e| blk: {
-        self.setErrorInfo(@errorReturnTrace(), @errorName(e));
-        break :blk "";
-    };
-    defer self.allocator.free(str);
+    const str = self.fmtTmpString(fmt, args);
     return self.addNode(flags, str, init_args);
 }
 
 pub fn addNodeStrings(self: *UI, flags: Flags, display_string: []const u8, hash_string: []const u8, init_args: anytype) *Node {
-    if (!std.unicode.utf8ValidateSlice(display_string)) {
-        std.debug.panic("`display_string` passed in for Node is not valid utf8:\n{}", .{std.fmt.fmtSliceEscapeLower(display_string)});
-    }
-    if (!std.unicode.utf8ValidateSlice(hash_string)) {
-        std.debug.panic("`hash_string` passed in for Node is not valid utf8:\n{}", .{std.fmt.fmtSliceEscapeLower(hash_string)});
-    }
-
     const node = self.addNodeRawStrings(flags, display_string, hash_string, init_args) catch |e| blk: {
         self.setErrorInfo(@errorReturnTrace(), @errorName(e));
         break :blk self.root_node.?;
@@ -502,16 +489,8 @@ pub fn addNodeStringsF(
     hash_args: anytype,
     init_args: anytype,
 ) *Node {
-    const display_str = std.fmt.allocPrint(self.allocator, display_fmt, display_args) catch |e| blk: {
-        self.setErrorInfo(@errorReturnTrace(), @errorName(e));
-        break :blk "";
-    };
-    defer self.allocator.free(display_str);
-    const hash_str = std.fmt.allocPrint(self.allocator, hash_fmt, hash_args) catch |e| blk: {
-        self.setErrorInfo(@errorReturnTrace(), @errorName(e));
-        break :blk "";
-    };
-    defer self.allocator.free(hash_str);
+    const display_str = self.fmtTmpString(display_fmt, display_args);
+    const hash_str = self.fmtTmpString(hash_fmt, hash_args);
     return self.addNodeStrings(flags, display_str, hash_str, init_args);
 }
 
@@ -603,13 +582,8 @@ pub fn addNodeRawStrings(self: *UI, flags: Flags, display_string_in: []const u8,
         @field(node, field_name) = @field(init_args, field_name);
     }
 
-    // calling textRect is too expensive to do multiple times per frame
-    const font_rect = try ((switch (node.font_type) {
-        .text => &self.font,
-        .text_bold => &self.font_bold,
-        .icon => &self.icon_font,
-    }).textRect(display_string, node.font_size));
-    node.text_rect = .{ .min = font_rect.min, .max = font_rect.max };
+    // for large inputs calculating the text size is too expensive to do multiple times per frame
+    node.text_rect = try self.calcTextRect(node, display_string);
 
     // save the custom draw context if needed
     if (node.custom_draw_ctx_as_bytes) |ctx_bytes|
@@ -883,10 +857,11 @@ pub fn computeNodeSignal(self: *UI, node: *Node) !Signal {
     const is_scrollable = node.flags.scroll_children_x or node.flags.scroll_children_y;
     if (is_scrollable and is_hot) {
         if (self.events.fetchAndRemove(.MouseScroll, null)) |ev| {
-            var scroll = math.times(vec2{ ev.x, ev.y }, 50);
+            var scroll = math.times(vec2{ ev.x, ev.y }, node.font_size);
             if (!node.flags.scroll_children_x) scroll[0] = 0;
             if (!node.flags.scroll_children_y) scroll[1] = 0;
             // TODO: add support for x-scrolling by holding shift
+            // TODO: add support for Home/End, PageUp/Down
             signal.scroll_amount = scroll;
             node.scroll_offset += vec2{ 1, -1 } * scroll;
         }
@@ -1087,35 +1062,34 @@ fn addShaderInputsForNode(self: *UI, shader_inputs: *std.ArrayList(ShaderInput),
         };
 
         var text_base = self.textPosFromNode(node);
-        if (node.flags.draw_active_effects) {
+        if (node.flags.draw_active_effects)
             text_base[1] -= (self.textPadding(node)[1] / 2) * node.active_trans;
-        }
 
-        const display_text = node.display_string;
+        const display_text = if (estimateLineCount(node, font.*) < 100)
+            node.display_string
+        else blk: {
+            const res = self.largeInputOptimizationVisiblePartOfText(node);
+            text_base[1] -= res.offset;
+            break :blk res.string;
+        };
 
         const quads = try font.buildQuads(self.allocator, display_text, node.font_size);
         defer self.allocator.free(quads);
         for (quads) |quad| {
-            var quad_rect = Rect{ .min = quad.points[0].pos, .max = quad.points[2].pos };
-            quad_rect.min += text_base;
-            quad_rect.max += text_base;
-
-            try shader_inputs.append(.{
-                .btm_left_pos = quad_rect.min,
-                .top_right_pos = quad_rect.max,
-                .btm_left_uv = quad.points[0].uv,
-                .top_right_uv = quad.points[2].uv,
-                .top_left_color = node.text_color,
-                .btm_left_color = node.text_color,
-                .top_right_color = node.text_color,
-                .btm_right_color = node.text_color,
-                .corner_radii = [4]f32{ 0, 0, 0, 0 },
-                .edge_softness = 0,
-                .border_thickness = 0,
-                .clip_rect_min = base_rect.clip_rect_min,
-                .clip_rect_max = base_rect.clip_rect_max,
-                .which_font = base_rect.which_font,
-            });
+            const quad_rect = Rect{ .min = quad.points[0].pos, .max = quad.points[2].pos };
+            var rect = base_rect;
+            rect.btm_left_pos = text_base + quad_rect.min;
+            rect.top_right_pos = text_base + quad_rect.max;
+            rect.btm_left_uv = quad.points[0].uv;
+            rect.top_right_uv = quad.points[2].uv;
+            rect.top_left_color = node.text_color;
+            rect.btm_left_color = node.text_color;
+            rect.top_right_color = node.text_color;
+            rect.btm_right_color = node.text_color;
+            rect.corner_radii = [4]f32{ 0, 0, 0, 0 };
+            rect.edge_softness = 0;
+            rect.border_thickness = 0;
+            try shader_inputs.append(rect);
         }
     }
 }
@@ -1201,12 +1175,7 @@ fn solveIndependentSizesWorkFn(self: *UI, node: *Node, axis: Axis) void {
         .percent,
         .text_dim,
         => {
-            //const text_rect = self.font.textRect(node.display_string) catch |e| switch (e) {
-            //    error.InvalidUtf8 => unreachable, // we already check this on node creation
-            //    error.OutOfMemory => std.debug.panic("that's fucking unlucky!\n", .{}),
-            //};
-            const text_rect = node.text_rect;
-            const text_size = text_rect.max - text_rect.min;
+            const text_size = node.text_rect.size();
             const text_padding = self.textPadding(node)[axis_idx];
             node.calc_size[axis_idx] = text_size[axis_idx] + 2 * text_padding;
         },
@@ -1468,6 +1437,186 @@ pub fn textPosFromNode(self: *UI, node: *Node) vec2 {
     const rel_text_y = (node_size[1] / 2) - text_to_center_y;
 
     return node.rect.min + vec2{ rel_text_x, rel_text_y };
+}
+
+fn calcTextRect(self: *UI, node: *Node, string: []const u8) !Rect {
+    const font: *Font = switch (node.font_type) {
+        .text => &self.font,
+        .text_bold => &self.font_bold,
+        .icon => &self.icon_font,
+    };
+
+    const text_line_info = findTextLineInfo(string);
+    const num_lines = text_line_info.line_count;
+    const longest_line = text_line_info.longest_line;
+    if (num_lines == 0 or num_lines == 1) {
+        const font_rect = try font.textRect(string, node.font_size);
+        return .{ .min = font_rect.min, .max = font_rect.max };
+    }
+
+    const longest_line_width = blk: {
+        const rect = try font.textRect(longest_line, node.font_size);
+        break :blk rect.max[0] - rect.min[0];
+    };
+
+    const line_size = font.getScaledMetrics(node.font_size).line_advance;
+
+    const first_line = string[0 .. indexOfNthScalar(string, '\n', 1) orelse string.len];
+    const first_line_rect = try font.textRect(first_line, node.font_size);
+
+    const last_newline = std.mem.lastIndexOfScalar(u8, string, '\n');
+    const last_line = string[if (last_newline) |idx| idx + 1 else 0..];
+    const last_line_rect = try font.textRect(last_line, node.font_size);
+
+    const first_to_last_baseline = line_size * @as(f32, @floatFromInt(num_lines - 1));
+
+    return .{
+        .min = vec2{ 0, -(first_to_last_baseline - last_line_rect.min[1]) },
+        .max = vec2{ longest_line_width, first_line_rect.max[1] },
+    };
+}
+
+fn findTextLineInfo(str: []const u8) struct {
+    line_count: usize,
+    longest_line: []const u8,
+} {
+    if (str.len == 0) return .{ .line_count = 0, .longest_line = str[0..0] };
+
+    const vec_size = comptime std.simd.suggestVectorSize(u8) orelse 128 / 8;
+    const V = @Vector(vec_size, u8);
+
+    var line_count: usize = 1;
+    var longest_line: []const u8 = str[0..0];
+    var last_line_start: usize = 0;
+    var chunk_start: usize = 0;
+    while (chunk_start < str.len) {
+        const rest_of_str = str[chunk_start..];
+
+        const chunk: V = if (rest_of_str.len < vec_size) chunk: {
+            var chunk: V = @splat(0);
+            for (rest_of_str, 0..) |char, idx| chunk[idx] = char;
+            break :chunk chunk;
+        } else str[chunk_start..][0..vec_size].*;
+
+        const cmp = chunk == @as(V, @splat('\n'));
+        const one_if_true = @select(u8, cmp, @as(V, @splat(1)), @as(V, @splat(0)));
+        const num_matches = @reduce(.Add, one_if_true);
+        var advance: usize = vec_size;
+        if (num_matches != 0) {
+            const max_int: V = @splat(std.math.maxInt(u8));
+            const indices = std.simd.iota(u8, vec_size);
+
+            const true_or_max_indices = @select(u8, cmp, indices, max_int);
+            const newline_idx = @reduce(.Min, true_or_max_indices);
+
+            const next_line_in_chunk = @as(usize, newline_idx) + 1;
+            const next_line_start = chunk_start + next_line_in_chunk;
+            const line_len = next_line_start - last_line_start;
+            if (line_len > longest_line.len)
+                longest_line = str[last_line_start..][0..line_len];
+
+            last_line_start = next_line_start;
+            if (num_matches > 1) {
+                const longest_possible_line_in_chunk = vec_size - newline_idx - (num_matches - 1);
+                if (longest_line.len >= longest_possible_line_in_chunk) {
+                    const min_int: V = @splat(std.math.minInt(u8));
+                    const true_or_min_indices = @select(u8, cmp, indices, min_int);
+                    const last_newline_idx = @reduce(.Max, true_or_min_indices);
+                    const last_start_idx = chunk_start + @as(usize, last_newline_idx) + 1;
+                    last_line_start = last_start_idx;
+                } else {
+                    advance = next_line_in_chunk;
+                }
+            }
+        }
+
+        chunk_start += advance;
+        line_count += if (advance < vec_size) 1 else std.simd.countElementsWithValue(chunk, '\n');
+    }
+
+    if (str[str.len - 1] == '\n' and line_count > 1) line_count -= 1;
+    if (longest_line.len == 0) longest_line = str;
+    return .{ .line_count = line_count, .longest_line = longest_line };
+}
+
+fn estimateLineCount(node: *Node, font: Font) f32 {
+    const line_size = font.getScaledMetrics(node.font_size).line_advance;
+    const text_size = node.text_rect.size();
+    return text_size[1] / line_size;
+}
+
+fn largeInputOptimizationVisiblePartOfText(self: *UI, node: *Node) struct {
+    string: []const u8,
+    offset: f32,
+} {
+    const font: *Font = switch (node.font_type) {
+        .text => &self.font,
+        .text_bold => &self.font_bold,
+        .icon => &self.icon_font,
+    };
+    const line_size = font.getScaledMetrics(node.font_size).line_advance;
+    const text_size = node.text_rect.size();
+    const num_lines: usize = @intFromFloat(@ceil(text_size[1] / line_size));
+    // const padding = self.textPadding(node);
+
+    // const top_of_text = node.rect.max[1] - padding[1];
+    const top_of_text = node.rect.max[1];
+    const top_extra = @max(0, top_of_text - node.clip_rect.max[1]);
+    const top_extra_lines: usize = @intFromFloat(@divFloor(top_extra, line_size));
+
+    // const btm_of_text = node.rect.min[1] + padding[1];
+    const btm_of_text = node.rect.min[1];
+    const btm_extra = @max(0, node.clip_rect.min[1] - btm_of_text);
+    const btm_extra_lines: usize = @intFromFloat(@divFloor(btm_extra, line_size));
+
+    const start_idx = if (indexOfNthScalar(node.display_string, '\n', top_extra_lines)) |idx| idx + 1 else 0;
+    const rest_of_string = node.display_string[start_idx..];
+    const visible_lines = num_lines - top_extra_lines - btm_extra_lines;
+    const end_idx = indexOfNthScalar(rest_of_string, '\n', visible_lines) orelse rest_of_string.len;
+
+    return .{
+        .string = rest_of_string[0..end_idx],
+        .offset = top_extra,
+    };
+}
+
+/// find the index of the `nth` occurence of `scalar` in `slice`
+fn indexOfNthScalar(slice: []const u8, scalar: u8, nth: usize) ?usize {
+    if (nth == 0) return null;
+
+    const vec_size = comptime std.simd.suggestVectorSize(u8) orelse 128 / 8;
+    const V = @Vector(vec_size, u8);
+
+    var running_count: usize = 0;
+
+    for (0..slice.len / vec_size) |chunk_idx| {
+        const start_idx = chunk_idx * vec_size;
+        const chunk: V = slice[start_idx..][0..vec_size].*;
+        const chunk_count = std.simd.countElementsWithValue(chunk, scalar);
+        if (running_count + chunk_count >= nth) {
+            for (0..vec_size) |elem_idx| {
+                if (chunk[elem_idx] == scalar) running_count += 1;
+                if (running_count == nth) return start_idx + elem_idx;
+            }
+        }
+        running_count += chunk_count;
+    }
+    if (slice.len % vec_size != 0) {
+        const start_idx = slice.len - (slice.len % vec_size);
+        for (slice[start_idx..], 0..) |elem, elem_idx| {
+            if (elem == scalar) running_count += 1;
+            if (running_count == nth) return start_idx + elem_idx;
+        }
+    }
+
+    return null;
+}
+
+pub fn fmtTmpString(ui: *UI, comptime fmt: []const u8, args: anytype) []const u8 {
+    return std.fmt.allocPrint(ui.build_arena.allocator(), fmt, args) catch |e| {
+        ui.setErrorInfo(@errorReturnTrace(), @errorName(e));
+        return "";
+    };
 }
 
 pub fn setErrorInfo(self: *UI, trace: ?*std.builtin.StackTrace, name: []const u8) void {
