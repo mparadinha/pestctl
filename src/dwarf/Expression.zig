@@ -101,7 +101,8 @@ pub fn executeOp(
         DW.OP.xderef => std.debug.panic("TODO: {s}\n", .{DW.OP.asStr(op)}),
         DW.OP.abs => {
             const value = (try self.stack.pop()).generic;
-            try self.stack.push(try std.math.absInt(@as(isize, @bitCast(value))));
+            const signed: isize = @bitCast(value);
+            try self.stack.push(@abs(signed));
         },
         DW.OP.@"and" => {
             const value_one = (try self.stack.pop()).generic;

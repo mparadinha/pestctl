@@ -94,9 +94,9 @@ pub fn main() !void {
     defer window.deinit();
     var clear_color = vec4{ 0.75, 0.36, 0.38, 1 };
 
-    var ui = try UI.init(allocator, .{}, &window);
+    var ui = try UI.init(allocator, .{});
     defer ui.deinit();
-    var dbg_ui_view = try UI.DebugView.init(allocator, &window);
+    var dbg_ui_view = try UI.DebugView.init(allocator);
     defer dbg_ui_view.deinit();
 
     ui.base_style.bg_color = vec4{ 0.24, 0.27, 0.31, 1 };
@@ -140,6 +140,9 @@ pub fn main() !void {
 
     var file_tab = FileTab.init(allocator);
     defer file_tab.deinit();
+    var file_viewer = widgets.SourceViewer.init(allocator);
+    defer file_viewer.deinit();
+    try file_viewer.addFile("/home/parada/repos/zig/src/Sema.zig");
 
     var last_src_loc = @as(?SrcLoc, null);
 
@@ -169,7 +172,7 @@ pub fn main() !void {
         last_time = cur_time;
         const mouse_pos = try window.getMousePos();
 
-        try ui.startBuild(width, height, mouse_pos, &window.event_queue);
+        try ui.startBuild(width, height, mouse_pos, &window.event_queue, &window);
 
         const fill_x_size = [2]Size{ Size.percent(1, 1), Size.text_dim(1) };
 
@@ -215,7 +218,8 @@ pub fn main() !void {
         }, "left_side_parent", Size.fill(0.5, 1), .y);
         {
             try doOpenFileBox(&frame_arena, &ui, &session_cmds, cwd, &src_file_buf, &src_file_search);
-            try file_tab.display(&ui, &session_cmds);
+            try file_viewer.show(&ui);
+            // try file_tab.display(&ui, &session_cmds);
             if (session_opt) |session| try doDisassemblyWindow(allocator, &ui, session, &disasm_texts);
         }
         ui.popParentAssert(left_side_parent);
@@ -431,7 +435,7 @@ pub fn main() !void {
         gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
         try ui.render();
         if (dbg_ui_view.active) {
-            try dbg_ui_view.show(&ui, width, height, mouse_pos, &window.event_queue, dt);
+            try dbg_ui_view.show(&ui, width, height, mouse_pos, &window.event_queue, &window, dt);
         }
 
         window.update();

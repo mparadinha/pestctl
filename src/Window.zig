@@ -159,17 +159,17 @@ pub fn setCursor(self: *Window, cursor_type: CursorType) void {
     c.glfwSetCursor(self.handle, cursor);
 }
 
-pub fn keyPressed(self: *Window, key: i32) bool {
+pub fn keyPressed(self: Window, key: i32) bool {
     return c.glfwGetKey(self.handle, key) == c.GLFW_PRESS;
 }
 
 /// +1 if `pos_key_id` is pressed, -1 if `neg_key_id` is pressed or 0 if both are
-pub fn keyPair(self: *Window, pos_key_id: i32, neg_key_id: i32) f32 {
+pub fn keyPair(self: Window, pos_key_id: i32, neg_key_id: i32) f32 {
     return (if (self.keyPressed(pos_key_id)) @as(f32, 1) else @as(f32, 0)) +
         (if (self.keyPressed(neg_key_id)) @as(f32, -1) else @as(f32, 0));
 }
 
-pub fn getModifiers(self: *Window) InputEvent.Modifiers {
+pub fn getModifiers(self: Window) InputEvent.Modifiers {
     return .{
         .shift = self.keyPressed(c.GLFW_KEY_LEFT_SHIFT) or
             self.keyPressed(c.GLFW_KEY_RIGHT_SHIFT),

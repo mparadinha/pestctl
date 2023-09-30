@@ -414,7 +414,7 @@ pub fn textInputRaw(ui: *UI, hash_string: []const u8, buffer: []u8, buf_len: *us
     selection_node.bg_color = vec4{ 0, 0, 1, 0.25 };
     const text_before_mark = buffer[0..widget_node.mark];
     const partial_text_rect_mark = try ui.font.textRect(text_before_mark, font_pixel_size);
-    const selection_size = @fabs(partial_text_rect_mark.max[0] - partial_text_rect.max[0]);
+    const selection_size = @abs(partial_text_rect_mark.max[0] - partial_text_rect.max[0]);
     selection_node.pref_size = [2]Size{ Size.pixels(selection_size, 1), cursor_node.pref_size[1] };
     selection_node.rel_pos.diff = vec2{
         @min(partial_text_rect_mark.max[0], partial_text_rect.max[0]),
@@ -460,7 +460,7 @@ pub fn textInputRaw(ui: *UI, hash_string: []const u8, buffer: []u8, buf_len: *us
     // TODO: doing a click followed by press and drag in the same timing as a double-click
     // does a selection but using the same "word scan" as the double click code path
 
-    while (ui.window_ptr.event_queue.next()) |event| {
+    while (ui.events.next()) |event| {
         const has_selection = widget_node.cursor != widget_node.mark;
         var ev_was_used = true;
         switch (event) {
@@ -521,7 +521,7 @@ pub fn textInputRaw(ui: *UI, hash_string: []const u8, buffer: []u8, buf_len: *us
             },
             else => ev_was_used = false,
         }
-        if (ev_was_used) ui.window_ptr.event_queue.removeCurrent();
+        if (ev_was_used) ui.events.removeCurrent();
     }
 
     for (text_actions.slice()) |action| {
@@ -741,7 +741,7 @@ fn RGBtoHSV(rgba: vec4) vec4 {
 fn HSVtoRGB(hsva: vec4) vec4 {
     const h = (hsva[0] * 360) / 60;
     const C = hsva[2] * hsva[1];
-    const X = C * (1 - @fabs(@mod(h, 2) - 1));
+    const X = C * (1 - @abs(@mod(h, 2) - 1));
     const rgb_l = switch (@as(u32, @intFromFloat(@floor(h)))) {
         0 => vec3{ C, X, 0 },
         1 => vec3{ X, C, 0 },

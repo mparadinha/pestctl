@@ -26,8 +26,6 @@ build_arena: std.heap.ArenaAllocator,
 node_table: NodeTable,
 prng: PRNG,
 
-window_ptr: *Window, // only used for setting the cursor
-
 // if we accidentally create two nodes with the same hash in the frame this
 // might lead to the node tree having cycles (which hangs whenever we traverse it)
 // this is cleared every frame
@@ -36,7 +34,7 @@ node_keys_this_frame: std.ArrayList(NodeKey),
 // to prevent having error return in all the functions, we ignore the errors during the
 // ui building phase, and return one only at the end of the building phase.
 // so we store the stack trace of the first error that occurred here
-first_error_trace: ?*std.builtin.StackTrace,
+first_error_trace: ?std.builtin.StackTrace,
 first_error_name: []const u8,
 
 base_style: Style,
@@ -99,7 +97,7 @@ pub const Icons = struct {
 };
 
 // call `deinit` to cleanup resources
-pub fn init(allocator: Allocator, font_opts: FontOptions, window_ptr: *Window) !UI {
+pub fn init(allocator: Allocator, font_opts: FontOptions) !UI {
     return UI{
         .allocator = allocator,
         .generic_shader = gfx.Shader.from_srcs(allocator, "ui_generic", .{
@@ -113,8 +111,6 @@ pub fn init(allocator: Allocator, font_opts: FontOptions, window_ptr: *Window) !
         .build_arena = std.heap.ArenaAllocator.init(allocator),
         .node_table = NodeTable.init(allocator),
         .prng = PRNG.init(0),
-
-        .window_ptr = window_ptr,
 
         .node_keys_this_frame = std.ArrayList(NodeKey).init(allocator),
 
@@ -202,6 +198,7 @@ pub const Node = struct {
     text_align: TextAlign,
     custom_draw_fn: ?CustomDrawFn,
     custom_draw_ctx_as_bytes: ?[]const u8, // gets copied during `addNode`
+    scroll_multiplier: vec2,
 
     // per-frame sizing information
     text_rect: Rect,
@@ -257,6 +254,7 @@ pub const Style = struct {
     text_align: TextAlign = .left,
     custom_draw_fn: ?CustomDrawFn = null,
     custom_draw_ctx_as_bytes: ?[]const u8 = null,
+    scroll_multiplier: vec2 = @splat(18 * 2),
 };
 
 pub const Size = union(enum) {
@@ -653,7 +651,14 @@ pub fn setFocusedNode(self: *UI, node: *Node) void {
     self.focused_node_key = self.keyFromNode(node);
 }
 
-pub fn startBuild(self: *UI, screen_w: u32, screen_h: u32, mouse_pos: vec2, events: *Window.EventQueue) !void {
+pub fn startBuild(
+    self: *UI,
+    screen_w: u32,
+    screen_h: u32,
+    mouse_pos: vec2,
+    events: *Window.EventQueue,
+    window: *Window,
+) !void {
     self.hot_node_key = null;
     // get the signal in the reverse order that we render in (if a node is on top
     // of another, the top one should get the inputs, no the bottom one)
@@ -706,13 +711,15 @@ pub fn startBuild(self: *UI, screen_w: u32, screen_h: u32, mouse_pos: vec2, even
     }) |node_key| {
         if (node_key) |key| mouse_cursor = self.node_table.getFromHash(key).?.cursor_type;
     }
-    self.window_ptr.setCursor(mouse_cursor);
+    window.setCursor(mouse_cursor);
 }
 
 pub fn endBuild(self: *UI, dt: f32) void {
     if (self.first_error_trace) |error_trace| {
-        std.debug.print("{}\n", .{error_trace});
-        std.debug.panic("An error occurred during the UI building phase: {s}", .{self.first_error_name});
+        std.debug.print("Error '{s}' occurred during the UI building phase with the following stack trace:\n{}", .{
+            self.first_error_name, error_trace,
+        });
+        @panic("An error occurred during the UI building phase");
     }
 
     _ = self.style_stack.pop().?;
@@ -857,11 +864,15 @@ pub fn computeNodeSignal(self: *UI, node: *Node) !Signal {
     const is_scrollable = node.flags.scroll_children_x or node.flags.scroll_children_y;
     if (is_scrollable and is_hot) {
         if (self.events.fetchAndRemove(.MouseScroll, null)) |ev| {
-            var scroll = math.times(vec2{ ev.x, ev.y }, node.font_size);
+            var scroll = vec2{ ev.x, ev.y } * node.scroll_multiplier;
+            // TODO: add support for Home/End, PageUp/Down
+
+            // support x-scrolling by holding shift
+            if (scroll[0] == 0 and ev.mods.shift) std.mem.swap(f32, &scroll[0], &scroll[1]);
+
             if (!node.flags.scroll_children_x) scroll[0] = 0;
             if (!node.flags.scroll_children_y) scroll[1] = 0;
-            // TODO: add support for x-scrolling by holding shift
-            // TODO: add support for Home/End, PageUp/Down
+
             signal.scroll_amount = scroll;
             node.scroll_offset += vec2{ 1, -1 } * scroll;
         }
@@ -1619,9 +1630,13 @@ pub fn fmtTmpString(ui: *UI, comptime fmt: []const u8, args: anytype) []const u8
     };
 }
 
-pub fn setErrorInfo(self: *UI, trace: ?*std.builtin.StackTrace, name: []const u8) void {
-    self.first_error_trace = trace;
-    self.first_error_name = name;
+pub fn setErrorInfo(self: *UI, stack_trace: ?*std.builtin.StackTrace, name: []const u8) void {
+    const allocator = self.build_arena.allocator();
+    self.first_error_trace = if (stack_trace) |trace| .{
+        .index = trace.index,
+        .instruction_addresses = allocator.dupe(usize, trace.instruction_addresses) catch @panic("OOM"),
+    } else @panic("setErrorInfo called with a null stack trace");
+    self.first_error_name = allocator.dupe(u8, name) catch @panic("OOM");
 }
 
 pub fn nodeFromKey(self: UI, key: NodeKey) ?*Node {
@@ -1957,7 +1972,6 @@ pub fn dumpNodeTreeGraph(self: *UI, root: *Node, save_path: []const u8) !void {
 
 pub const DebugView = struct {
     allocator: Allocator,
-    window_ptr: *Window, // use for `window.getModifiers()`
     ui: UI,
     active: bool,
     node_list_idx: usize,
@@ -1965,11 +1979,10 @@ pub const DebugView = struct {
     anchor_right: bool,
     show_help: bool,
 
-    pub fn init(allocator: Allocator, window_ptr: *Window) !DebugView {
+    pub fn init(allocator: Allocator) !DebugView {
         return DebugView{
             .allocator = allocator,
-            .window_ptr = window_ptr,
-            .ui = try UI.init(allocator, .{}, window_ptr),
+            .ui = try UI.init(allocator, .{}),
             .active = false,
             .node_list_idx = 0,
             .node_query_pos = null,
@@ -1982,7 +1995,16 @@ pub const DebugView = struct {
         self.ui.deinit();
     }
 
-    pub fn show(self: *DebugView, ui: *UI, width: u32, height: u32, mouse_pos: vec2, events: *Window.EventQueue, dt: f32) !void {
+    pub fn show(
+        self: *DebugView,
+        ui: *UI,
+        width: u32,
+        height: u32,
+        mouse_pos: vec2,
+        events: *Window.EventQueue,
+        window: *Window,
+        dt: f32,
+    ) !void {
         // ctrl+shift+h to toggle help menu
         const ctrl_shift = Window.InputEvent.Modifiers{ .shift = true, .control = true };
         if (events.searchAndRemove(.KeyDown, .{ .key = c.GLFW_KEY_H, .mods = ctrl_shift }))
@@ -1996,7 +2018,7 @@ pub const DebugView = struct {
         }
         // ctrl+shift+scroll_click to freeze query position to current mouse_pos
         if (events.find(.MouseUp, c.GLFW_MOUSE_BUTTON_MIDDLE)) |ev_idx| blk: {
-            const mods = self.window_ptr.getModifiers();
+            const mods = window.getModifiers();
             if (!(mods.shift and mods.control)) break :blk;
             self.node_query_pos = if (self.node_query_pos) |_| null else mouse_pos;
             _ = events.removeAt(ev_idx);
@@ -2021,7 +2043,7 @@ pub const DebugView = struct {
         self.node_list_idx = std.math.clamp(self.node_list_idx, 0, selected_nodes.items.len - 1);
         const active_node = selected_nodes.items[self.node_list_idx];
 
-        try self.ui.startBuild(width, height, mouse_pos, events);
+        try self.ui.startBuild(width, height, mouse_pos, events, window);
 
         // red border around the selected nodes
         const border_node_flags = Flags{

@@ -114,3 +114,84 @@ pub const FilePicker = struct {
         return null;
     }
 };
+
+pub const SourceViewer = struct {
+    allocator: Allocator,
+    files: std.ArrayList(File),
+
+    // TODO: highlight boxes (with animation when switching to new locations)
+    const File = struct {
+        path: []const u8,
+        content: []const u8,
+
+        pub fn free(self: File, allocator: Allocator) void {
+            allocator.free(self.path);
+            allocator.free(self.content);
+        }
+    };
+
+    pub fn init(allocator: Allocator) SourceViewer {
+        return .{
+            .allocator = allocator,
+            .files = std.ArrayList(File).init(allocator),
+        };
+    }
+
+    pub fn deinit(self: SourceViewer) void {
+        for (self.files.items) |file| file.free(self.allocator);
+        self.files.deinit();
+    }
+
+    pub fn show(self: *SourceViewer, ui: *UI) !void {
+        if (self.files.items.len == 0) return;
+        const scroll_parent = ui.pushLayoutParentFlags(.{
+            .draw_background = true,
+            .clip_children = true,
+            .scroll_children_x = true,
+            .scroll_children_y = true,
+        }, "SourceViewer", Size.fill(1, 1), .x);
+        defer ui.popParentAssert(scroll_parent);
+
+        const text = self.files.items[0].content;
+
+        const number_of_lines = blk: {
+            const vec_size = comptime std.simd.suggestVectorSize(u8).?;
+            var total: usize = 0;
+            for (0..text.len / vec_size) |chunk_idx| {
+                const chunk: @Vector(vec_size, u8) = text[chunk_idx * vec_size ..][0..vec_size].*;
+                total += std.simd.countElementsWithValue(chunk, '\n');
+            }
+            total += std.mem.count(u8, text[text.len - text.len % vec_size ..], "\n");
+            break :blk total;
+        };
+        const digits_per_line = @floor(std.math.log10(@as(f64, @floatFromInt(number_of_lines)))) + 1;
+        const buffer_size = number_of_lines * (1 + @as(usize, @intFromFloat(digits_per_line)));
+        var line_number_bytes = try self.allocator.alloc(u8, buffer_size);
+        defer self.allocator.free(line_number_bytes);
+        var stream = std.io.fixedBufferStream(line_number_bytes);
+        for (0..number_of_lines) |line_num| try stream.writer().print("{d}\n", .{line_num});
+        const line_numbers = stream.getWritten();
+
+        ui.label(line_numbers);
+        ui.label(self.files.items[0].content);
+
+        // TODO: add floating child at end for scroll bar
+    }
+
+    pub const Focus = struct {};
+
+    pub fn focusOn(self: *SourceViewer, focus: Focus) void {
+        _ = focus;
+        _ = self;
+    }
+
+    pub fn addFile(self: *SourceViewer, absolute_path: []const u8) !void {
+        const file = try std.fs.openFileAbsolute(absolute_path, .{});
+        defer file.close();
+        const content = try file.readToEndAlloc(self.allocator, std.math.maxInt(usize));
+        errdefer self.allocator.free(content);
+        const path = try self.allocator.dupe(u8, absolute_path);
+        errdefer self.allocator.free(path);
+        try self.files.append(.{ .path = path, .content = content });
+    }
+};
