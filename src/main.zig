@@ -16,6 +16,7 @@ const Elf = @import("Elf.zig");
 const Dwarf = @import("Dwarf.zig");
 const SrcLoc = Dwarf.SrcLoc;
 const widgets = @import("app_widgets.zig");
+const FuzzyMatcher = @import("fuzzy_matching.zig").FuzzyMatcher;
 
 const tracy = @import("tracy.zig");
 
@@ -129,8 +130,14 @@ pub fn main() !void {
     var memline_addr: ?usize = null;
     var file_picker: ?widgets.FilePicker = null;
     defer if (file_picker) |picker| picker.deinit();
+    var search_buf = InputBuf{};
+    var file_search_iter = try FileSearchIterator.init(allocator, cwd);
+    defer file_search_iter.deinit();
+    var test_search = FuzzyMatcher(FileSearchIterator).init(allocator, &file_search_iter);
+    defer test_search.deinit();
 
     var show_ui_stats = true;
+    var lock_framerate = true;
 
     var disasm_texts = std.ArrayList(AsmTextInfo).init(allocator);
     defer {
@@ -142,7 +149,6 @@ pub fn main() !void {
     defer file_tab.deinit();
     var file_viewer = widgets.SourceViewer.init(allocator);
     defer file_viewer.deinit();
-    try file_viewer.addFile("/home/parada/repos/zig/src/Sema.zig");
 
     var last_src_loc = @as(?SrcLoc, null);
 
@@ -192,9 +198,13 @@ pub fn main() !void {
                 }
             }
 
+            if (ui.checkBox("lock framerate", &lock_framerate).clicked)
+                c.glfwSwapInterval(if (lock_framerate) 1 else 0);
+
             _ = ui.checkBox("show UI stats", &show_ui_stats);
             if (show_ui_stats) {
                 const mem_stats = try getMemoryStats(allocator);
+                if (dt >= 0.020) ui.pushTmpStyle(.{ .text_color = vec4{ 1, 0, 0, 1 } });
                 ui.labelF("#nodes={}, frame_time={d:2.4}ms, mem(ram/virtual/shared): {d:.2}/{d:.2}/{d:.2}, gpa requested bytes: {d:.2}", .{
                     ui.node_table.key_mappings.items.len,
                     dt * 1000,
@@ -220,13 +230,24 @@ pub fn main() !void {
             try doOpenFileBox(&frame_arena, &ui, &session_cmds, cwd, &src_file_buf, &src_file_search);
             try file_viewer.show(&ui);
             // try file_tab.display(&ui, &session_cmds);
-            if (session_opt) |session| try doDisassemblyWindow(allocator, &ui, session, &disasm_texts);
+            // if (session_opt) |session| try doDisassemblyWindow(allocator, &ui, session, &disasm_texts);
         }
         ui.popParentAssert(left_side_parent);
 
         const right_side_parent = ui.pushLayoutParentFlags(.{
             .draw_background = true,
         }, "right_side_parent", Size.fill(0.5, 1), .y);
+        {
+            // show input box
+            ui.pushStyle(text_input_style);
+            _ = ui.textInput("asdlkfjhasdf", &search_buf.buffer, &search_buf.len);
+            _ = ui.popStyle();
+
+            try test_search.updateSearch(search_buf.slice());
+
+            if (pickFuzzyMatches(&ui, &test_search, "test_search", null, null)) |entry|
+                std.debug.print("choose a search entry: {any}\n", .{entry});
+        }
         if (session_opt) |*session| {
             ui.pushStyle(.{ .pref_size = [2]Size{ Size.percent(1, 1), Size.text_dim(1) } });
             ui.labelBoxF("Child pid: {}", .{session.pid});
@@ -444,12 +465,118 @@ pub fn main() !void {
     }
 }
 
+const DwarfSearchIterator = struct {
+    session: ?Session,
+    unit_idx: usize = 0,
+    fn_idx: usize = 0,
+    var_idx: usize = 0,
+
+    pub fn init(session: ?Session) DwarfSearchIterator {
+        return .{ .session = session };
+    }
+
+    pub fn reset(self: *DwarfSearchIterator, query: []const u8) !void {
+        _ = query;
+        self.unit_idx = 0;
+        self.fn_idx = 0;
+        self.var_idx = 0;
+    }
+
+    pub const Context = struct {
+        unit_idx: usize,
+        fn_idx: usize,
+        var_idx: usize,
+    };
+
+    pub fn next(self: *DwarfSearchIterator) !?struct { str: []const u8, ctx: Context } {
+        const dwarf = (self.session orelse return null).elf.dwarf;
+
+        if (self.unit_idx == dwarf.units.len) return null;
+        const unit = dwarf.units[self.unit_idx];
+
+        var name: ?[]const u8 = null;
+        if (self.fn_idx < unit.functions.len) {
+            self.fn_idx += 1;
+            name = unit.functions[self.fn_idx - 1].name;
+        } else if (self.var_idx < unit.variables.len) {
+            self.var_idx += 1;
+            name = unit.variables[self.var_idx - 1].name;
+        } else {
+            self.unit_idx += 1;
+            self.fn_idx = 0;
+            self.var_idx = 0;
+        }
+
+        return if (name) |str| .{
+            .str = str,
+            .ctx = .{
+                .unit_idx = self.unit_idx,
+                .fn_idx = self.fn_idx,
+                .var_idx = self.var_idx,
+            },
+        } else return self.next();
+    }
+};
+
+const FileSearchIterator = struct {
+    allocator: Allocator,
+    dir: std.fs.IterableDir,
+    walker: std.fs.IterableDir.Walker,
+
+    pub const Context = struct {};
+
+    pub fn init(allocator: Allocator, path: []const u8) !FileSearchIterator {
+        const dir = try std.fs.openIterableDirAbsolute(path, .{ .access_sub_paths = true });
+        return .{ .allocator = allocator, .dir = dir, .walker = try dir.walk(allocator) };
+    }
+
+    pub fn deinit(self: *FileSearchIterator) void {
+        self.walker.deinit();
+        self.dir.close();
+    }
+
+    pub fn reset(self: *FileSearchIterator, query: []const u8) !void {
+        _ = query;
+        self.walker.deinit();
+        self.walker = try self.dir.walk(self.allocator);
+    }
+
+    pub fn next(self: *FileSearchIterator) !?struct { str: []const u8, ctx: Context } {
+        const next_entry = try self.walker.next() orelse return null;
+        return .{ .str = next_entry.path, .ctx = .{} };
+    }
+};
+
+fn pickFuzzyMatches(
+    ui: *UI,
+    matcher: anytype,
+    label: []const u8,
+    placement: ?UI.RelativePlacement,
+    reverse_order: ?bool,
+) ?@TypeOf(matcher.*).Context {
+    _ = reverse_order;
+    _ = placement;
+    _ = label;
+    // TODO: check that matcher is a pointer type
+
+    matcher.mutex.lock();
+    defer matcher.mutex.unlock();
+
+    // TODO: match highlights
+    for (matcher.top_matches.slice()) |entry| {
+        const btn_sig = ui.buttonF("{s} (score={})", .{ entry.matched_str, entry.score });
+        if (btn_sig.clicked) return entry.ctx;
+    }
+
+    return null;
+}
+
 fn Buffer(comptime capacity: usize) type {
     return struct {
         buffer: [capacity]u8 = [_]u8{0} ** capacity,
         len: usize = 0,
 
-        pub fn slice(self: @This()) []const u8 {
+        pub fn slice(self: *@This()) []const u8 {
             return self.buffer[0..self.len];
         }
     };
@@ -1367,39 +1494,6 @@ const FuncSearchCtx = struct {
     }
 };
 
-/// higher score means better match
-fn fuzzyScore(pattern: []const u8, test_str: []const u8) f32 {
-    const trace = tracy.Zone(@src());
-    defer trace.End();
-
-    var score: f32 = 0;
-
-    const to_lower_lut = comptime lut: {
-        var table: [256]u8 = undefined;
-        for (&table, 0..) |*entry, char| {
-            entry.* = if ('A' <= char and char <= 'Z') char + 32 else char;
-        }
-        break :lut table;
-    };
-
-    for (pattern, 0..) |pat_char, pat_idx| {
-        for (test_str, 0..) |test_char, test_idx| {
-            var char_score: f32 = 0;
-            const case_sensitive_match = (pat_char == test_char);
-            const case_insensitive_match = to_lower_lut[pat_char] == to_lower_lut[test_char];
-            if (!case_insensitive_match) continue;
-            char_score += 0.5;
-            if (case_sensitive_match) char_score += 1;
-            if (test_idx == pat_idx) char_score *= 5;
-            score += char_score;
-        }
-    }
-
-    if (std.mem.indexOf(u8, test_str, pattern)) |idx| score = (score * 5) - @as(f32, @floatFromInt(idx));
-
-    return score;
-}
-
 fn FuzzySearchOptions(comptime Ctx: type, comptime max_slots: usize) type {
     return struct {
         allocator: Allocator,
@@ -1441,7 +1535,7 @@ fn FuzzySearchOptions(comptime Ctx: type, comptime max_slots: usize) type {
 
             std.debug.assert(self.target.len > 0);
 
-            const score = fuzzyScore(self.target, test_str);
+            const score = @import("fuzzy_matching.zig").fuzzyScore(self.target, test_str);
             const new_entry = Entry{ .str = test_str, .score = score, .ctx = ctx };
             if (self.slots_filled < self.slots.len) {
                 self.slots[self.slots_filled] = new_entry;

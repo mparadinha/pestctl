@@ -36,6 +36,7 @@ node_keys_this_frame: std.ArrayList(NodeKey),
 // so we store the stack trace of the first error that occurred here
 first_error_trace: ?std.builtin.StackTrace,
 first_error_name: []const u8,
+first_error_stack_trace: std.builtin.StackTrace,
 
 base_style: Style,
 
@@ -116,6 +117,7 @@ pub fn init(allocator: Allocator, font_opts: FontOptions) !UI {
 
         .first_error_trace = null,
         .first_error_name = "",
+        .first_error_stack_trace = undefined,
 
         .base_style = Style{},
 
@@ -278,15 +280,22 @@ pub const Size = union(enum) {
 
     pub fn getStrictness(self: Size) f32 {
         return switch (self) {
-            .pixels => |v| v.strictness,
-            .text_dim => |v| v.strictness,
-            .percent => |v| v.strictness,
-            .by_children => |v| v.strictness,
+            inline else => |v| v.strictness,
         };
     }
 
-    pub fn fill(x_percent: f32, y_percent: f32) [2]Size {
-        return [2]Size{ Size.percent(x_percent, 0), Size.percent(y_percent, 0) };
+    const Tag = std.meta.Tag(Size);
+
+    pub fn exact(tag: Tag, x: f32, y: f32) [2]Size {
+        return switch (tag) {
+            .pixels => [2]Size{ Size.pixels(x, 1), Size.pixels(y, 1) },
+            .percent => [2]Size{ Size.percent(x, 1), Size.percent(y, 1) },
+            else => @panic(""),
+        };
+    }
+
+    pub fn fill(x: f32, y: f32) [2]Size {
+        return [2]Size{ Size.percent(x, 0), Size.percent(y, 0) };
     }
 
     pub fn fillByChildren(axis: Axis) [2]Size {
@@ -294,10 +303,6 @@ pub const Size = union(enum) {
             .x => [2]Size{ Size.percent(1, 0), Size.by_children(1) },
             .y => [2]Size{ Size.by_children(1), Size.percent(1, 0) },
         };
-    }
-
-    pub fn pixelsExact(x: f32, y: f32) [2]Size {
-        return [2]Size{ Size.pixels(x, 1), Size.pixels(y, 1) };
     }
 
     pub fn fromRect(rect: Rect) [2]Size {
@@ -692,7 +697,7 @@ pub fn startBuild(
     try self.style_stack.push(self.base_style);
 
     self.root_node = try self.addNodeRaw(.{ .clip_children = true }, "###INTERNAL_ROOT_NODE", .{
-        .pref_size = Size.pixelsExact(screen_size[0], screen_size[1]),
+        .pref_size = Size.exact(.pixels, screen_size[0], screen_size[1]),
         .rect = Rect{ .min = vec2{ 0, 0 }, .max = screen_size },
     });
     try self.parent_stack.push(self.root_node.?);
@@ -716,9 +721,10 @@ pub fn startBuild(
 
 pub fn endBuild(self: *UI, dt: f32) void {
     if (self.first_error_trace) |error_trace| {
-        std.debug.print("Error '{s}' occurred during the UI building phase with the following stack trace:\n{}", .{
+        std.debug.print("Error '{s}' occurred during the UI building phase with the following error trace:\n{}\n", .{
             self.first_error_name, error_trace,
         });
+        std.debug.print("and the following stack trace:\n{}\n", .{self.first_error_stack_trace});
         @panic("An error occurred during the UI building phase");
     }
 
@@ -1630,13 +1636,19 @@ pub fn fmtTmpString(ui: *UI, comptime fmt: []const u8, args: anytype) []const u8
     };
 }
 
-pub fn setErrorInfo(self: *UI, stack_trace: ?*std.builtin.StackTrace, name: []const u8) void {
+pub fn setErrorInfo(self: *UI, error_trace: ?*std.builtin.StackTrace, name: []const u8) void {
     const allocator = self.build_arena.allocator();
-    self.first_error_trace = if (stack_trace) |trace| .{
+    if (self.first_error_trace) |_| return;
+    self.first_error_trace = if (error_trace) |trace| .{
         .index = trace.index,
         .instruction_addresses = allocator.dupe(usize, trace.instruction_addresses) catch @panic("OOM"),
     } else @panic("setErrorInfo called with a null stack trace");
     self.first_error_name = allocator.dupe(u8, name) catch @panic("OOM");
+    self.first_error_stack_trace = .{
+        .index = 0,
+        .instruction_addresses = allocator.alloc(usize, 32) catch @panic("OOM"),
+    };
+    std.debug.captureStackTrace(@returnAddress(), &self.first_error_stack_trace);
 }
 
 pub fn nodeFromKey(self: UI, key: NodeKey) ?*Node {

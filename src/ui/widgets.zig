@@ -579,7 +579,7 @@ pub fn colorPicker(ui: *UI, hash_str: []const u8, color: *vec4) void {
         defer ui.popParentAssert(color_part_parent);
 
         const color_square = ui.addNodeF(.{ .clickable = true }, "{s}_color_square", .{hash_str}, .{
-            .pref_size = Size.pixelsExact(square_size, square_size),
+            .pref_size = Size.exact(.pixels, square_size, square_size),
             .custom_draw_fn = (struct {
                 pub fn draw(_: *UI, shader_inputs: *std.ArrayList(UI.ShaderInput), node: *UI.Node) error{OutOfMemory}!void {
                     const hue = @as(*align(1) const vec4, @ptrCast(node.custom_draw_ctx_as_bytes.?.ptr)).*;
@@ -625,7 +625,7 @@ pub fn colorPicker(ui: *UI, hash_str: []const u8, color: *vec4) void {
         ui.spacer(.x, Size.pixels(3, 1));
 
         const hue_bar = ui.addNodeF(.{ .clickable = true, .draw_background = true }, "{s}_hue_bar", .{hash_str}, .{
-            .pref_size = Size.pixelsExact(square_size / 10, square_size),
+            .pref_size = Size.exact(.pixels, square_size / 10, square_size),
             .custom_draw_fn = (struct {
                 pub fn draw(_: *UI, shader_inputs: *std.ArrayList(UI.ShaderInput), node: *UI.Node) error{OutOfMemory}!void {
                     var rect = UI.ShaderInput.fromNode(node);

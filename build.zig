@@ -24,7 +24,7 @@ pub fn build(b: *std.build.Builder) void {
         exe.addCSourceFiles(&.{"src/stb_impls.c"}, &.{""});
     }
     { // tracy
-        _ = tracy.link(b, exe, if (use_tracy) "tracy-0.8.2" else null);
+        _ = tracy.link(b, exe, if (use_tracy) "tracy" else null);
     }
     b.installArtifact(exe);
 
