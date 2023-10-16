@@ -10,7 +10,7 @@ pub const TextAction = struct {
         paste: bool = false,
     },
     delta: isize,
-    codepoint: ?u21,
+    codepoint: ?u21 = null,
 };
 
 pub const TextOp = struct {
@@ -29,6 +29,66 @@ const word_seps = [_]u8{
     ' ', ',', '<', '.', '>', '/', '?',
 };
 // zig fmt: on
+
+// helper function for `textInput`
+pub fn textActionsFromKeyEvent(key: i32, has_selection: bool, shift: bool, control: bool) std.BoundedArray(TextAction, 5) {
+    var actions = std.BoundedArray(TextAction, 5){};
+
+    var action = TextAction{
+        .flags = .{
+            .keep_mark = shift,
+            .word_scan = control,
+        },
+        .delta = 0,
+        .codepoint = null,
+    };
+    var valid_action = true;
+    switch (key) {
+        c.GLFW_KEY_LEFT => action.delta = -1,
+        c.GLFW_KEY_RIGHT => action.delta = 1,
+        c.GLFW_KEY_HOME => action.delta = std.math.minInt(isize),
+        c.GLFW_KEY_END => action.delta = std.math.maxInt(isize),
+        c.GLFW_KEY_DELETE => {
+            if (!has_selection) action.delta = 1;
+            action.flags.delete = true;
+        },
+        c.GLFW_KEY_BACKSPACE => {
+            if (!has_selection) action.delta = -1;
+            action.flags.delete = true;
+        },
+        c.GLFW_KEY_C => {
+            if (control) {
+                action.flags.copy = true;
+                action.flags.keep_mark = true;
+            } else valid_action = false;
+        },
+        c.GLFW_KEY_V => {
+            if (control) {
+                action.flags.paste = true;
+            } else valid_action = false;
+        },
+        c.GLFW_KEY_X => {
+            if (control) {
+                action.flags.copy = true;
+                action.flags.delete = true;
+            } else valid_action = false;
+        },
+        c.GLFW_KEY_A => {
+            if (control) {
+                // `ctrl+a` is the same as doing `Home` followed by `shift+End`
+                const home_action = TextAction{ .flags = .{}, .delta = std.math.minInt(isize) };
+                actions.append(home_action) catch unreachable;
+                action.flags.keep_mark = true;
+                action.delta = std.math.maxInt(isize);
+            } else valid_action = false;
+        },
+        else => valid_action = false,
+    }
+
+    if (valid_action) actions.append(action) catch unreachable;
+
+    return actions;
+}
 
 // helper function for `textInput`
 // note: if we're pasting data from the clipboard (i.e. action.flags.paste == true)
@@ -115,7 +175,7 @@ pub fn textOpFromAction(action: TextAction, cursor: usize, mark: usize, unicode_
     const new_byte_cursor = @as(isize, @intCast(text_op.byte_cursor)) + byte_delta;
     const size_diff = castAndSub(isize, text_op.replace_str.len, text_op.range.end - text_op.range.start);
     const new_buf_len = castWrappedAdd(buf.len, size_diff);
-    text_op.byte_cursor = @as(usize, @intCast(std.math.clamp(new_byte_cursor, 0, @as(isize, @intCast(new_buf_len)))));
+    text_op.byte_cursor = @intCast(std.math.clamp(new_byte_cursor, 0, @as(isize, @intCast(new_buf_len))));
     text_op.range = .{
         .start = @min(text_op.byte_cursor, text_op.byte_mark),
         .end = @max(text_op.byte_cursor, text_op.byte_mark),
@@ -145,7 +205,7 @@ fn findFirstSep(buf: []const u8, start_idx: usize, search_dir: SearchDir) ?usize
     };
 
     // note: because all of our words separators are ASCII we can use a non-unicode aware search
-    var search_idx: isize = @as(isize, @intCast(start_idx));
+    var search_idx: isize = @intCast(start_idx);
     while (search_idx >= 0 and search_idx < buf.len) : (search_idx += delta) {
         const idx = @as(usize, @intCast(search_idx));
         for (word_seps) |sep| {
@@ -162,9 +222,9 @@ fn findFirstNonSep(buf: []const u8, start_idx: usize, search_dir: SearchDir) ?us
     };
 
     // note: because all of our words separators are ASCII we can use a non-unicode aware search
-    var search_idx: isize = @as(isize, @intCast(start_idx));
+    var search_idx: isize = @intCast(start_idx);
     outer_loop: while (search_idx >= 0 and search_idx < buf.len) : (search_idx += delta) {
-        const idx = @as(usize, @intCast(search_idx));
+        const idx: usize = @intCast(search_idx);
         for (word_seps) |sep| {
             if (buf[idx] == sep) continue :outer_loop;
         }
@@ -216,7 +276,7 @@ pub fn replaceRange(buffer: []u8, buf_len: *usize, range: struct { start: usize,
 
 fn castWrappedAdd(src: usize, diff: isize) usize {
     const new_src = @as(isize, @intCast(src)) + diff;
-    return @as(usize, @intCast(@max(0, new_src)));
+    return @intCast(@max(0, new_src));
 }
 
 fn castAndSub(comptime T: type, a: anytype, b: anytype) T {

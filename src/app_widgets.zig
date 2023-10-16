@@ -149,7 +149,7 @@ pub const SourceViewer = struct {
             .clip_children = true,
             .scroll_children_x = true,
             .scroll_children_y = true,
-        }, "SourceViewer", Size.fill(1, 1), .x);
+        }, "SourceViewer", Size.flexible(.percent, 1, 1), .x);
         defer ui.popParentAssert(scroll_parent);
 
         const text = self.files.items[0].content;

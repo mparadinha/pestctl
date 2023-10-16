@@ -171,6 +171,13 @@ pub const Flags = packed struct {
 
     no_id: bool = false,
     ignore_hash_sep: bool = false,
+
+    pub fn interactive(self: Flags) bool {
+        return self.clickable or
+            self.selectable or
+            self.scroll_children_x or
+            self.scroll_children_y;
+    }
 };
 
 pub const Node = struct {
@@ -201,6 +208,10 @@ pub const Node = struct {
     custom_draw_fn: ?CustomDrawFn,
     custom_draw_ctx_as_bytes: ?[]const u8, // gets copied during `addNode`
     scroll_multiplier: vec2,
+    padding: vec2, // only applies to node with no display_string; padding for those is calculated in `textPadding`
+
+    // per-frame additional info
+    first_time: bool,
 
     // per-frame sizing information
     text_rect: Rect,
@@ -257,6 +268,7 @@ pub const Style = struct {
     custom_draw_fn: ?CustomDrawFn = null,
     custom_draw_ctx_as_bytes: ?[]const u8 = null,
     scroll_multiplier: vec2 = @splat(18 * 2),
+    padding: vec2 = vec2{ 0, 0 },
 };
 
 pub const Size = union(enum) {
@@ -294,20 +306,28 @@ pub const Size = union(enum) {
         };
     }
 
-    pub fn fill(x: f32, y: f32) [2]Size {
-        return [2]Size{ Size.percent(x, 0), Size.percent(y, 0) };
+    pub fn flexible(tag: Tag, x: f32, y: f32) [2]Size {
+        return switch (tag) {
+            .pixels => [2]Size{ Size.pixels(x, 0), Size.pixels(y, 0) },
+            .percent => [2]Size{ Size.percent(x, 0), Size.percent(y, 0) },
+            else => @panic(""),
+        };
     }
 
-    pub fn fillByChildren(axis: Axis) [2]Size {
+    pub fn fillByChildren(x_strictness: f32, y_strictness: f32) [2]Size {
+        return [2]Size{ Size.by_children(x_strictness), Size.by_children(y_strictness) };
+    }
+
+    pub fn fillAxis(axis: Axis, other_size: Size) [2]Size {
         return switch (axis) {
-            .x => [2]Size{ Size.percent(1, 0), Size.by_children(1) },
-            .y => [2]Size{ Size.by_children(1), Size.percent(1, 0) },
+            .x => [2]Size{ Size.percent(1, 1), other_size },
+            .y => [2]Size{ other_size, Size.percent(1, 1) },
         };
     }
 
     pub fn fromRect(rect: Rect) [2]Size {
         const size = rect.size();
-        return [2]Size{ pixels(size[0], 1), pixels(size[1], 1) };
+        return Size.exact(.pixels, size[0], size[1]);
     }
 
     pub fn format(value: Size, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
@@ -504,7 +524,7 @@ pub fn addNodeRaw(self: *UI, flags: Flags, string: []const u8, init_args: anytyp
     const hash_string = if (flags.no_id) blk: {
         // for `no_id` nodes we use a random number as the hash string, so they don't clobber each other
         break :blk &randomString(&self.prng);
-    } else if (flags.ignore_hash_sep) string else blk: {
+    } else blk: {
         // to allow for nodes with different parents to have the same name we
         // combine the node's hash string with the hash string of the first parent
         // to have a stable one (i.e. *not* `no-id`).
@@ -514,9 +534,8 @@ pub fn addNodeRaw(self: *UI, flags: Flags, string: []const u8, init_args: anytyp
                 @panic("at some point the root should have a stable name");
             break :parent_str parent.hash_string;
         };
-        break :blk try std.fmt.allocPrint(arena, "{s}::{s}", .{
-            parent_hash_str, hashPartOfString(string),
-        });
+        const hash_part = if (flags.ignore_hash_sep) string else hashPartOfString(string);
+        break :blk try std.fmt.allocPrint(arena, "{s}::{s}", .{ parent_hash_str, hash_part });
     };
 
     return self.addNodeRawStrings(flags, display_string, hash_string, init_args);
@@ -555,6 +574,8 @@ pub fn addNodeRawStrings(self: *UI, flags: Flags, display_string_in: []const u8,
     }
 
     // set per-frame data
+    if (flags.interactive() and flags.no_id)
+        std.debug.panic("conflicting flags: `no_id` nodes can't be interacted with:\n{}\n", .{flags});
     node.flags = flags;
     node.display_string = display_string;
     node.hash_string = hash_string;
@@ -563,6 +584,11 @@ pub fn addNodeRawStrings(self: *UI, flags: Flags, display_string_in: []const u8,
         const field_name = field_type_info.name;
         @field(node, field_name) = @field(style, field_name);
     }
+    // padding for nodes with text is done with `textPadding`
+    // TODO: this should probably be an error
+    if (node.display_string.len != 0) node.padding = vec2{ 0, 0 };
+
+    node.first_time = !lookup_result.found_existing;
 
     // reset layout data (but not the final screen rect which we need for signal stuff)
     node.calc_size = vec2{ 0, 0 };
@@ -801,12 +827,7 @@ pub fn computeNodeSignal(self: *UI, node: *Node) !Signal {
         .focused = false,
     };
 
-    const is_interactable =
-        node.flags.clickable or
-        node.flags.selectable or
-        node.flags.scroll_children_x or
-        node.flags.scroll_children_y;
-    if (!is_interactable) return signal;
+    if (!node.flags.interactive()) return signal;
 
     const mouse_is_over = node.rect.contains(self.mouse_pos);
     const node_key = self.keyFromNode(node);
@@ -900,8 +921,13 @@ pub fn computeNodeSignal(self: *UI, node: *Node) !Signal {
     if (used_enter_up_ev) _ = self.events.removeAt(enter_up_ev.?);
 
     // double/triple click logic
-    const delay_time = 0.4; // 400 milliseconds
-    const cur_time = @as(f32, @floatCast(c.glfwGetTime()));
+    // TODO: expose this delay-time as a user-configurable thing
+    //       as far as I can tell (from a limited web search) there is
+    //       no way (on linux) to get some system-wide double-click delay
+    const delay_time = 0.400; // (in seconds)
+    const cur_time: f32 = @floatCast(c.glfwGetTime());
+    // TODO: also keep track of click position and only register a click
+    //       as a *double* click if it's within some boundary
     if (signal.clicked and node.last_click_time + delay_time > cur_time)
         signal.double_clicked = true;
     if (signal.double_clicked and node.last_double_click_time + delay_time > cur_time)
@@ -973,9 +999,8 @@ pub fn render(self: *UI) !void {
         BLEND_EQUATION_RGB: u32,
         BLEND_EQUATION_ALPHA: u32,
     } = undefined;
-    inline for (@typeInfo(@TypeOf(saved_state)).Struct.fields) |field| {
+    inline for (@typeInfo(@TypeOf(saved_state)).Struct.fields) |field|
         gl.getIntegerv(@field(gl, field.name), @ptrCast(&@field(saved_state, field.name)));
-    }
     defer {
         if (blend_was_on) gl.enable(gl.BLEND) else gl.disable(gl.BLEND);
         gl.blendFuncSeparate(
@@ -1242,6 +1267,7 @@ fn solveDownwardDependentWorkFn(self: *UI, node: *Node, axis: Axis) void {
             } else {
                 node.calc_size[axis_idx] = child_funcs.maxChildrenSizes(node, axis_idx);
             }
+            node.calc_size[axis_idx] += 2 * node.padding[axis_idx];
         },
         else => {},
     }
@@ -1251,8 +1277,11 @@ fn solveUpwardDependentWorkFn(self: *UI, node: *Node, axis: Axis) void {
     const axis_idx: usize = @intFromEnum(axis);
     switch (node.pref_size[axis_idx]) {
         .percent => |percent| {
-            const parent_size = if (node.parent) |p| p.calc_size else self.screen_size;
-            node.calc_size[axis_idx] = @round(parent_size[axis_idx] * percent.value);
+            const parent_size = if (node.parent) |p|
+                p.calc_size - math.times(p.padding, 2)
+            else
+                self.screen_size;
+            node.calc_size[axis_idx] = parent_size[axis_idx] * percent.value;
         },
         else => {},
     }
@@ -1264,6 +1293,8 @@ fn solveViolationsWorkFn(self: *UI, node: *Node, axis: Axis) void {
 
     const axis_idx: usize = @intFromEnum(axis);
     const is_layout_axis = (axis == node.child_layout_axis);
+
+    const available_size = node.calc_size - math.times(node.padding, 2);
 
     // collect sizing information about children
     var total_children_size: f32 = 0;
@@ -1294,7 +1325,7 @@ fn solveViolationsWorkFn(self: *UI, node: *Node, axis: Axis) void {
     }
 
     const total_size = if (is_layout_axis) total_children_size else max_child_size;
-    var overflow = @max(0, total_size - node.calc_size[axis_idx]);
+    var overflow = @max(0, total_size - available_size[axis_idx]);
 
     // shrink zero strictness children as much as we can (to 0 size if needed) before
     // trying to shrink other children with strictness > 0
@@ -1302,9 +1333,9 @@ fn solveViolationsWorkFn(self: *UI, node: *Node, axis: Axis) void {
     for (zero_strict_children.slice()) |z_child| {
         if (is_layout_axis) {
             const z_child_percent = z_child.calc_size[axis_idx] / zero_strict_take_budget;
-            z_child.calc_size[axis_idx] -= @round(zero_strict_remove_amount * z_child_percent);
+            z_child.calc_size[axis_idx] -= zero_strict_remove_amount * z_child_percent;
         } else {
-            const extra_size = z_child.calc_size[axis_idx] - node.calc_size[axis_idx];
+            const extra_size = z_child.calc_size[axis_idx] - available_size[axis_idx];
             z_child.calc_size[axis_idx] -= @max(0, extra_size);
         }
     }
@@ -1321,9 +1352,9 @@ fn solveViolationsWorkFn(self: *UI, node: *Node, axis: Axis) void {
             const child_take_budget = child_size * strictness;
             const leeway_percent = (1 - strictness) / other_children_leeway;
             const desired_remove_amount = if (is_layout_axis)
-                @round(overflow * leeway_percent)
+                overflow * leeway_percent
             else
-                @max(0, child_size - node.calc_size[axis_idx]);
+                @max(0, child_size - available_size[axis_idx]);
             const true_remove_amount = @min(child_take_budget, desired_remove_amount);
             child_node.calc_size[axis_idx] -= true_remove_amount;
             removed_amount += true_remove_amount;
@@ -1347,6 +1378,7 @@ fn solveFinalPosWorkFn(self: *UI, node: *Node, axis: Axis) void {
         .y => node.flags.scroll_children_y,
     };
 
+    // window root nodes need a position too!
     if (node.parent == null) {
         const calc_rel_pos = node.rel_pos.calcRelativePos(node.calc_size, self.screen_size);
         node.calc_rel_pos[axis_idx] = calc_rel_pos[axis_idx];
@@ -1359,8 +1391,8 @@ fn solveFinalPosWorkFn(self: *UI, node: *Node, axis: Axis) void {
 
     // start layout at the top left
     var start_rel_pos: f32 = switch (axis) {
-        .x => 0,
-        .y => node.calc_size[1],
+        .x => node.padding[0],
+        .y => node.calc_size[1] - node.padding[1],
     };
     // when `scroll_children` is enabled start layout at an offset
     if (is_scrollable_axis) start_rel_pos += node.scroll_offset[axis_idx];
@@ -2078,9 +2110,21 @@ pub const DebugView = struct {
             .rel_pos = RelativePlacement.simple(active_node.rect.min),
             .pref_size = Size.fromRect(active_node.rect),
         });
+        // blue border to show the padding
+        if (@reduce(.And, active_node.padding != vec2{ 0, 0 })) {
+            _ = self.ui.addNode(border_node_flags, "", .{
+                .border_color = vec4{ 0, 0, 1, 0.5 },
+                .rel_pos = RelativePlacement.simple(active_node.rect.min + active_node.padding),
+                .pref_size = size: {
+                    const size = active_node.rect.size() - math.times(active_node.padding, 2);
+                    break :size Size.exact(.pixels, size[0], size[1]);
+                },
+            });
+        }
         _ = self.ui.popStyle();
 
         self.ui.pushStyle(.{ .font_size = 16, .bg_color = vec4{ 0, 0, 0, 0.75 } });
+        defer _ = self.ui.popStyle();
         self.ui.root_node.?.child_layout_axis = .x;
         if (self.anchor_right) self.ui.spacer(.x, Size.percent(1, 0));
         {
@@ -2090,13 +2134,13 @@ pub const DebugView = struct {
                 .clip_children = true,
             }, "", .{
                 .child_layout_axis = .y,
-                .pref_size = [2]Size{ Size.percent(0.15, 1), Size.by_children(1) },
+                .pref_size = [2]Size{ Size.by_children(0.5), Size.by_children(1) },
             });
             self.ui.pushParent(left_bg_node);
             defer self.ui.popParentAssert(left_bg_node);
 
-            self.ui.pushStyle(.{ .pref_size = [2]Size{ Size.percent(1, 1), Size.text_dim(1) } });
-            defer _ = self.ui.popStyle();
+            if (self.node_query_pos) |pos| self.ui.labelF("node_query_pos: {d}\n", .{pos});
+
             for (selected_nodes.items, 0..) |node, idx| {
                 if (idx == self.node_list_idx) {
                     self.ui.labelBoxF("hash=\"{s}\"", .{node.hash_string});
@@ -2112,7 +2156,7 @@ pub const DebugView = struct {
                 .clip_children = true,
             }, "", .{
                 .child_layout_axis = .y,
-                .pref_size = [2]Size{ Size.percent(0.5, 1), Size.by_children(1) },
+                .pref_size = [2]Size{ Size.by_children(1), Size.by_children(1) },
             });
             self.ui.pushParent(right_bg_node);
             defer self.ui.popParentAssert(right_bg_node);
@@ -2171,7 +2215,7 @@ pub const DebugView = struct {
             self.ui.label("Ctrl+Shift+H            -> toggle this help menu");
             self.ui.label("Ctrl+Shift+D            -> toggle dbg UI");
             self.ui.label("scroll up/down          -> choose highlighed node");
-            self.ui.label("Ctrl+Shift+scroll_click -> freezy mouse position");
+            self.ui.label("Ctrl+Shift+ScrollClick  -> freeze mouse position");
             self.ui.label("Ctrl+Shift+Left/Right   -> anchor left/right");
         }
 

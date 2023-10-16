@@ -102,6 +102,68 @@ pub fn subtleIconButton(ui: *UI, string: []const u8) Signal {
     return node.signal;
 }
 
+pub fn slider(ui: *UI, name: []const u8, size: [2]Size, value_ptr: *f32, min: f32, max: f32) void {
+    // TODO: also allow integer types for values
+    // TODO: generalizing this to y-axis slider so it can be used for scroll bars and stuff like volume sliders
+    // TODO: maybe add a more generic slider functions like `sliderOptions` or `sliderExtra` or `sliderOpts` or `sliderEx`
+
+    value_ptr.* = std.math.clamp(value_ptr.*, min, max);
+
+    const style = ui.topStyle();
+
+    const scroll_zone = ui.pushLayoutParentFlagsF(.{
+        .clickable = true,
+    }, "{s}_slider", .{name}, size, .x);
+    defer ui.popParentAssert(scroll_zone);
+
+    const scroll_size = scroll_zone.rect.size();
+
+    const handle_percent = (value_ptr.* - min) / (max - min);
+    const handle_radius = 0.3 * scroll_size[1];
+    var handle_pos = handle_percent * scroll_size[0];
+    // I'm not using `std.math.clamp` here on purpose, because of the 0 size on the 1st frame
+    if (handle_pos < handle_radius) handle_pos = handle_radius;
+    if (handle_pos > scroll_size[0] - handle_radius) handle_pos = scroll_size[0] - handle_radius;
+
+    _ = ui.addNode(.{
+        .draw_background = true,
+        .floating_y = true,
+        .no_id = true,
+    }, "", .{
+        .bg_color = vec4{ 0, 0, 0, 1 },
+        .pref_size = Size.flexible(.percent, 1, 0.2),
+        .rel_pos = RelativePlacement.match(.center),
+    });
+
+    const handle = ui.addNode(.{
+        .draw_background = true,
+        .floating_x = true,
+        .floating_y = true,
+        .no_id = true,
+    }, "", .{
+        .bg_color = style.text_color,
+        .pref_size = Size.flexible(.pixels, handle_radius * 2, handle_radius * 2),
+        .corner_radii = math.splat(vec4, handle_radius),
+        .rel_pos = RelativePlacement{
+            .target = .center,
+            .anchor = .middle_left,
+            .diff = vec2{ handle_pos, 0 },
+        },
+    });
+
+    if (scroll_zone.signal.held_down) {
+        handle.rel_pos.diff[0] = std.math.clamp(
+            scroll_zone.signal.mouse_pos[0],
+            handle_radius,
+            @max(handle_radius, scroll_zone.rect.size()[0] - handle_radius),
+        );
+        const percentage = std.math.clamp(scroll_zone.signal.mouse_pos[0] / scroll_zone.rect.size()[0], 0, 1);
+        value_ptr.* = min + (max - min) * percentage;
+    }
+
+    value_ptr.* = std.math.clamp(value_ptr.*, min, max);
+}
+
 pub fn checkBox(ui: *UI, string: []const u8, value: *bool) Signal {
     const parent_size = [2]Size{ Size.by_children(1), Size.by_children(1) };
     const layout_parent = ui.pushLayoutParentF("{s}_layout_parent", .{string}, parent_size, .x);
@@ -120,21 +182,21 @@ pub fn checkBox(ui: *UI, string: []const u8, value: *bool) Signal {
 /// pushes a new node as parent that is meant only for layout purposes
 pub fn pushLayoutParent(
     ui: *UI,
-    hash_string: []const u8,
+    hash: []const u8,
     size: [2]Size,
     layout_axis: Axis,
 ) *Node {
-    return ui.pushLayoutParentFlags(.{}, hash_string, size, layout_axis);
+    return ui.pushLayoutParentFlags(.{}, hash, size, layout_axis);
 }
 
 pub fn pushLayoutParentFlags(
     ui: *UI,
     flags: UI.Flags,
-    hash_string: []const u8,
+    hash: []const u8,
     size: [2]Size,
     layout_axis: Axis,
 ) *Node {
-    const node = ui.addNodeStrings(flags, "", hash_string, .{
+    const node = ui.addNodeStrings(flags, "", hash, .{
         .pref_size = size,
         .child_layout_axis = layout_axis,
     });
@@ -190,7 +252,7 @@ pub fn endTooltip(ui: *UI) void {
 
 pub fn startWindow(
     ui: *UI,
-    hash_string: []const u8,
+    hash: []const u8,
     size: [2]Size,
     pos: RelativePlacement,
 ) *Node {
@@ -200,7 +262,7 @@ pub fn startWindow(
         .draw_background = true,
         .floating_x = true,
         .floating_y = true,
-    }, hash_string, .{
+    }, hash, .{
         .pref_size = size,
         .rel_pos = pos,
         .bg_color = vec4{ 0, 0, 0, 0.75 },
@@ -219,11 +281,11 @@ pub fn endWindow(ui: *UI, window_root: *Node) void {
 
 /// returns the new parent (which gets pushed on the parent stack) for this region
 // TODO: scrolling in x direction as well
-pub fn startScrollRegion(ui: *UI, hash_string: []const u8) *Node {
+pub fn startScrollRegion(ui: *UI, hash: []const u8) *Node {
     const parent = ui.addNodeF(.{
         .scroll_children_y = true,
         .clip_children = true,
-    }, "###{s}:scroll_region_parent", .{hash_string}, .{
+    }, "###{s}:scroll_region_parent", .{hash}, .{
         .child_layout_axis = .y,
     });
     ui.pushParent(parent);
@@ -231,7 +293,7 @@ pub fn startScrollRegion(ui: *UI, hash_string: []const u8) *Node {
 }
 
 pub fn endScrollRegion(ui: *UI, parent: *Node, start_scroll: f32, end_scroll: f32) void {
-    const hash_string = parent.hash_string;
+    const hash = parent.hash_string;
 
     const bar_node = ui.addNode(.{ .draw_background = true, .no_id = true, .floating_x = true }, "", .{});
     bar_node.child_layout_axis = .y;
@@ -242,12 +304,12 @@ pub fn endScrollRegion(ui: *UI, parent: *Node, start_scroll: f32, end_scroll: f3
         ui.pushParent(bar_node);
         defer std.debug.assert(ui.popParent() == bar_node);
 
-        const up_btn = ui.subtleIconButtonF("{s}###{s}:up_scroll_btn", .{ Icons.up_open, hash_string });
+        const up_btn = ui.subtleIconButtonF("{s}###{s}:up_scroll_btn", .{ Icons.up_open, hash });
         if (up_btn.held_down) parent.scroll_offset[1] += 50;
 
         const scroll_bar_region = ui.addNodeF(.{
             .clickable = true,
-        }, "###{s}:scroll_bar_region", .{hash_string}, .{});
+        }, "###{s}:scroll_bar_region", .{hash}, .{});
         scroll_bar_region.pref_size = [2]Size{ Size.percent(1, 0), Size.percent(1, 0) };
         {
             ui.pushParent(scroll_bar_region);
@@ -265,7 +327,7 @@ pub fn endScrollRegion(ui: *UI, parent: *Node, start_scroll: f32, end_scroll: f3
             const bar_icon_node = ui.addNodeF(.{
                 .draw_text = true,
                 .floating_y = true,
-            }, "{s}###{s}:bar_btn", .{ Icons.circle, hash_string }, .{
+            }, "{s}###{s}:bar_btn", .{ Icons.circle, hash }, .{
                 .font_type = .icon,
             });
             const icon_size = bar_icon_node.text_rect.size()[1];
@@ -280,7 +342,7 @@ pub fn endScrollRegion(ui: *UI, parent: *Node, start_scroll: f32, end_scroll: f3
             } else 0;
         }
 
-        const down_btn = ui.subtleIconButtonF("{s}###{s}:down_scroll_btn", .{ Icons.down_open, hash_string });
+        const down_btn = ui.subtleIconButtonF("{s}###{s}:down_scroll_btn", .{ Icons.down_open, hash });
         if (down_btn.held_down) parent.scroll_offset[1] -= 50;
     }
 
@@ -288,9 +350,9 @@ pub fn endScrollRegion(ui: *UI, parent: *Node, start_scroll: f32, end_scroll: f3
 }
 
 // TODO
-pub fn dropDownList(ui: *UI, hash_string: []const u8, options: []const []const u8, chosen_idx: *usize, is_open: *bool) void {
+pub fn dropDownList(ui: *UI, hash: []const u8, options: []const []const u8, chosen_idx: *usize, is_open: *bool) void {
     const choice_parent_size = [2]Size{ Size.by_children(1), Size.text_dim(1) };
-    const choice_parent = ui.addNodeF(.{}, "###{s}:choice_parent", .{hash_string}, .{ .pref_size = choice_parent_size, .child_layout_axis = .x });
+    const choice_parent = ui.addNodeF(.{}, "###{s}:choice_parent", .{hash}, .{ .pref_size = choice_parent_size, .child_layout_axis = .x });
     ui.pushParent(choice_parent);
     {
         ui.label(options[chosen_idx.*]);
@@ -323,103 +385,98 @@ pub fn dropDownList(ui: *UI, hash_string: []const u8, options: []const []const u
                 .draw_text = true,
                 .draw_hot_effects = true,
                 .draw_active_effects = true,
-            }, "{s}", .{option}, "{s}:opt_node_#{}", .{ hash_string, idx }, .{});
+            }, "{s}", .{option}, "{s}:opt_node_#{}", .{ hash, idx }, .{});
             opt_node.pref_size = [2]Size{ Size.percent(1, 0), Size.text_dim(1) };
             if (opt_node.signal.clicked) chosen_idx.* = idx;
         }
     }
 }
 
-pub fn textInput(ui: *UI, hash_string: []const u8, buffer: []u8, buf_len: *usize) Signal {
-    return textInputRaw(ui, hash_string, buffer, buf_len) catch |e| blk: {
+pub fn textInput(ui: *UI, hash: []const u8, buffer: []u8, buf_len: *usize) Signal {
+    return textInputRaw(ui, hash, buffer, buf_len) catch |e| blk: {
         ui.setErrorInfo(@errorReturnTrace(), @errorName(e));
         break :blk std.mem.zeroes(Signal);
     };
 }
 
-pub fn textInputRaw(ui: *UI, hash_string: []const u8, buffer: []u8, buf_len: *usize) !Signal {
-    // this is a really hacky way to see if this is the first time we using this node
-    // (we need to initialize the cursor on first use)
-    const first_time = !ui.node_table.hasKey(hash_string);
-
+pub fn textInputRaw(ui: *UI, hash: []const u8, buffer: []u8, buf_len: *usize) !Signal {
     const display_str = buffer[0..buf_len.*];
     // TODO: what is the point of writing this zero byte? the search/match code crashes when I remove it
     buffer[buf_len.*] = 0;
 
     // note: the node cursor/mark is in bytes into buffer
 
-    const widget_node = ui.addNodeF(.{
+    const widget_node = ui.addNodeStringsF(.{
         .clickable = true,
         .selectable = true,
         .clip_children = true,
         .draw_background = true,
         .draw_border = true,
-    }, "###{s}", .{hash_string}, .{
+    }, "", .{}, "{s}", .{hash}, .{
         .child_layout_axis = .x,
         .cursor_type = .ibeam,
     });
-    if (first_time) {
+    if (widget_node.first_time) {
         widget_node.cursor = buf_len.*;
         widget_node.mark = buf_len.*;
     }
-    const sig = widget_node.signal;
 
     ui.pushParent(widget_node);
-    defer _ = ui.popParent();
+    defer ui.popParentAssert(widget_node);
+
+    const sig = widget_node.signal;
 
     // make input box darker when not in focus
     if (!sig.focused) widget_node.bg_color = math.times(widget_node.bg_color, 0.85);
 
-    const text_node = ui.addNodeStringsF(.{
-        .ignore_hash_sep = true,
+    // we can't use a simple label because the position of text_node needs to be saved across frames
+    // (we can't just rely on the cursor for this information; imagine doing `End` + `LeftArrow`, for example)
+    const text_node = ui.addNode(.{
         .draw_text = true,
         .floating_x = true,
-    }, "{s}", .{display_str}, "{s}_text_node", .{hash_string}, .{});
-    text_node.text_color = vec4{ 0, 0, 0, 1 };
-    if (first_time) text_node.rel_pos.diff = vec2{ 0, 0 };
+        .ignore_hash_sep = true,
+    }, display_str, .{
+        .text_color = vec4{ 0, 0, 0, 1 },
+    });
 
-    const cursor_node = ui.addNode(.{
-        .no_id = true,
-        .draw_background = true,
-        .floating_x = true,
-        .floating_y = true,
-    }, "", .{});
-    cursor_node.bg_color = vec4{ 0, 0, 0, 1 };
     const font_pixel_size = ui.topStyle().font_size;
     const text_padd = ui.textPadding(text_node);
+
+    const rect_before_cursor = try ui.font.textRect(buffer[0..widget_node.cursor], font_pixel_size);
+    const rect_before_mark = try ui.font.textRect(buffer[0..widget_node.mark], font_pixel_size);
+
     const cursor_height = ui.font.getScaledMetrics(font_pixel_size).line_advance - text_padd[1];
-    cursor_node.pref_size = [2]Size{ Size.pixels(1, 1), Size.pixels(cursor_height, 1) };
-    const text_before_cursor = buffer[0..widget_node.cursor];
-    const partial_text_rect = try ui.font.textRect(text_before_cursor, font_pixel_size);
-    cursor_node.rel_pos.diff = text_node.rel_pos.diff + vec2{ partial_text_rect.max[0], 0 } + text_padd;
+    const cursor_rel_pos = vec2{ rect_before_cursor.max[0], 0 } + text_padd;
+    const selection_size = @abs(rect_before_mark.max[0] - rect_before_cursor.max[0]);
+    const selection_start = @min(rect_before_mark.max[0], rect_before_cursor.max[0]);
+    const selection_rel_pos = vec2{ selection_start, 0 } + text_padd;
 
-    // scroll text if it doesn't fit
-    if (!first_time) {
-        if (cursor_node.rel_pos.diff[0] > widget_node.rect.size()[0] - text_padd[0]) {
-            const overflow = cursor_node.rel_pos.diff[0] - (widget_node.rect.size()[0] - text_padd[0]);
-            text_node.rel_pos.diff[0] -= overflow;
-        }
-        if (cursor_node.rel_pos.diff[0] < text_padd[0]) {
-            const overflow = text_padd[0] - cursor_node.rel_pos.diff[0];
-            text_node.rel_pos.diff[0] += overflow;
-        }
-    }
-
-    const selection_node = ui.addNode(.{
+    const filled_rect_flags = UI.Flags{
         .no_id = true,
         .draw_background = true,
         .floating_x = true,
         .floating_y = true,
-    }, "", .{});
-    selection_node.bg_color = vec4{ 0, 0, 1, 0.25 };
-    const text_before_mark = buffer[0..widget_node.mark];
-    const partial_text_rect_mark = try ui.font.textRect(text_before_mark, font_pixel_size);
-    const selection_size = @abs(partial_text_rect_mark.max[0] - partial_text_rect.max[0]);
-    selection_node.pref_size = [2]Size{ Size.pixels(selection_size, 1), cursor_node.pref_size[1] };
-    selection_node.rel_pos.diff = vec2{
-        @min(partial_text_rect_mark.max[0], partial_text_rect.max[0]),
-        0,
-    } + ui.textPadding(selection_node);
+    };
+    const cursor_node = ui.addNode(filled_rect_flags, "", .{
+        .bg_color = vec4{ 0, 0, 0, 1 },
+        .pref_size = Size.exact(.pixels, 1, cursor_height),
+        .rel_pos = RelativePlacement.simple(text_node.rel_pos.diff + cursor_rel_pos),
+    });
+    _ = ui.addNode(filled_rect_flags, "", .{
+        .bg_color = vec4{ 0, 0, 1, 0.25 },
+        .pref_size = Size.exact(.pixels, selection_size, cursor_height),
+        .rel_pos = RelativePlacement.simple(text_node.rel_pos.diff + selection_rel_pos),
+    });
+
+    // scroll text to keep cursor in view
+    if (!widget_node.first_time) {
+        const cursor_valid_range = vec2{ text_padd[0], widget_node.rect.size()[0] - text_padd[0] };
+        const cursor_pos = cursor_node.rel_pos.diff[0];
+        if (cursor_pos < cursor_valid_range[0])
+            text_node.rel_pos.diff[0] += cursor_valid_range[0] - cursor_pos
+        else if (cursor_pos > cursor_valid_range[1])
+            text_node.rel_pos.diff[0] -= cursor_pos - cursor_valid_range[1];
+    }
 
     if (!sig.focused) return sig;
 
@@ -427,20 +484,15 @@ pub fn textInputRaw(ui: *UI, hash_string: []const u8, buffer: []u8, buf_len: *us
 
     // triple click is the same as ctrl+a (which is the same as `Home` followed by `shift+End`)
     if (sig.triple_clicked) {
-        var action = TextAction{ .flags = .{}, .delta = 0, .codepoint = null };
-        action.delta = std.math.minInt(isize);
-        try text_actions.append(action);
-        action.flags.keep_mark = true;
-        action.delta = std.math.maxInt(isize);
-        try text_actions.append(action);
+        try text_actions.append(.{ .flags = .{}, .delta = std.math.minInt(isize) });
+        try text_actions.append(.{ .flags = .{ .keep_mark = true }, .delta = std.math.maxInt(isize) });
     }
     // double click selects the current word
     else if (sig.double_clicked) {
-        widget_node.mark = if (text_ops.findFirstDiff(display_str, widget_node.cursor, .left)) |idx| blk: {
-            break :blk @min(idx + 1, display_str.len);
-        } else 0;
-        widget_node.cursor = text_ops.findFirstDiff(display_str, widget_node.cursor, .right) orelse
-            display_str.len;
+        // for a double click to happen a click must happened before, placing the cursor over some word;
+        // and so 'select current word' is the same as `ctrl+Left` followed by `ctrl+shift+Right`
+        try text_actions.append(.{ .flags = .{ .word_scan = true }, .delta = -1 });
+        try text_actions.append(.{ .flags = .{ .word_scan = true, .keep_mark = true }, .delta = 1 });
     }
     // use mouse press to select cursor position
     else if (sig.pressed or sig.held_down) {
@@ -465,57 +517,20 @@ pub fn textInputRaw(ui: *UI, hash_string: []const u8, buffer: []u8, buf_len: *us
         var ev_was_used = true;
         switch (event) {
             .KeyDown, .KeyRepeat => |ev| {
-                var action = TextAction{ .flags = .{}, .delta = 0, .codepoint = null };
-                action.flags.keep_mark = ev.mods.shift;
-                action.flags.word_scan = ev.mods.control;
-                switch (ev.key) {
-                    c.GLFW_KEY_LEFT => action.delta = -1,
-                    c.GLFW_KEY_RIGHT => action.delta = 1,
-                    c.GLFW_KEY_HOME => action.delta = std.math.minInt(isize),
-                    c.GLFW_KEY_END => action.delta = std.math.maxInt(isize),
-                    c.GLFW_KEY_DELETE => {
-                        if (!has_selection) action.delta = 1;
-                        action.flags.delete = true;
-                    },
-                    c.GLFW_KEY_BACKSPACE => {
-                        if (!has_selection) action.delta = -1;
-                        action.flags.delete = true;
-                    },
-                    c.GLFW_KEY_C => {
-                        if (ev.mods.control) {
-                            action.flags.copy = true;
-                            action.flags.keep_mark = true;
-                        } else ev_was_used = false;
-                    },
-                    c.GLFW_KEY_V => {
-                        if (ev.mods.control) {
-                            action.flags.paste = true;
-                        } else ev_was_used = false;
-                    },
-                    c.GLFW_KEY_X => {
-                        if (ev.mods.control) {
-                            action.flags.copy = true;
-                            action.flags.delete = true;
-                        } else ev_was_used = false;
-                    },
-                    c.GLFW_KEY_A => {
-                        if (ev.mods.control) {
-                            // `ctrl+a` is the same as doing `Home` followed by `shift+End`
-                            const home_action = TextAction{ .flags = .{}, .delta = std.math.minInt(isize), .codepoint = null };
-                            try text_actions.append(home_action);
-                            action.flags.keep_mark = true;
-                            action.delta = std.math.maxInt(isize);
-                        } else ev_was_used = false;
-                    },
-                    else => ev_was_used = false,
-                }
-                if (ev_was_used) try text_actions.append(action);
+                const actions = text_ops.textActionsFromKeyEvent(
+                    ev.key,
+                    has_selection,
+                    ev.mods.shift,
+                    ev.mods.control,
+                );
+                for (actions.slice()) |action| try text_actions.append(action);
+                if (actions.len == 0) ev_was_used = false;
             },
             .Char => |codepoint| {
                 const add_codepoint_action = TextAction{
                     .flags = .{},
                     .delta = 0,
-                    .codepoint = @as(u21, @intCast(codepoint)),
+                    .codepoint = @intCast(codepoint),
                 };
                 try text_actions.append(add_codepoint_action);
             },
@@ -542,172 +557,144 @@ pub fn textInputRaw(ui: *UI, hash_string: []const u8, buffer: []u8, buf_len: *us
     return sig;
 }
 
-pub fn colorPicker(ui: *UI, hash_str: []const u8, color: *vec4) void {
-    const square_size = 250;
+pub fn colorPicker(ui: *UI, hash: []const u8, color: *vec4) void {
+    const square_size = 225; // 225/6 = 37.5 which is nice to avoid gaps in the hue bar nodes
 
     var hsv = RGBtoHSV(color.*);
 
-    const background_node = ui.addNode(.{
+    const background_node = ui.addNodeStrings(.{
         .draw_border = true,
         .draw_background = true,
         .no_id = true,
-    }, "", .{
-        .pref_size = [2]Size{ Size.by_children(1), Size.by_children(1) },
+    }, "", hash, .{
+        .pref_size = Size.fillByChildren(1, 1),
         .child_layout_axis = .x,
+        .padding = vec2{ 5, 5 },
     });
     ui.pushParent(background_node);
     defer ui.popParentAssert(background_node);
-    // this padding is so scuffed; TODO: maybe introduce some new `Size` for this type of deal
-    ui.spacer(.x, Size.pixels(5, 1));
-    defer ui.spacer(.x, Size.pixels(5, 1));
-    _ = ui.pushLayoutParentF(
-        "{s}_padd_parent",
-        .{hash_str},
-        [2]Size{ Size.by_children(1), Size.by_children(1) },
-        .y,
-    );
-    defer _ = ui.popParent();
-    ui.spacer(.y, Size.pixels(5, 1));
-    defer ui.spacer(.y, Size.pixels(4, 1)); // TODO: why won't 5 work here? maybe there's smth wrong w/ spacers?
-    {
-        const color_part_parent = ui.pushLayoutParentF(
-            "{s}_color_picker_part",
-            .{hash_str},
-            [2]Size{ Size.by_children(1), Size.by_children(1) },
-            .x,
-        );
-        defer ui.popParentAssert(color_part_parent);
 
-        const color_square = ui.addNodeF(.{ .clickable = true }, "{s}_color_square", .{hash_str}, .{
-            .pref_size = Size.exact(.pixels, square_size, square_size),
-            .custom_draw_fn = (struct {
-                pub fn draw(_: *UI, shader_inputs: *std.ArrayList(UI.ShaderInput), node: *UI.Node) error{OutOfMemory}!void {
-                    const hue = @as(*align(1) const vec4, @ptrCast(node.custom_draw_ctx_as_bytes.?.ptr)).*;
-                    const hue_color = HSVtoRGB(vec4{ hue[0], 1, 1, 1 });
-                    var rect = UI.ShaderInput.fromNode(node);
-                    rect.edge_softness = 0;
-                    rect.border_thickness = 0;
-                    rect.top_left_color = vec4{ 1, 1, 1, 1 };
-                    rect.btm_left_color = vec4{ 1, 1, 1, 1 };
-                    rect.top_right_color = hue_color;
-                    rect.btm_right_color = hue_color;
-                    try shader_inputs.append(rect);
-                    rect.top_left_color = vec4{ 0, 0, 0, 0 };
-                    rect.btm_left_color = vec4{ 0, 0, 0, 1 };
-                    rect.top_right_color = vec4{ 0, 0, 0, 0 };
-                    rect.btm_right_color = vec4{ 0, 0, 0, 1 };
-                    try shader_inputs.append(rect);
-                    { // circle cursor
-                        const center = node.rect.min + vec2{ hue[1], hue[2] } * node.rect.size();
-                        const radius: f32 = 10;
-                        const radius_vec = math.splat(vec2, radius);
-                        rect.top_left_color = math.splat(vec4, 1);
-                        rect.btm_left_color = math.splat(vec4, 1);
-                        rect.top_right_color = math.splat(vec4, 1);
-                        rect.btm_right_color = math.splat(vec4, 1);
-                        rect.btm_left_pos = center - radius_vec;
-                        rect.top_right_pos = center + radius_vec;
-                        rect.corner_radii = [4]f32{ radius, radius, radius, radius };
-                        rect.edge_softness = 1;
-                        rect.border_thickness = 2;
-                        try shader_inputs.append(rect);
-                    }
-                }
-            }).draw,
-            .custom_draw_ctx_as_bytes = std.mem.asBytes(&hsv),
-        });
-        if (color_square.signal.held_down) {
-            const norm = color_square.signal.mouse_pos / color_square.rect.size();
-            hsv[1] = std.math.clamp(norm[0], 0, 1);
-            hsv[2] = std.math.clamp(norm[1], 0, 1);
-        }
-
-        ui.spacer(.x, Size.pixels(3, 1));
-
-        const hue_bar = ui.addNodeF(.{ .clickable = true, .draw_background = true }, "{s}_hue_bar", .{hash_str}, .{
-            .pref_size = Size.exact(.pixels, square_size / 10, square_size),
-            .custom_draw_fn = (struct {
-                pub fn draw(_: *UI, shader_inputs: *std.ArrayList(UI.ShaderInput), node: *UI.Node) error{OutOfMemory}!void {
-                    var rect = UI.ShaderInput.fromNode(node);
-                    rect.edge_softness = 0;
-                    rect.border_thickness = 0;
-                    const hue_colors = [_]vec4{
-                        vec4{ 1, 0, 0, 1 },
-                        vec4{ 1, 1, 0, 1 },
-                        vec4{ 0, 1, 0, 1 },
-                        vec4{ 0, 1, 1, 1 },
-                        vec4{ 0, 0, 1, 1 },
-                        vec4{ 1, 0, 1, 1 },
-                    };
-                    const segment_height = node.rect.size()[1] / hue_colors.len;
-                    rect.btm_left_pos[1] = rect.top_right_pos[1] - segment_height;
-                    for (hue_colors, 0..) |rect_color, idx| {
-                        const next_color = hue_colors[(idx + 1) % hue_colors.len];
-                        rect.top_left_color = rect_color;
-                        rect.btm_left_color = next_color;
-                        rect.top_right_color = rect_color;
-                        rect.btm_right_color = next_color;
-                        try shader_inputs.append(rect);
-                        rect.top_right_pos[1] = rect.btm_left_pos[1];
-                        rect.btm_left_pos[1] = rect.top_right_pos[1] - segment_height;
-                    }
-
-                    inline for (@typeInfo(@TypeOf(rect)).Struct.fields) |field| {
-                        if (comptime std.mem.endsWith(u8, field.name, "color"))
-                            @field(rect, field.name) = math.splat(vec4, 1);
-                    }
+    const color_square = ui.addNodeF(.{ .clickable = true }, "{s}_square", .{hash}, .{
+        .pref_size = Size.exact(.pixels, square_size, square_size),
+        .custom_draw_fn = (struct {
+            pub fn draw(_: *UI, shader_inputs: *std.ArrayList(UI.ShaderInput), node: *UI.Node) error{OutOfMemory}!void {
+                const hue = @as(*align(1) const vec4, @ptrCast(node.custom_draw_ctx_as_bytes.?.ptr)).*;
+                const hue_color = HSVtoRGB(vec4{ hue[0], 1, 1, 1 });
+                var rect = UI.ShaderInput.fromNode(node);
+                rect.edge_softness = 0;
+                rect.border_thickness = 0;
+                rect.top_left_color = vec4{ 1, 1, 1, 1 };
+                rect.btm_left_color = vec4{ 1, 1, 1, 1 };
+                rect.top_right_color = hue_color;
+                rect.btm_right_color = hue_color;
+                try shader_inputs.append(rect);
+                rect.top_left_color = vec4{ 0, 0, 0, 0 };
+                rect.btm_left_color = vec4{ 0, 0, 0, 1 };
+                rect.top_right_color = vec4{ 0, 0, 0, 0 };
+                rect.btm_right_color = vec4{ 0, 0, 0, 1 };
+                try shader_inputs.append(rect);
+                { // circle cursor
+                    const center = node.rect.min + vec2{ hue[1], hue[2] } * node.rect.size();
+                    const radius: f32 = 10;
+                    const radius_vec = math.splat(vec2, radius);
+                    rect.top_left_color = math.splat(vec4, 1);
+                    rect.btm_left_color = math.splat(vec4, 1);
+                    rect.top_right_color = math.splat(vec4, 1);
+                    rect.btm_right_color = math.splat(vec4, 1);
+                    rect.btm_left_pos = center - radius_vec;
+                    rect.top_right_pos = center + radius_vec;
+                    rect.corner_radii = [4]f32{ radius, radius, radius, radius };
                     rect.edge_softness = 1;
                     rect.border_thickness = 2;
-                    rect.corner_radii = [4]f32{ 2, 2, 2, 2 };
-                    const hsv0 = @as(*align(1) const f32, @ptrCast(node.custom_draw_ctx_as_bytes)).*;
-                    const bar_size: f32 = 10;
-                    const center_y = blk: {
-                        var center = node.rect.max[1] - node.rect.size()[1] * hsv0;
-                        break :blk std.math.clamp(
-                            center,
-                            node.rect.min[1] + bar_size / 2,
-                            node.rect.max[1] - bar_size / 2,
-                        );
-                    };
-                    rect.btm_left_pos[1] = center_y - bar_size / 2;
-                    rect.top_right_pos[1] = center_y + bar_size / 2;
                     try shader_inputs.append(rect);
                 }
-            }).draw,
-            .custom_draw_ctx_as_bytes = std.mem.asBytes(&hsv[0]),
-        });
-        if (hue_bar.signal.held_down) {
-            const norm = hue_bar.signal.mouse_pos / hue_bar.rect.size();
-            hsv[0] = std.math.clamp(1 - norm[1], 0, 1);
-        }
+            }
+        }).draw,
+        .custom_draw_ctx_as_bytes = std.mem.asBytes(&hsv),
+    });
+    if (color_square.signal.held_down) {
+        const norm = color_square.signal.mouse_pos / color_square.rect.size();
+        hsv[1] = std.math.clamp(norm[0], 0, 1);
+        hsv[2] = std.math.clamp(norm[1], 0, 1);
     }
 
-    // TODO: add a way to edit the alpha
+    ui.spacer(.x, Size.pixels(3, 1));
+
+    const hue_bar = ui.addNodeF(.{ .clickable = true, .draw_background = true }, "{s}_hue_bar", .{hash}, .{
+        .pref_size = Size.exact(.pixels, square_size / 10, square_size),
+        .custom_draw_fn = (struct {
+            pub fn draw(_: *UI, shader_inputs: *std.ArrayList(UI.ShaderInput), node: *UI.Node) error{OutOfMemory}!void {
+                var rect = UI.ShaderInput.fromNode(node);
+                rect.edge_softness = 0;
+                rect.border_thickness = 0;
+                const hue_colors = [_]vec4{
+                    vec4{ 1, 0, 0, 1 },
+                    vec4{ 1, 1, 0, 1 },
+                    vec4{ 0, 1, 0, 1 },
+                    vec4{ 0, 1, 1, 1 },
+                    vec4{ 0, 0, 1, 1 },
+                    vec4{ 1, 0, 1, 1 },
+                };
+                const segment_height = node.rect.size()[1] / hue_colors.len;
+                rect.btm_left_pos[1] = rect.top_right_pos[1] - segment_height;
+                for (hue_colors, 0..) |rect_color, idx| {
+                    const next_color = hue_colors[(idx + 1) % hue_colors.len];
+                    rect.top_left_color = rect_color;
+                    rect.btm_left_color = next_color;
+                    rect.top_right_color = rect_color;
+                    rect.btm_right_color = next_color;
+                    try shader_inputs.append(rect);
+                    rect.top_right_pos[1] = rect.btm_left_pos[1];
+                    rect.btm_left_pos[1] = rect.top_right_pos[1] - segment_height;
+                }
+
+                inline for (@typeInfo(@TypeOf(rect)).Struct.fields) |field| {
+                    if (comptime std.mem.endsWith(u8, field.name, "color"))
+                        @field(rect, field.name) = math.splat(vec4, 1);
+                }
+                rect.edge_softness = 1;
+                rect.border_thickness = 2;
+                rect.corner_radii = [4]f32{ 2, 2, 2, 2 };
+                const hsv0 = @as(*align(1) const f32, @ptrCast(node.custom_draw_ctx_as_bytes)).*;
+                const bar_size: f32 = 10;
+                const center_y = blk: {
+                    var center = node.rect.max[1] - node.rect.size()[1] * hsv0;
+                    break :blk std.math.clamp(
+                        center,
+                        node.rect.min[1] + bar_size / 2,
+                        node.rect.max[1] - bar_size / 2,
+                    );
+                };
+                rect.btm_left_pos[1] = center_y - bar_size / 2;
+                rect.top_right_pos[1] = center_y + bar_size / 2;
+                try shader_inputs.append(rect);
+            }
+        }).draw,
+        .custom_draw_ctx_as_bytes = std.mem.asBytes(&hsv[0]),
+    });
+    if (hue_bar.signal.held_down) {
+        const norm = hue_bar.signal.mouse_pos / hue_bar.rect.size();
+        hsv[0] = std.math.clamp(1 - norm[1], 0, 1);
+    }
+
+    ui.spacer(.x, Size.pixels(3, 1));
 
     color.* = HSVtoRGB(hsv);
 
-    ui.spacer(.y, Size.pixels(3, 1));
+    // TODO: allow switching between representations for the sliders (RGBA, HSVA, OKLAB)
 
-    // TODO: the buffers are not working correctly
-    // {
-    //     const value_part_parent = ui.pushLayoutParent(
-    //         "color_picker_values",
-    //         [2]Size{ Size.percent(1, 1), Size.by_children(1) },
-    //         .x,
-    //     );
-    //     defer ui.popParentAssert(value_part_parent);
-
-    //     const Buf = Buffer(5);
-    //     const color_letters = [_][]const u8{ "R", "G", "B", "A" };
-    //     var buffers = [_]Buf{Buf{}} ** color_letters.len;
-    //     for (&buffers, color_letters, 0..) |*buf, letter, idx| {
-    //         const comp = &color[idx];
-    //         ui.label(letter);
-    //         buf.len = (std.fmt.bufPrint(&buf.buffer, "{d:1.2}", .{comp.*}) catch unreachable).len;
-    //         ui.pushTmpStyle(.{ .pref_size = [2]Size{ Size.percent(1, 0), Size.text_dim(1) } });
-    //         _ = ui.textInput(letter, &buf.buffer, &buf.len);
-    //     }
-    // }
+    const value_parent = ui.pushLayoutParentF("{s}_values_parent", .{hash}, Size.exact(.pixels, square_size, square_size), .y);
+    defer ui.popParentAssert(value_parent);
+    const components = [_][]const u8{ "R", "G", "B", "A" };
+    const color_ptr = color;
+    for (components, 0..) |comp, idx| {
+        const size = [2]Size{ Size.percent(1, 0), Size.by_children(0) };
+        const p = ui.pushLayoutParentF("{s}_slider_{s}", .{ hash, comp }, size, .x);
+        defer ui.popParentAssert(p);
+        const slider_size = [2]Size{ Size.percent(1, 0), Size.text_dim(1) };
+        ui.slider(comp, slider_size, &color_ptr[idx], 0, 1);
+        ui.labelF("{s} {d:1.3}", .{ comp, color_ptr[idx] });
+    }
 }
 
 fn RGBtoHSV(rgba: vec4) vec4 {

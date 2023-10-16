@@ -27,6 +27,7 @@ const text_input_style = .{
     .pref_size = [2]Size{ Size.percent(1, 0), Size.text_dim(1) },
     .bg_color = vec4{ 0.75, 0.75, 0.75, 1 },
 };
+const fill_x_size = Size.fillAxis(.x, Size.by_children(1));
 
 pub const CmdlineArgs = struct {
     exec_path: ?[]const u8 = null,
@@ -180,8 +181,6 @@ pub fn main() !void {
 
         try ui.startBuild(width, height, mouse_pos, &window.event_queue, &window);
 
-        const fill_x_size = [2]Size{ Size.percent(1, 1), Size.text_dim(1) };
-
         {
             const main_bar_parent = ui.pushLayoutParent("main_bar_parent", fill_x_size, .x);
             main_bar_parent.flags.draw_background = true;
@@ -220,12 +219,12 @@ pub fn main() !void {
             if (ui.iconButton(UI.Icons.cancel).clicked) break;
         }
 
-        const tabs_parent = ui.pushLayoutParent("tabs_parent", Size.fill(1, 1), .x);
+        const tabs_parent = ui.pushLayoutParent("tabs_parent", Size.flexible(.percent, 1, 1), .x);
 
         const left_side_parent = ui.pushLayoutParentFlags(.{
             .draw_border = true,
             .draw_background = true,
-        }, "left_side_parent", Size.fill(0.5, 1), .y);
+        }, "left_side_parent", Size.flexible(.percent, 0.5, 1), .y);
         {
             try doOpenFileBox(&frame_arena, &ui, &session_cmds, cwd, &src_file_buf, &src_file_search);
             try file_viewer.show(&ui);
@@ -236,7 +235,7 @@ pub fn main() !void {
 
         const right_side_parent = ui.pushLayoutParentFlags(.{
             .draw_background = true,
-        }, "right_side_parent", Size.fill(0.5, 1), .y);
+        }, "right_side_parent", Size.flexible(.percent, 0.5, 1), .y);
         {
             // show input box
             ui.pushStyle(text_input_style);
@@ -271,10 +270,10 @@ pub fn main() !void {
             }
 
             {
-                const right_side_tabs_parent = ui.pushLayoutParent("right_side_tabs_parent", Size.fillByChildren(.x), .y);
+                const right_side_tabs_parent = ui.pushLayoutParent("right_side_tabs_parent", fill_x_size, .y);
                 defer ui.popParentAssert(right_side_tabs_parent);
 
-                const widget_buttons_parent = ui.pushLayoutParent("widget_buttons_parent", Size.fillByChildren(.x), .x);
+                const widget_buttons_parent = ui.pushLayoutParent("widget_buttons_parent", fill_x_size, .x);
                 for (widget_tabs, 0..) |widget_name, idx| {
                     const is_active = widget_tab_active_idx == idx;
                     if (is_active) ui.pushTmpStyle(.{ .bg_color = app_style.highlight_color });
@@ -294,7 +293,7 @@ pub fn main() !void {
             }
 
             {
-                const mem_line_view_parent = ui.pushLayoutParent("mem_line_view_parent", Size.fillByChildren(.x), .x);
+                const mem_line_view_parent = ui.pushLayoutParent("mem_line_view_parent", fill_x_size, .x);
                 defer ui.popParentAssert(mem_line_view_parent);
                 ui.pushTmpStyle(text_input_style);
                 if (ui.textInput("mem_line_addr_input", &memline_buf.buffer, &memline_buf.len).enter_pressed) {
@@ -576,8 +575,16 @@ fn Buffer(comptime capacity: usize) type {
         buffer: [capacity]u8 = [_]u8{0} ** capacity,
         len: usize = 0,
 
-        pub fn slice(self: *@This()) []const u8 {
+        const Self = @This();
+
+        pub fn slice(self: *const Self) []const u8 {
             return self.buffer[0..self.len];
+        }
+
+        pub fn write(self: *Self, buf: []const u8) void {
+            std.debug.assert(self.len + buf.len <= self.buffer.len);
+            std.mem.copy(u8, self.buffer[self.len..], buf);
+            self.len += buf.len;
         }
     };
 }
@@ -697,9 +704,9 @@ const FileTab = struct {
         defer trace.End();
         const file_tab_node = ui.pushLayoutParentFlags(.{
             .draw_border = true,
-        }, "FileTag:top_node", Size.fill(1, 1), .y);
+        }, "FileTag:top_node", Size.flexible(.percent, 1, 1), .y);
 
-        const buttons_parent = ui.pushLayoutParent("FileTab:buttons_parent", Size.fillByChildren(.x), .x);
+        const buttons_parent = ui.pushLayoutParent("FileTab:buttons_parent", fill_x_size, .x);
         for (self.files.items, 0..) |file_info, i| {
             const filename = std.fs.path.basename(file_info.path);
             const highlight_color = if (file_info.focus_box) |_| app_style.highlight_color else vec4{ 1, 0, 0, 1 };
@@ -717,7 +724,7 @@ const FileTab = struct {
             const file_box_parent = ui.pushLayoutParentFlags(.{
                 .clip_children = true,
                 .draw_border = true,
-            }, "FileTab:text_box_parent", Size.fill(1, 1), .x);
+            }, "FileTab:text_box_parent", Size.flexible(.percent, 1, 1), .x);
 
             const line_scroll_size = [2]Size{ Size.by_children(1), Size.percent(1, 0) };
             const line_scroll_parent = ui.pushLayoutParentFlagsF(.{
@@ -837,7 +844,7 @@ fn doOpenFileBox(
     src_file_buf: *InputBuf,
     src_file_search: *FuzzySearchOptions(SrcFileSearchCtx, 20),
 ) !void {
-    const open_file_parent = ui.pushLayoutParent("open_file_parent", Size.fillByChildren(.x), .x);
+    const open_file_parent = ui.pushLayoutParent("open_file_parent", fill_x_size, .x);
     defer ui.popParentAssert(open_file_parent);
     {
         const open_button_sig = ui.button("Open Source File");
@@ -1229,7 +1236,7 @@ fn doVarTable(
     var_buf: *InputBuf,
     var_search: *FuzzySearchOptions(VarSearchCtx, 10),
 ) !void {
-    const add_var_parent = ui.pushLayoutParent("add_var_parent", Size.fillByChildren(.x), .x);
+    const add_var_parent = ui.pushLayoutParent("add_var_parent", fill_x_size, .x);
     {
         //const button_sig = ui.button("Add Variable");
         ui.labelBox("Add Variable");
@@ -1302,9 +1309,9 @@ fn doVarTable(
     }
     ui.popParentAssert(add_var_parent);
 
-    const vars_parent = ui.pushLayoutParent("vars_parent", Size.fillByChildren(.x), .y);
+    const vars_parent = ui.pushLayoutParent("vars_parent", fill_x_size, .y);
     {
-        const row_size = Size.fillByChildren(.x);
+        const row_size = fill_x_size;
         const column_box_size = [2]Size{ Size.percent(1.0 / 3.0, 1), Size.text_dim(1) };
         const table_header_row_parent = ui.pushLayoutParent("table_header_row_parent", row_size, .x);
         {
@@ -1354,7 +1361,7 @@ fn doBreakpointUI(
     func_buf: *InputBuf,
     func_search: *FuzzySearchOptions(FuncSearchCtx, 10),
 ) !void {
-    const set_break_parent = ui.pushLayoutParent("set_break_parent", Size.fillByChildren(.x), .x);
+    const set_break_parent = ui.pushLayoutParent("set_break_parent", fill_x_size, .x);
     {
         const button_sig = ui.button("Set Breakpoint");
 
@@ -1383,7 +1390,7 @@ fn doBreakpointUI(
     }
     ui.popParentAssert(set_break_parent);
 
-    const set_break_func_parent = ui.pushLayoutParent("set_break_func_parent", Size.fillByChildren(.x), .x);
+    const set_break_func_parent = ui.pushLayoutParent("set_break_func_parent", fill_x_size, .x);
     {
         const button_sig = ui.button("Set Breakpoint###set_func_breakpoint");
         _ = button_sig;
@@ -1609,7 +1616,7 @@ fn FuzzySearchOptions(comptime Ctx: type, comptime max_slots: usize) type {
                     .border_color = vec4{ 0, 0, 0, 0 },
                     .cursor_type = .hand,
                     .child_layout_axis = .x,
-                    .pref_size = Size.fillByChildren(.x),
+                    .pref_size = fill_x_size,
                 });
                 ui.pushParent(button_node);
                 defer ui.popParentAssert(button_node);
