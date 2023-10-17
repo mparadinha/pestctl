@@ -1,5 +1,5 @@
 const std = @import("std");
-const c = @import("../c.zig");
+const glfw = @import("mach-glfw");
 
 pub const TextAction = struct {
     flags: struct {
@@ -31,7 +31,7 @@ const word_seps = [_]u8{
 // zig fmt: on
 
 // helper function for `textInput`
-pub fn textActionsFromKeyEvent(key: i32, has_selection: bool, shift: bool, control: bool) std.BoundedArray(TextAction, 5) {
+pub fn textActionsFromKeyEvent(key: glfw.Key, has_selection: bool, shift: bool, control: bool) std.BoundedArray(TextAction, 5) {
     var actions = std.BoundedArray(TextAction, 5){};
 
     var action = TextAction{
@@ -44,36 +44,36 @@ pub fn textActionsFromKeyEvent(key: i32, has_selection: bool, shift: bool, contr
     };
     var valid_action = true;
     switch (key) {
-        c.GLFW_KEY_LEFT => action.delta = -1,
-        c.GLFW_KEY_RIGHT => action.delta = 1,
-        c.GLFW_KEY_HOME => action.delta = std.math.minInt(isize),
-        c.GLFW_KEY_END => action.delta = std.math.maxInt(isize),
-        c.GLFW_KEY_DELETE => {
+        .left => action.delta = -1,
+        .right => action.delta = 1,
+        .home => action.delta = std.math.minInt(isize),
+        .end => action.delta = std.math.maxInt(isize),
+        .delete => {
             if (!has_selection) action.delta = 1;
             action.flags.delete = true;
         },
-        c.GLFW_KEY_BACKSPACE => {
+        .backspace => {
             if (!has_selection) action.delta = -1;
             action.flags.delete = true;
         },
-        c.GLFW_KEY_C => {
+        .c => {
             if (control) {
                 action.flags.copy = true;
                 action.flags.keep_mark = true;
             } else valid_action = false;
         },
-        c.GLFW_KEY_V => {
+        .v => {
             if (control) {
                 action.flags.paste = true;
             } else valid_action = false;
         },
-        c.GLFW_KEY_X => {
+        .x => {
             if (control) {
                 action.flags.copy = true;
                 action.flags.delete = true;
             } else valid_action = false;
         },
-        c.GLFW_KEY_A => {
+        .a => {
             if (control) {
                 // `ctrl+a` is the same as doing `Home` followed by `shift+End`
                 const home_action = TextAction{ .flags = .{}, .delta = std.math.minInt(isize) };
@@ -167,8 +167,7 @@ pub fn textOpFromAction(action: TextAction, cursor: usize, mark: usize, unicode_
         text_op.copy_str = if (cursor >= mark) buf[mark..cursor] else buf[cursor..mark];
     }
     if (action.flags.paste) {
-        const clipboard_str = c.glfwGetClipboardString(null);
-        text_op.replace_str = clipboard_str[0..c.strlen(clipboard_str)];
+        text_op.replace_str = glfw.getClipboardString() orelse "";
     }
 
     // calculate the range we're gonna operate on

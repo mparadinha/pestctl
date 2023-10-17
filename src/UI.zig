@@ -1,7 +1,6 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const gl = @import("gl_4v3.zig");
-const c = @import("c.zig");
 const gfx = @import("graphics.zig");
 const math = @import("math.zig");
 const vec2 = math.vec2;
@@ -10,12 +9,15 @@ const vec4 = math.vec4;
 const mat4 = math.mat4;
 const Font = @import("Font.zig");
 const Window = @import("Window.zig");
-const UI = @This();
-pub usingnamespace @import("ui/widgets.zig");
+const glfw = @import("mach-glfw");
+const tracy = @import("tracy.zig");
 
 const build_opts = @import("build_opts");
 
-const tracy = @import("tracy.zig");
+const UI = @This();
+pub usingnamespace @import("ui/widgets.zig");
+
+const Cursor = Window.Cursor;
 
 allocator: Allocator,
 generic_shader: gfx.Shader,
@@ -201,7 +203,7 @@ pub const Node = struct {
     border_thickness: f32,
     pref_size: [2]Size,
     child_layout_axis: Axis,
-    cursor_type: Window.CursorType,
+    cursor_type: Cursor,
     font_type: FontType,
     font_size: f32,
     text_align: TextAlign,
@@ -261,7 +263,7 @@ pub const Style = struct {
     border_thickness: f32 = 0,
     pref_size: [2]Size = .{ Size.text_dim(1), Size.text_dim(1) },
     child_layout_axis: Axis = .y,
-    cursor_type: Window.CursorType = .arrow,
+    cursor_type: Cursor = .arrow,
     font_type: FontType = .text,
     font_size: f32 = 18,
     text_align: TextAlign = .left,
@@ -734,7 +736,7 @@ pub fn startBuild(
 
     self.first_error_trace = null;
 
-    var mouse_cursor = Window.CursorType.arrow;
+    var mouse_cursor: Cursor = .arrow;
     for ([_]?NodeKey{
         self.focused_node_key,
         self.hot_node_key,
@@ -840,13 +842,13 @@ pub fn computeNodeSignal(self: *UI, node: *Node) !Signal {
     var is_active = active_key_matches;
     var is_focused = focused_key_matches;
 
-    const mouse_down_ev = self.events.find(.MouseDown, c.GLFW_MOUSE_BUTTON_LEFT);
+    const mouse_down_ev = self.events.match(.MouseDown, .{ .button = .left });
     var used_mouse_down_ev = false;
-    const mouse_up_ev = self.events.find(.MouseUp, c.GLFW_MOUSE_BUTTON_LEFT);
+    const mouse_up_ev = self.events.match(.MouseUp, .{ .button = .left });
     var used_mouse_up_ev = false;
-    const enter_down_ev = self.events.match(.KeyDown, .{ .key = c.GLFW_KEY_ENTER });
+    const enter_down_ev = self.events.match(.KeyDown, .{ .key = .enter });
     var used_enter_down_ev = false;
-    const enter_up_ev = self.events.match(.KeyUp, .{ .key = c.GLFW_KEY_ENTER });
+    const enter_up_ev = self.events.match(.KeyUp, .{ .key = .enter });
     var used_enter_up_ev = false;
 
     signal.hovering = is_hot;
@@ -925,7 +927,7 @@ pub fn computeNodeSignal(self: *UI, node: *Node) !Signal {
     //       as far as I can tell (from a limited web search) there is
     //       no way (on linux) to get some system-wide double-click delay
     const delay_time = 0.400; // (in seconds)
-    const cur_time: f32 = @floatCast(c.glfwGetTime());
+    const cur_time: f32 = @floatCast(glfw.getTime());
     // TODO: also keep track of click position and only register a click
     //       as a *double* click if it's within some boundary
     if (signal.clicked and node.last_click_time + delay_time > cur_time)
@@ -2051,7 +2053,7 @@ pub const DebugView = struct {
     ) !void {
         // ctrl+shift+h to toggle help menu
         const ctrl_shift = Window.InputEvent.Modifiers{ .shift = true, .control = true };
-        if (events.searchAndRemove(.KeyDown, .{ .key = c.GLFW_KEY_H, .mods = ctrl_shift }))
+        if (events.searchAndRemove(.KeyDown, .{ .key = .h, .mods = ctrl_shift }))
             self.show_help = !self.show_help;
         // scroll up/down to change the highlighted node in the list
         if (events.fetchAndRemove(.MouseScroll, null)) |scroll_ev| {
@@ -2061,16 +2063,16 @@ pub const DebugView = struct {
             }
         }
         // ctrl+shift+scroll_click to freeze query position to current mouse_pos
-        if (events.find(.MouseUp, c.GLFW_MOUSE_BUTTON_MIDDLE)) |ev_idx| blk: {
+        if (events.find(.MouseUp, .{ .button = .middle, .mods = ctrl_shift })) |ev_idx| blk: {
             const mods = window.getModifiers();
             if (!(mods.shift and mods.control)) break :blk;
             self.node_query_pos = if (self.node_query_pos) |_| null else mouse_pos;
             _ = events.removeAt(ev_idx);
         }
         // ctrl+shift+left/right to anchor left/right
-        if (events.searchAndRemove(.KeyDown, .{ .key = c.GLFW_KEY_LEFT, .mods = ctrl_shift }))
+        if (events.searchAndRemove(.KeyDown, .{ .key = .left, .mods = ctrl_shift }))
             self.anchor_right = false;
-        if (events.searchAndRemove(.KeyDown, .{ .key = c.GLFW_KEY_RIGHT, .mods = ctrl_shift }))
+        if (events.searchAndRemove(.KeyDown, .{ .key = .right, .mods = ctrl_shift }))
             self.anchor_right = true;
         // TODO: change the top_left position for the dbg_ui_view?
 

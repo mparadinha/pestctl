@@ -1,11 +1,10 @@
 .{
     .name = "pestctl",
     .version = "0.0.1",
-
     .dependencies = .{
-        .libglfw3 = .{
-            .url = "https://github.com/mparadinha/glfw/archive/refs/heads/master.tar.gz",
-            .hash = "1220bf9a30c112888d439f82bf7862dccb46c84c855ad4193c4b0adb7cf7c719054a",
+        .mach_glfw = .{
+            .url = "https://pkg.machengine.org/mach-glfw/076b3869cbfd2ccccb6a8c01e4128bb0d7977ebb.tar.gz",
+            .hash = "1220cafbb90ea86d92c07f779e8106e6f5c3d8ab4cc68ddc8d3f80bd4b6079064135",
         },
         .Zydis = .{
             .url = "https://github.com/mparadinha/Zydis/archive/refs/heads/master.tar.gz",

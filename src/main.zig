@@ -18,6 +18,8 @@ const SrcLoc = Dwarf.SrcLoc;
 const widgets = @import("app_widgets.zig");
 const FuzzyMatcher = @import("fuzzy_matching.zig").FuzzyMatcher;
 
+const glfw = @import("mach-glfw");
+
 const tracy = @import("tracy.zig");
 
 const app_style = .{
@@ -104,7 +106,6 @@ pub fn main() !void {
     ui.base_style.bg_color = vec4{ 0.24, 0.27, 0.31, 1 };
     ui.base_style.border_color = vec4{ 0.5, 0.5, 0.5, 0.75 };
     ui.base_style.text_color = vec4{ 1, 1, 1, 1 };
-    // ui.base_style.corner_radii = math.splat(vec4, 5);
     ui.base_style.edge_softness = 1;
     ui.base_style.border_thickness = 2;
     if (cmdline_args.font_scale) |font_scale| {
@@ -114,7 +115,7 @@ pub fn main() !void {
     var session_opt = if (cmdline_args.exec_path) |path| try Session.init(allocator, path) else null;
     defer if (session_opt) |*session| session.deinit();
 
-    var last_time = @as(f32, @floatCast(c.glfwGetTime()));
+    var last_time: f32 = @floatCast(glfw.getTime());
 
     var src_file_buf = InputBuf{};
     var src_file_search = FuzzySearchOptions(SrcFileSearchCtx, 20).init(allocator);
@@ -170,14 +171,14 @@ pub fn main() !void {
         defer frame_arena.deinit();
 
         // grab all window/input information we need for this frame
-        const framebuf_size = try window.getFramebufferSize();
+        const framebuf_size = window.getFramebufferSize();
         width = framebuf_size[0];
         height = framebuf_size[1];
         //const ratio = @intToFloat(f32, width) / @intToFloat(f32, height);
-        const cur_time = @as(f32, @floatCast(c.glfwGetTime()));
+        const cur_time: f32 = @floatCast(glfw.getTime());
         const dt = cur_time - last_time;
         last_time = cur_time;
-        const mouse_pos = try window.getMousePos();
+        const mouse_pos = window.getMousePos();
 
         try ui.startBuild(width, height, mouse_pos, &window.event_queue, &window);
 
@@ -198,7 +199,7 @@ pub fn main() !void {
             }
 
             if (ui.checkBox("lock framerate", &lock_framerate).clicked)
-                c.glfwSwapInterval(if (lock_framerate) 1 else 0);
+                glfw.swapInterval(if (lock_framerate) 1 else 0);
 
             _ = ui.checkBox("show UI stats", &show_ui_stats);
             if (show_ui_stats) {
@@ -375,13 +376,13 @@ pub fn main() !void {
         // special debug commands
         if (window.event_queue.searchAndRemove(.KeyUp, .{
             .mods = .{ .control = true, .shift = true },
-            .key = c.GLFW_KEY_T,
+            .key = .t,
         })) {
             try session_cmds.append(.{ .dump_ui_tree = "ui_main_tree.dot" });
         }
         if (window.event_queue.searchAndRemove(.KeyUp, .{
             .mods = .{ .control = true, .shift = true },
-            .key = c.GLFW_KEY_D,
+            .key = .d,
         })) dbg_ui_view.active = !dbg_ui_view.active;
 
         const cur_src_loc = if (session_opt) |s| s.src_loc else null;
@@ -773,7 +774,7 @@ const FileTab = struct {
             }
 
             const text_node_rect = text_scroll_node.rect;
-            const right_click = ui.events.searchAndRemove(.MouseUp, c.GLFW_MOUSE_BUTTON_RIGHT);
+            const right_click = ui.events.matchAndRemove(.MouseUp, .{ .button = .right });
             if (right_click and (text_sig.hovering or line_sig.hovering)) {
                 show_ctx_menu = true;
             }
@@ -1614,7 +1615,7 @@ fn FuzzySearchOptions(comptime Ctx: type, comptime max_slots: usize) type {
                     .draw_active_effects = true,
                 }, "", .{}, "{s}_opt_btn_{d}", .{ label, idx }, .{
                     .border_color = vec4{ 0, 0, 0, 0 },
-                    .cursor_type = .hand,
+                    .cursor_type = .pointing_hand,
                     .child_layout_axis = .x,
                     .pref_size = fill_x_size,
                 });

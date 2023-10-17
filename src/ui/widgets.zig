@@ -1,11 +1,11 @@
 // there's no need to manually include this file, it's already provided by UI.zig
 
 const std = @import("std");
-const c = @import("../c.zig");
 const math = @import("../math.zig");
 const vec2 = math.vec2;
 const vec3 = math.vec3;
 const vec4 = math.vec4;
+const glfw = @import("mach-glfw");
 
 const UI = @import("../UI.zig");
 const Node = UI.Node;
@@ -70,7 +70,7 @@ pub fn button(ui: *UI, string: []const u8) Signal {
         .draw_hot_effects = true,
         .draw_active_effects = true,
     }, string, .{
-        .cursor_type = .hand,
+        .cursor_type = .pointing_hand,
     });
     return node.signal;
 }
@@ -84,7 +84,7 @@ pub fn iconButton(ui: *UI, string: []const u8) Signal {
         .draw_hot_effects = true,
         .draw_active_effects = true,
     }, string, .{
-        .cursor_type = .hand,
+        .cursor_type = .pointing_hand,
         .font_type = .icon,
     });
     return node.signal;
@@ -96,7 +96,7 @@ pub fn subtleIconButton(ui: *UI, string: []const u8) Signal {
         .draw_text = true,
         .draw_active_effects = true,
     }, string, .{
-        .cursor_type = .hand,
+        .cursor_type = .pointing_hand,
         .font_type = .icon,
     });
     return node.signal;
@@ -548,7 +548,7 @@ pub fn textInputRaw(ui: *UI, hash: []const u8, buffer: []u8, buf_len: *usize) !S
         if (text_op.copy_str.len > 0) {
             const c_str = try ui.allocator.dupeZ(u8, text_op.copy_str);
             defer ui.allocator.free(c_str);
-            c.glfwSetClipboardString(null, c_str);
+            glfw.setClipboardString(c_str);
         }
         widget_node.cursor = text_op.byte_cursor;
         widget_node.mark = text_op.byte_mark;

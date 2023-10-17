@@ -7,9 +7,6 @@ pub fn build(b: *std.build.Builder) void {
 
     const use_tracy = b.option(bool, "tracy", "Enable Tracy profiling") orelse false;
 
-    const glfw_dep = b.dependency("libglfw3", .{ .target = target, .optimize = .ReleaseSafe });
-    const zydis_dep = b.dependency("Zydis", .{ .target = target, .optimize = .ReleaseSafe });
-
     var exe = b.addExecutable(.{
         .name = "pestctl",
         .root_source_file = .{ .path = "src/main.zig" },
@@ -17,8 +14,15 @@ pub fn build(b: *std.build.Builder) void {
         .optimize = optimize,
     });
     exe.linkLibC();
-    exe.linkLibrary(glfw_dep.artifact("glfw3"));
-    exe.linkLibrary(zydis_dep.artifact("Zydis"));
+    {
+        const glfw_dep = b.dependency("mach_glfw", .{ .target = target, .optimize = .ReleaseSafe });
+        exe.addModule("mach-glfw", glfw_dep.module("mach-glfw"));
+        @import("mach_glfw").link(glfw_dep.builder, exe);
+    }
+    {
+        const zydis_dep = b.dependency("Zydis", .{ .target = target, .optimize = .ReleaseSafe });
+        exe.linkLibrary(zydis_dep.artifact("Zydis"));
+    }
     { // stb libs
         exe.addIncludePath(.{ .path = "src" });
         exe.addCSourceFiles(&.{"src/stb_impls.c"}, &.{""});
