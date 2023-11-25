@@ -102,7 +102,7 @@ pub fn executeOp(
         DW.OP.abs => {
             const value = (try self.stack.pop()).generic;
             const signed: isize = @bitCast(value);
-            try self.stack.push(@abs(signed));
+            try self.stack.push(try std.math.absInt(signed));
         },
         DW.OP.@"and" => {
             const value_one = (try self.stack.pop()).generic;

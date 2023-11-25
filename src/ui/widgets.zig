@@ -447,7 +447,7 @@ pub fn textInputRaw(ui: *UI, hash: []const u8, buffer: []u8, buf_len: *usize) !S
 
     const cursor_height = ui.font.getScaledMetrics(font_pixel_size).line_advance - text_padd[1];
     const cursor_rel_pos = vec2{ rect_before_cursor.max[0], 0 } + text_padd;
-    const selection_size = @abs(rect_before_mark.max[0] - rect_before_cursor.max[0]);
+    const selection_size = std.math.fabs(rect_before_mark.max[0] - rect_before_cursor.max[0]);
     const selection_start = @min(rect_before_mark.max[0], rect_before_cursor.max[0]);
     const selection_rel_pos = vec2{ selection_start, 0 } + text_padd;
 
@@ -728,7 +728,7 @@ fn RGBtoHSV(rgba: vec4) vec4 {
 fn HSVtoRGB(hsva: vec4) vec4 {
     const h = (hsva[0] * 360) / 60;
     const C = hsva[2] * hsva[1];
-    const X = C * (1 - @abs(@mod(h, 2) - 1));
+    const X = C * (1 - std.math.fabs(@mod(h, 2) - 1));
     const rgb_l = switch (@as(u32, @intFromFloat(@floor(h)))) {
         0 => vec3{ C, X, 0 },
         1 => vec3{ X, C, 0 },
