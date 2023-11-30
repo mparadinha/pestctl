@@ -2197,7 +2197,9 @@ pub const DebugView = struct {
                             name, buf.slice(), value.mouse_pos, value.scroll_amount,
                         });
                     },
-                    []const u8 => self.ui.labelF("{s}=\"{s}\"", .{ name, value }),
+                    []const u8 => {
+                        self.ui.labelF("{s}=\"{s}\"", .{ name, value[0..@min(value.len, 35)] });
+                    },
                     f32, [2]f32, [3]f32, [4]f32, vec2, vec3, vec4 => self.ui.labelF("{s}={d}", .{ name, value }),
                     else => self.ui.labelF("{s}={any}", .{ name, value }),
                 }

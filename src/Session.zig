@@ -547,8 +547,8 @@ pub fn getBytesAtAddr(self: Session, addr: usize, comptime N: u4) ![N]u8 {
 /// call `File.close` when done
 pub fn procMemFile(self: Session) !std.fs.File {
     var tmpbuf: [0x1000]u8 = undefined;
-    const proc_filename = try std.fmt.bufPrint(&tmpbuf, "/proc/{}/mem", .{self.pid});
-    return std.fs.cwd().openFile(proc_filename, .{});
+    const filename = try std.fmt.bufPrint(&tmpbuf, "/proc/{}/mem", .{self.pid});
+    return std.fs.openFileAbsolute(filename, .{});
 }
 
 pub const Registers = struct {

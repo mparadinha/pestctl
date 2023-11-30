@@ -390,7 +390,7 @@ pub const EventQueue = struct {
         const Payload = EventPayload(ev_type);
 
         if (@typeInfo(Payload) == .Struct) {
-            if (@typeInfo(T) != .Struct) @compileError("match_content must Struct");
+            if (@typeInfo(T) != .Struct) @compileError("`match_content` must be a Struct, not " ++ @typeName(T));
         } else {
             if (T != Payload and T != void)
                 @compileError(@tagName(ev_type) ++ " has type " ++ @typeName(Payload) ++ " not " ++ @typeName(T));

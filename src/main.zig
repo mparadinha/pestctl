@@ -128,8 +128,8 @@ pub fn main() !void {
     var func_buf = InputBuf{};
     var func_search = FuzzySearchOptions(FuncSearchCtx, 10).init(allocator);
     defer func_search.deinit();
-    var memline_buf = InputBuf{};
-    var memline_addr: ?usize = null;
+    var mem_view_buf = InputBuf{};
+    var mem_view_addr: ?usize = null;
     var file_picker: ?widgets.FilePicker = null;
     defer if (file_picker) |picker| picker.deinit();
     var search_buf = InputBuf{};
@@ -154,8 +154,19 @@ pub fn main() !void {
 
     var last_src_loc = @as(?SrcLoc, null);
 
-    const widget_tabs = [_][]const u8{ "Registers", "Call Stack", "Memory Maps" };
-    var widget_tab_active_idx: usize = 1;
+    const Widgets = enum {
+        Process,
+        Breakpoints,
+        Variables,
+        Registers,
+        @"Call Stack",
+        @"Memory Maps",
+        @"Memory View",
+        Sources,
+        Assembly,
+    };
+    var active_widget_left: Widgets = .Process;
+    var active_widget_right: Widgets = .Registers;
     var call_stack_viewer = CallStackViewer.init(allocator);
     defer call_stack_viewer.deinit();
 
@@ -222,152 +233,89 @@ pub fn main() !void {
 
         const tabs_parent = ui.pushLayoutParent("tabs_parent", Size.flexible(.percent, 1, 1), .x);
 
-        const left_side_parent = ui.pushLayoutParentFlags(.{
-            .draw_border = true,
-            .draw_background = true,
-        }, "left_side_parent", Size.flexible(.percent, 0.5, 1), .y);
-        {
-            try doOpenFileBox(&frame_arena, &ui, &session_cmds, cwd, &src_file_buf, &src_file_search);
-            try file_viewer.show(&ui);
-            // try file_tab.display(&ui, &session_cmds);
-            // if (session_opt) |session| try doDisassemblyWindow(allocator, &ui, session, &disasm_texts);
-        }
-        ui.popParentAssert(left_side_parent);
+        blk: {
+            const left_side_parent = ui.pushLayoutParentFlags(.{
+                .draw_border = true,
+                .draw_background = true,
+            }, "left_side_parent", Size.exact(.percent, 0.5, 1), .y);
+            defer ui.popParentAssert(left_side_parent);
 
-        const right_side_parent = ui.pushLayoutParentFlags(.{
-            .draw_background = true,
-        }, "right_side_parent", Size.flexible(.percent, 0.5, 1), .y);
-        {
-            // show input box
-            ui.pushStyle(text_input_style);
-            _ = ui.textInput("asdlkfjhasdf", &search_buf.buffer, &search_buf.len);
-            _ = ui.popStyle();
-
-            try test_search.updateSearch(search_buf.slice());
-
-            if (pickFuzzyMatches(&ui, &test_search, "test_search", null, null)) |entry|
-                std.debug.print("choose a search entry: {any}\n", .{entry});
-        }
-        if (session_opt) |*session| {
-            ui.pushStyle(.{ .pref_size = [2]Size{ Size.percent(1, 1), Size.text_dim(1) } });
-            ui.labelBoxF("Child pid: {}", .{session.pid});
-            ui.labelBoxF("Child Status: {s}", .{@tagName(try session.getState())});
-            if (session.src_loc) |loc| {
-                ui.labelBoxF("src_loc: {s}:{}", .{ loc.file, loc.line });
-            } else ui.labelBox("src_loc: null");
-            _ = ui.popStyle();
-
-            if (ui.button("Wait for Signal").clicked) {
-                std.debug.print("wait status: {any}\n", .{Session.getWaitStatus(session.pid)});
-            }
-
-            if (ui.button("Force Send `ptrace(.CONT)`").clicked) {
-                try Session.ptrace(.CONT, session.pid, 0);
-            }
-
-            if (session.addr_range) |range| {
-                ui.labelBoxF("addr_range[0] = 0x{x:0>12}", .{range[0]});
-                ui.labelBoxF("addr_range[1] = 0x{x:0>12}", .{range[1]});
-            }
-
+            const session = if (session_opt) |*s| s else break :blk;
             {
-                const right_side_tabs_parent = ui.pushLayoutParent("right_side_tabs_parent", fill_x_size, .y);
-                defer ui.popParentAssert(right_side_tabs_parent);
+                const buttons_parent = ui.addNode(.{ .no_id = true }, "", .{
+                    .pref_size = fill_x_size,
+                    .child_layout_axis = .x,
+                });
+                ui.pushParent(buttons_parent);
+                defer ui.popParentAssert(buttons_parent);
 
-                const widget_buttons_parent = ui.pushLayoutParent("widget_buttons_parent", fill_x_size, .x);
-                for (widget_tabs, 0..) |widget_name, idx| {
-                    const is_active = widget_tab_active_idx == idx;
-                    if (is_active) ui.pushTmpStyle(.{ .bg_color = app_style.highlight_color });
-                    const btn_sig = ui.button(widget_name);
-                    if (btn_sig.clicked) widget_tab_active_idx = idx;
-                }
-                ui.popParentAssert(widget_buttons_parent);
-
-                const tab_choice = widget_tabs[widget_tab_active_idx];
-                if (std.mem.eql(u8, tab_choice, "Registers")) {
-                    showRegisters(&ui, session.regs);
-                } else if (std.mem.eql(u8, tab_choice, "Call Stack")) {
-                    try call_stack_viewer.display(&ui, session.call_stack, session.*);
-                } else {
-                    ui.labelF("TODO: <{s}> here", .{tab_choice});
+                inline for (@typeInfo(Widgets).Enum.fields) |widget_info| {
+                    const widget: Widgets = @enumFromInt(widget_info.value);
+                    if (active_widget_left == widget)
+                        ui.pushTmpStyle(.{ .bg_color = app_style.highlight_color });
+                    const btn_sig = ui.button(widget_info.name);
+                    if (btn_sig.clicked) active_widget_left = widget;
                 }
             }
-
-            {
-                const mem_line_view_parent = ui.pushLayoutParent("mem_line_view_parent", fill_x_size, .x);
-                defer ui.popParentAssert(mem_line_view_parent);
-                ui.pushTmpStyle(text_input_style);
-                if (ui.textInput("mem_line_addr_input", &memline_buf.buffer, &memline_buf.len).enter_pressed) {
-                    memline_addr = try std.fmt.parseUnsigned(usize, memline_buf.slice(), 0);
-                }
-                if (memline_addr) |addr| {
-                    const memfilepath = try std.fmt.allocPrint(frame_arena.allocator(), "/proc/{}/mem", .{session.pid});
-                    const memfile = try std.fs.openFileAbsolute(memfilepath, .{});
-                    defer memfile.close();
-
-                    try memfile.seekTo(addr);
-                    var line: [16]u8 = undefined;
-                    _ = try memfile.read(&line);
-
-                    var strbuf: [1000]u8 = undefined;
-                    var stream = std.io.fixedBufferStream(&strbuf);
-                    var writer = stream.writer();
-                    for (line) |byte| {
-                        _ = try writer.print("{x} ", .{byte});
-                    }
-                    ui.label(stream.getWritten());
-                }
+            switch (active_widget_left) {
+                .Process => try showProcessInfo(&ui, &session_cmds, session),
+                .Breakpoints => try doBreakpointUI(&frame_arena, &ui, &session_cmds, session, cwd, &num_buf, &file_buf, &func_buf, &func_search),
+                .Variables => try doVarTable(&frame_arena, &ui, &session_cmds, session, &var_buf, &var_search),
+                .Registers => showRegisters(&ui, session.regs),
+                .@"Call Stack" => try call_stack_viewer.display(&ui, session.call_stack, session.*),
+                .@"Memory Maps" => try showMemoryMaps(allocator, &ui, session),
+                .@"Memory View" => try doMemoryView(&ui, session, &mem_view_buf, &mem_view_addr),
+                .Sources => try doSourcesWidget(&frame_arena, &ui, &session_cmds, cwd, &src_file_buf, &src_file_search, &file_tab),
+                .Assembly => try doDisassemblyWindow(allocator, &ui, session.*, &disasm_texts),
             }
-
-            if (ui.button("print memory mappings").clicked) {
-                const maps = try session.getMemMaps(allocator);
-                defer {
-                    for (maps) |map| map.deinit(allocator);
-                    allocator.free(maps);
-                }
-                std.debug.print("memory mappings for pid={}\n", .{session.pid});
-                std.debug.print("         address range        | perm |   offset   | device|   inode  | path\n", .{});
-                std.debug.print("------------------------------+------+------------+-------+----------+-----------\n", .{});
-                for (maps) |map| {
-                    std.debug.print("0x{x:0>12}-0x{x:0>12} | {c}{c}{c}{c} | 0x{x:0>8} | {x:0>2}:{x:0>2} | {d: >8} | {s}\n", .{
-                        map.addr_range[0],
-                        map.addr_range[1],
-                        ([2]u8{ 'r', '-' })[if (map.perms.read) 0 else 1],
-                        ([2]u8{ 'w', '-' })[if (map.perms.write) 0 else 1],
-                        ([2]u8{ 'x', '-' })[if (map.perms.execute) 0 else 1],
-                        ([2]u8{ 's', 'p' })[if (map.perms.shared) 0 else 1],
-                        map.offset,
-                        map.device.major,
-                        map.device.minor,
-                        map.inode,
-                        map.path,
-                    });
-                }
-            }
-
-            try doVarTable(&frame_arena, &ui, &session_cmds, session, &var_buf, &var_search);
-
-            ui.spacer(.y, Size.percent(1, 0));
-
-            ui.pushStyle(.{ .pref_size = [2]Size{ Size.percent(0.5, 1), Size.text_dim(1) } });
-            if (ui.button("Continue Running").clicked) {
-                try session_cmds.append(.{ .continue_execution = {} });
-            }
-            if (ui.button("Pause Child").clicked) {
-                try session_cmds.append(.{ .pause_execution = {} });
-            }
-            if (ui.button("Next Line").clicked) {
-                try session_cmds.append(.{ .step_line = {} });
-            }
-            if (ui.button("Next Instruction").clicked) {
-                try session_cmds.append(.{ .step_instruction = {} });
-            }
-            _ = ui.popStyle();
-
-            try doBreakpointUI(&frame_arena, &ui, &session_cmds, session, cwd, &num_buf, &file_buf, &func_buf, &func_search);
         }
 
-        ui.popParentAssert(right_side_parent);
+        blk: {
+            const right_side_parent = ui.pushLayoutParentFlags(.{
+                .draw_background = true,
+            }, "right_side_parent", Size.exact(.percent, 0.5, 1), .y);
+            defer ui.popParentAssert(right_side_parent);
+            {
+                // show input box
+                ui.pushStyle(text_input_style);
+                _ = ui.textInput("asdlkfjhasdf", &search_buf.buffer, &search_buf.len);
+                _ = ui.popStyle();
+
+                try test_search.updateSearch(search_buf.slice());
+
+                if (pickFuzzyMatches(&ui, &test_search, "test_search", null, null)) |entry|
+                    std.debug.print("choose a search entry: {any}\n", .{entry});
+            }
+
+            const session = if (session_opt) |*s| s else break :blk;
+            {
+                const buttons_parent = ui.addNode(.{ .no_id = true }, "", .{
+                    .pref_size = fill_x_size,
+                    .child_layout_axis = .x,
+                });
+                ui.pushParent(buttons_parent);
+                defer ui.popParentAssert(buttons_parent);
+
+                inline for (@typeInfo(Widgets).Enum.fields) |widget_info| {
+                    const widget: Widgets = @enumFromInt(widget_info.value);
+                    if (active_widget_right == widget)
+                        ui.pushTmpStyle(.{ .bg_color = app_style.highlight_color });
+                    const btn_sig = ui.button(widget_info.name);
+                    if (btn_sig.clicked) active_widget_right = widget;
+                }
+            }
+            switch (active_widget_right) {
+                .Process => try showProcessInfo(&ui, &session_cmds, session),
+                .Breakpoints => try doBreakpointUI(&frame_arena, &ui, &session_cmds, session, cwd, &num_buf, &file_buf, &func_buf, &func_search),
+                .Variables => try doVarTable(&frame_arena, &ui, &session_cmds, session, &var_buf, &var_search),
+                .Registers => showRegisters(&ui, session.regs),
+                .@"Call Stack" => try call_stack_viewer.display(&ui, session.call_stack, session.*),
+                .@"Memory Maps" => try showMemoryMaps(allocator, &ui, session),
+                .@"Memory View" => try doMemoryView(&ui, session, &mem_view_buf, &mem_view_addr),
+                .Sources => try doSourcesWidget(&frame_arena, &ui, &session_cmds, cwd, &src_file_buf, &src_file_search, &file_tab),
+                .Assembly => try doDisassemblyWindow(allocator, &ui, session.*, &disasm_texts),
+            }
+        }
 
         ui.popParentAssert(tabs_parent);
 
@@ -447,7 +395,7 @@ pub fn main() !void {
                 },
             }
 
-            if (session_opt) |*session| try session.fullUpdate();
+            // if (session_opt) |*session| try session.fullUpdate();
         }
         session_cmds.clearRetainingCapacity();
 
@@ -463,6 +411,142 @@ pub fn main() !void {
         frame_idx += 1;
         tracy.FrameMark();
     }
+}
+
+fn showProcessInfo(
+    ui: *UI,
+    session_cmds: *std.ArrayList(SessionCmd),
+    session: *Session,
+) !void {
+    ui.pushStyle(.{ .pref_size = [2]Size{ Size.percent(1, 1), Size.text_dim(1) } });
+    ui.labelBoxF("Child pid: {}", .{session.pid});
+    ui.labelBoxF("Child Status: {s}", .{@tagName(try session.getState())});
+    if (session.src_loc) |loc| {
+        ui.labelBoxF("src_loc: {s}:{}", .{ loc.file, loc.line });
+    } else ui.labelBox("src_loc: null");
+    _ = ui.popStyle();
+
+    if (ui.button("Wait for Signal").clicked) {
+        std.debug.print("wait status: {any}\n", .{Session.getWaitStatus(session.pid)});
+    }
+
+    if (session.addr_range) |range| {
+        ui.labelBoxF("addr_range[0] = 0x{x:0>12}", .{range[0]});
+        ui.labelBoxF("addr_range[1] = 0x{x:0>12}", .{range[1]});
+    }
+
+    ui.pushStyle(.{ .pref_size = [2]Size{ Size.percent(0.5, 1), Size.text_dim(1) } });
+    if (ui.button("Continue Running").clicked) {
+        try session_cmds.append(.{ .continue_execution = {} });
+    }
+    if (ui.button("Pause Child").clicked) {
+        try session_cmds.append(.{ .pause_execution = {} });
+    }
+    if (ui.button("Next Line").clicked) {
+        try session_cmds.append(.{ .step_line = {} });
+    }
+    if (ui.button("Next Instruction").clicked) {
+        try session_cmds.append(.{ .step_instruction = {} });
+    }
+    _ = ui.popStyle();
+}
+
+fn showMemoryMaps(
+    allocator: Allocator,
+    ui: *UI,
+    session: *Session,
+) !void {
+    const maps = try session.getMemMaps(allocator);
+    defer {
+        for (maps) |map| map.deinit(allocator);
+        allocator.free(maps);
+    }
+    ui.labelF("memory mappings for pid={}\n", .{session.pid});
+    var print_buf: [0x10_000]u8 = undefined;
+    var stream = std.io.fixedBufferStream(&print_buf);
+    const writer = stream.writer();
+    try writer.print("         address range        | perm |   offset   | device|   inode  | path\n", .{});
+    try writer.print("------------------------------+------+------------+-------+----------+-----------\n", .{});
+    for (maps) |map| {
+        try writer.print("0x{x:0>12}-0x{x:0>12} | {c}{c}{c}{c} | 0x{x:0>8} | {x:0>2}:{x:0>2} | {d: >8} | {s}\n", .{
+            map.addr_range[0],
+            map.addr_range[1],
+            ([2]u8{ 'r', '-' })[if (map.perms.read) 0 else 1],
+            ([2]u8{ 'w', '-' })[if (map.perms.write) 0 else 1],
+            ([2]u8{ 'x', '-' })[if (map.perms.execute) 0 else 1],
+            ([2]u8{ 's', 'p' })[if (map.perms.shared) 0 else 1],
+            map.offset,
+            map.device.major,
+            map.device.minor,
+            map.inode,
+            map.path,
+        });
+    }
+    ui.scrollableLabel("mem_maps_contents", Size.flexible(.percent, 1, 1), stream.getWritten());
+}
+
+fn doMemoryView(
+    ui: *UI,
+    session: *Session,
+    mem_view_buf: *InputBuf,
+    mem_view_addr: *?usize,
+) !void {
+    ui.pushStyle(text_input_style);
+    const sig = ui.textInput("mem_view_addr", &mem_view_buf.buffer, &mem_view_buf.len);
+    _ = ui.popStyle();
+    if (sig.enter_pressed) {
+        const addr = try std.fmt.parseUnsigned(usize, mem_view_buf.slice(), 0);
+        mem_view_addr.* = addr;
+    }
+
+    if (mem_view_addr.*) |addr| {
+        const mem_file = try session.procMemFile();
+        defer mem_file.close();
+
+        const page_size = 0x1000;
+        const page_addr = addr - (addr % page_size);
+        try mem_file.seekTo(page_addr);
+        var page_buf: [page_size]u8 = undefined;
+        _ = try mem_file.read(&page_buf);
+
+        const lines = page_size / 16;
+        const bytes_per_line =
+            2 + 8 + 1 // for the hex addr + the ':'
+        + (16 * 2) // for the hex bytes
+        + 16 / 2 // for the space before each byte pair
+        + 1 // for the middle space
+        + 1; // for the newline
+        var print_buf: [lines * bytes_per_line]u8 = undefined;
+        var stream = std.io.fixedBufferStream(&print_buf);
+        const writer = stream.writer();
+        for (page_buf, 0..) |byte, idx| {
+            if (idx % 16 == 0) try writer.print("0x{x:0>8}:", .{page_addr + idx});
+            if (idx % 2 == 0) try writer.print(" ", .{});
+            if (idx % 16 == 8) try writer.print(" ", .{});
+            try writer.print("{x:0>2}", .{byte});
+            if (idx % 16 == 15) try writer.print("\n", .{});
+        }
+
+        ui.scrollableLabel(
+            "mem_view_contents",
+            Size.flexible(.percent, 1, 1),
+            stream.getWritten(),
+        );
+    }
+}
+
+fn doSourcesWidget(
+    frame_arena: *std.heap.ArenaAllocator,
+    ui: *UI,
+    session_cmds: *std.ArrayList(SessionCmd),
+    cwd: []const u8,
+    src_file_buf: *InputBuf,
+    src_file_search: *FuzzySearchOptions(SrcFileSearchCtx, 20),
+    file_tab: *FileTab,
+) !void {
+    try doOpenFileBox(frame_arena, ui, session_cmds, cwd, src_file_buf, src_file_search);
+    // try file_viewer.show(&ui);
+    try file_tab.display(ui, session_cmds);
 }
 
 const DwarfSearchIterator = struct {
@@ -775,7 +859,7 @@ const FileTab = struct {
 
             const text_node_rect = text_scroll_node.rect;
             const right_click = ui.events.matchAndRemove(.MouseUp, .{ .button = .right });
-            if (right_click and (text_sig.hovering or line_sig.hovering)) {
+            if (right_click != null and (text_sig.hovering or line_sig.hovering)) {
                 show_ctx_menu = true;
             }
             if (show_ctx_menu) {
@@ -802,7 +886,7 @@ const FileTab = struct {
                     show_ctx_menu = false;
                 }
 
-                if (ui.events.match(.MouseDown, {})) |_| {
+                if (ui.events.match(.MouseDown, .{})) |_| {
                     if (!ctx_menu_rect.contains(ui.mouse_pos)) show_ctx_menu = false;
                 }
             }
@@ -948,9 +1032,7 @@ fn doDisassemblyWindow(
         defer allocator.free(mem_block);
         std.debug.assert((try proc_mem.read(mem_block)) == mem_block.len);
 
-        const start_time = c.glfwGetTime();
         const text_info = try generateTextInfoForDisassembly(allocator, mem_block, block_addr_range[0]);
-        std.debug.print("done. (took {d}s)\n", .{c.glfwGetTime() - start_time});
         try disasm_texts.append(text_info);
         break :text_blk text_info;
     };
@@ -1158,7 +1240,6 @@ fn generateTextInfoForDisassembly(allocator: Allocator, data: []const u8, data_s
 fn showRegisters(ui: *UI, regs: Session.Registers) void {
     const table_regs = .{ "rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp", "rsp", "rip" };
     inline for (table_regs) |reg_name| {
-        //ui.labelBoxF(reg_name ++ ": 0x{x:0>16}", .{@field(regs, reg_name)});
         ui.labelF(reg_name ++ ": 0x{x:0>16}", .{@field(regs, reg_name)});
     }
 }
@@ -1444,6 +1525,17 @@ fn doBreakpointUI(
         }
     }
     ui.popParentAssert(set_break_func_parent);
+
+    // TODO: show list of current breakpoints and their status
+    ui.label("Breakpoints:");
+    for (session.breakpoints.items) |breakpoint| {
+        if (try session.elf.translateAddrToSrc(breakpoint.addr)) |src| {
+            // TODO: show the src path relative to current dir?
+            ui.labelF("0x{x:0>8} {s}:{}", .{ breakpoint.addr, src.file, src.line });
+        } else {
+            ui.labelF("0x{x:0>8}", .{breakpoint.addr});
+        }
+    }
 }
 
 const SrcFileSearchCtx = struct {

@@ -45,6 +45,21 @@ pub fn labelBox(ui: *UI, string: []const u8) void {
     }, string, .{});
 }
 
+pub fn scrollableLabel(
+    ui: *UI,
+    hash: []const u8,
+    size: [2]Size,
+    string: []const u8,
+) void {
+    const p = ui.pushLayoutParentFlags(.{
+        .clip_children = true,
+        .scroll_children_x = true,
+        .scroll_children_y = true,
+    }, hash, size, .y);
+    defer ui.popParentAssert(p);
+    ui.label(string);
+}
+
 pub fn text(ui: *UI, string: []const u8) Signal {
     const node = ui.addNode(.{
         .draw_text = true,
