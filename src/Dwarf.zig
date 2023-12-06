@@ -123,7 +123,6 @@ pub fn initTables(self: *Dwarf) !void {
 
     self.frames = try loadAllFrames(self.allocator, self.debug_frame, self.eh_frame);
 
-    //_ = timer_start;
     const timer_elapsed = std.time.nanoTimestamp() - timer_start;
     std.debug.print("Dwarf.initTables took {d:.2}ms\n", .{@as(f32, @floatFromInt(timer_elapsed)) / std.time.ns_per_ms});
 }

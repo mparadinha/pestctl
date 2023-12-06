@@ -101,6 +101,8 @@ pub fn ptrace(req: PTRACE.request, pid: std.os.pid_t, _addr: ?*anyopaque, _data:
     var data = if (_data) |d| @intFromPtr(d) else 0;
 
     // both musl and glibc do this, so I'm doing it too
+    // this is because the glibc API is different from the kernel API
+    // see `C library/kernel differences` section of ptrace man page
     var ret: usize = 0;
     if (@intFromEnum(req) < 4) data = @intFromPtr(&ret);
 

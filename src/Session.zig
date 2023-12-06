@@ -16,10 +16,18 @@ elf: Elf,
 
 breakpoints: std.ArrayList(BreakPoint), // TODO: switch to linked list (removing items in the middle is needed, while iterating)
 src_loc: ?SrcLoc,
-addr_range: ?[2]u64,
+addr_range: ?AddrRange,
 call_stack: []CallFrame,
-regs: Registers,
 watched_vars: std.ArrayList(Dwarf.Variable),
+
+pub const AddrRange = struct {
+    start: usize, // inclusize
+    end: usize, // exclusive
+
+    pub fn contains(self: AddrRange, addr: usize) bool {
+        return self.start <= addr and addr < self.end;
+    }
+};
 
 pub const CallFrame = struct {
     addr: usize,
@@ -43,7 +51,6 @@ pub fn init(allocator: Allocator, exec_path: []const u8) !Session {
         .src_loc = null,
         .addr_range = null,
         .call_stack = &[0]CallFrame{},
-        .regs = undefined,
         .watched_vars = std.ArrayList(Dwarf.Variable).init(allocator),
     };
 
@@ -102,10 +109,11 @@ pub fn unpause(self: *Session) !void {
     self.src_loc = null;
     self.addr_range = null;
 
+    const regs = try self.getRegisters();
     // if we're resuming from a breakpoint we have to reset it
     for (self.breakpoints.items) |*breakpt| {
-        if (breakpt.addr == self.regs.rip) {
-            std.debug.print("rip is at a breakpoint addr: byte at rip: 0x{x}\n", .{(try self.getBytesAtAddr(self.regs.rip, 4))[0]});
+        if (breakpt.addr == regs.rip) {
+            std.debug.print("rip is at a breakpoint addr: byte at rip: 0x{x}\n", .{(try self.getBytesAtAddr(regs.rip, 4))[0]});
             // first run the instruction we're on, so we can modify it with `int3` for the breakpoint
             try self.stepInstructions(1);
 
@@ -136,8 +144,8 @@ pub fn fullUpdate(self: *Session) !void {
 
     if (try self.getState() != .stopped) return;
 
-    self.regs = try self.getRegisters();
-    self.src_loc = try self.elf.translateAddrToSrc(self.regs.rip);
+    const regs = try self.getRegisters();
+    self.src_loc = try self.elf.translateAddrToSrc(regs.rip);
 
     // calculate address range for the current src location
     if (self.src_loc) |src| {
@@ -157,43 +165,20 @@ pub fn fullUpdate(self: *Session) !void {
 
     // if we're stopped at breakpoint, restore the clobbered byte and fix rip
     for (self.breakpoints.items) |*breakpt| {
-        if (breakpt.addr == self.regs.rip - 1) {
+        if (breakpt.addr == regs.rip - 1) {
             const cc = try self.insertByteAtAddr(breakpt.addr, breakpt.saved_byte);
             std.debug.assert(cc == 0xcc);
-            var new_regs = self.regs;
+            var new_regs = regs;
             new_regs.rip -= 1;
             try self.setRegisters(new_regs);
         }
     }
 
-    self.regs = try self.getRegisters();
-
-    // reset all the breakpoints (except the one we just hit)
-    //for (self.breakpoints.items) |*breakpt| {
-    //    if (breakpt.addr == self.regs.rip) continue;
-    //    const saved = try self.insertByteAtAddr(breakpt.addr, 0xcc);
-    //    if (saved != 0xcc) breakpt.saved_byte = saved;
-    //}
-
-    // update watched vars
-    // TODO
-    //for (self.watched_vars.items) |*var_info| {
-    //    switch (var_info.value) {
-    //        .Float => |*float| {
-    //            //std.debug.print("rbp=0x{x:0>16}, offset={}\n", .{ self.regs.rbp, var_info.rbp_offset });
-    //            const tmp = @intCast(isize, self.regs.rbp) + var_info.rbp_offset;
-    //            if (tmp < 0) continue; // TODO
-    //            const addr = @intCast(usize, tmp);
-    //            const bytes = try self.getBytesAtAddr(addr, 4);
-    //            float.* = @bitCast(f32, std.mem.readIntLittle(u32, &bytes));
-    //            //std.debug.print("rbp_offset={}, addr=0x{x:0>16}, bytes={d}, float={d}\n", .{ var_info.rbp_offset, addr, bytes, float });
-    //        },
-    //    }
-    //}
+    regs = try self.getRegisters();
 
     const proc_file = try self.procMemFile();
     defer proc_file.close();
-    const call_stack = try self.elf.dwarf.callStackAddrs(self.allocator, self.regs.rip, self.regs, proc_file);
+    const call_stack = try self.elf.dwarf.callStackAddrs(self.allocator, regs.rip, regs, proc_file);
     defer self.allocator.free(call_stack);
     if (!(self.call_stack.len == call_stack.len and self.call_stack[0].addr == call_stack[0])) {
         if (self.call_stack.len > 0) self.allocator.free(self.call_stack);
@@ -245,10 +230,12 @@ pub const Value = union(enum) {
 pub fn getVariableValue(self: *Session, variable: Dwarf.Variable) !Value {
     if (try self.getState() != .stopped) return Error.NotStopped;
 
+    const regs = try self.getRegisters();
+
     if (variable.function) |function| {
         const low_pc = function.low_pc orelse return Error.NoVarLocation;
         const high_pc = function.high_pc orelse return Error.NoVarLocation;
-        if (!(low_pc <= self.regs.rip and self.regs.rip < high_pc)) return Error.VarNotAvailable;
+        if (!(low_pc <= regs.rip and regs.rip < high_pc)) return Error.VarNotAvailable;
     } else return Error.NoVarLocation;
 
     // TODO: if we don't have type information assume u64
@@ -273,7 +260,6 @@ pub fn getVariableValue(self: *Session, variable: Dwarf.Variable) !Value {
                         switch (loc) {
                             .expr => |expr| {
                                 const max_registers = @typeInfo(Dwarf.Register).Enum.fields.len;
-                                const regs = self.regs;
                                 // zig fmt: off
                                 var registers: [max_registers]usize = undefined;
                                 std.mem.copy(usize, registers[0..16], &([16]usize {
@@ -347,7 +333,7 @@ pub fn stepLine(self: *Session) !void {
     // TODO: a single src line can have multiple discontiguous address ranges
 
     var rip = (try self.getRegisters()).rip;
-    while (addr_range[0] <= rip and rip < addr_range[1]) {
+    while (addr_range.contains(rip)) {
         try self.stepInstructions(1);
         rip = (try self.getRegisters()).rip;
     }
@@ -397,7 +383,7 @@ pub fn getState(self: *Session) !State {
 }
 
 pub const MemMapInfo = struct {
-    addr_range: [2]usize,
+    addr_range: AddrRange,
     perms: struct {
         read: bool,
         write: bool,
@@ -423,7 +409,7 @@ pub fn getMemMapAtAddr(self: Session, allocator: Allocator, addr: usize) !?MemMa
     }
 
     for (maps) |map| {
-        if (map.addr_range[0] <= addr and addr < map.addr_range[1]) {
+        if (map.addr_range.contains(addr)) {
             var copy_map = map;
             copy_map.path = try allocator.dupe(u8, map.path);
             return copy_map;
@@ -454,7 +440,7 @@ pub fn getMemMaps(self: Session, allocator: Allocator) ![]MemMapInfo {
                 const sep_idx = std.mem.indexOfScalar(u8, str, '-').?;
                 const start = try std.fmt.parseUnsigned(usize, str[0..sep_idx], 16);
                 const end = try std.fmt.parseUnsigned(usize, str[sep_idx + 1 ..], 16);
-                break :blk [2]usize{ start, end };
+                break :blk .{ .start = start, .end = end };
             } else unreachable,
             .perms = if (col_iter.next()) |str| .{
                 .read = str[0] == 'r',

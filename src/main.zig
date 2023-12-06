@@ -128,6 +128,7 @@ pub fn main() !void {
     var func_buf = InputBuf{};
     var func_search = FuzzySearchOptions(FuncSearchCtx, 10).init(allocator);
     defer func_search.deinit();
+    var addr_buf = InputBuf{};
     var mem_view_buf = InputBuf{};
     var mem_view_addr: ?usize = null;
     var file_picker: ?widgets.FilePicker = null;
@@ -259,9 +260,9 @@ pub fn main() !void {
             }
             switch (active_widget_left) {
                 .Process => try showProcessInfo(&ui, &session_cmds, session),
-                .Breakpoints => try doBreakpointUI(&frame_arena, &ui, &session_cmds, session, cwd, &num_buf, &file_buf, &func_buf, &func_search),
+                .Breakpoints => try doBreakpointUI(&frame_arena, &ui, &session_cmds, session, cwd, &num_buf, &file_buf, &func_buf, &addr_buf, &func_search),
                 .Variables => try doVarTable(&frame_arena, &ui, &session_cmds, session, &var_buf, &var_search),
-                .Registers => showRegisters(&ui, session.regs),
+                .Registers => showRegisters(&ui, try session.getRegisters()),
                 .@"Call Stack" => try call_stack_viewer.display(&ui, session.call_stack, session.*),
                 .@"Memory Maps" => try showMemoryMaps(allocator, &ui, session),
                 .@"Memory View" => try doMemoryView(&ui, session, &mem_view_buf, &mem_view_addr),
@@ -306,9 +307,9 @@ pub fn main() !void {
             }
             switch (active_widget_right) {
                 .Process => try showProcessInfo(&ui, &session_cmds, session),
-                .Breakpoints => try doBreakpointUI(&frame_arena, &ui, &session_cmds, session, cwd, &num_buf, &file_buf, &func_buf, &func_search),
+                .Breakpoints => try doBreakpointUI(&frame_arena, &ui, &session_cmds, session, cwd, &num_buf, &file_buf, &func_buf, &addr_buf, &func_search),
                 .Variables => try doVarTable(&frame_arena, &ui, &session_cmds, session, &var_buf, &var_search),
-                .Registers => showRegisters(&ui, session.regs),
+                .Registers => showRegisters(&ui, try session.getRegisters()),
                 .@"Call Stack" => try call_stack_viewer.display(&ui, session.call_stack, session.*),
                 .@"Memory Maps" => try showMemoryMaps(allocator, &ui, session),
                 .@"Memory View" => try doMemoryView(&ui, session, &mem_view_buf, &mem_view_addr),
@@ -431,8 +432,7 @@ fn showProcessInfo(
     }
 
     if (session.addr_range) |range| {
-        ui.labelBoxF("addr_range[0] = 0x{x:0>12}", .{range[0]});
-        ui.labelBoxF("addr_range[1] = 0x{x:0>12}", .{range[1]});
+        ui.labelBoxF("address range: 0x{x:0>12}-0x{x:0>12}", .{ range.start, range.end });
     }
 
     ui.pushStyle(.{ .pref_size = [2]Size{ Size.percent(0.5, 1), Size.text_dim(1) } });
@@ -469,8 +469,8 @@ fn showMemoryMaps(
     try writer.print("------------------------------+------+------------+-------+----------+-----------\n", .{});
     for (maps) |map| {
         try writer.print("0x{x:0>12}-0x{x:0>12} | {c}{c}{c}{c} | 0x{x:0>8} | {x:0>2}:{x:0>2} | {d: >8} | {s}\n", .{
-            map.addr_range[0],
-            map.addr_range[1],
+            map.addr_range.start,
+            map.addr_range.end,
             ([2]u8{ 'r', '-' })[if (map.perms.read) 0 else 1],
             ([2]u8{ 'w', '-' })[if (map.perms.write) 0 else 1],
             ([2]u8{ 'x', '-' })[if (map.perms.execute) 0 else 1],
@@ -511,7 +511,7 @@ fn doMemoryView(
 
         const lines = page_size / 16;
         const bytes_per_line =
-            2 + 8 + 1 // for the hex addr + the ':'
+            2 + 12 + 1 // for the hex addr + the ':'
         + (16 * 2) // for the hex bytes
         + 16 / 2 // for the space before each byte pair
         + 1 // for the middle space
@@ -520,7 +520,7 @@ fn doMemoryView(
         var stream = std.io.fixedBufferStream(&print_buf);
         const writer = stream.writer();
         for (page_buf, 0..) |byte, idx| {
-            if (idx % 16 == 0) try writer.print("0x{x:0>8}:", .{page_addr + idx});
+            if (idx % 16 == 0) try writer.print("0x{x:0>12}:", .{page_addr + idx});
             if (idx % 2 == 0) try writer.print(" ", .{});
             if (idx % 16 == 8) try writer.print(" ", .{});
             try writer.print("{x:0>2}", .{byte});
@@ -988,28 +988,32 @@ fn doDisassemblyWindow(
     session: Session,
     disasm_texts: *std.ArrayList(AsmTextInfo),
 ) !void {
-    const rip = session.regs.rip;
+    const regs = try session.getRegisters();
 
     const disasm_text_idx = blk: for (disasm_texts.items, 0..) |text, i| {
-        if (text.addr_range[0] <= rip and rip < text.addr_range[1])
-            break :blk i;
+        if (text.addr_range.contains(regs.rip)) break :blk i;
     } else null;
 
     const disasm_text = if (disasm_text_idx) |idx| disasm_texts.items[idx] else text_blk: {
-        const function_addr_range = if (session.elf.findFunctionAtAddr(rip)) |func| blk: {
-            if (func.low_pc == null or func.high_pc == null) break :blk null;
-            break :blk [2]usize{ func.low_pc.?, func.high_pc.? };
+        const function_addr_range = if (session.elf.findFunctionAtAddr(regs.rip)) |func| blk: {
+            break :blk Session.AddrRange{
+                .start = func.low_pc orelse break :blk null,
+                .end = func.high_pc orelse break :blk null,
+            };
         } else null;
 
-        const section_addr_range: ?[2]usize = blk: {
+        const section_addr_range: ?Session.AddrRange = blk: {
             var file = try std.fs.cwd().openFile(session.exec_path, .{});
             defer file.close();
             const header = try std.elf.Header.read(file);
             std.debug.assert(header.is_64);
             var sh_iter = header.section_header_iterator(file);
             while (try sh_iter.next()) |shdr| {
-                const addr_range = [2]usize{ shdr.sh_addr, shdr.sh_addr + shdr.sh_size };
-                if (addr_range[0] <= rip and rip < addr_range[1]) break :blk addr_range;
+                const addr_range = Session.AddrRange{
+                    .start = shdr.sh_addr,
+                    .end = shdr.sh_addr + shdr.sh_size,
+                };
+                if (addr_range.contains(regs.rip)) break :blk addr_range;
             }
             break :blk null;
         };
@@ -1019,7 +1023,7 @@ fn doDisassemblyWindow(
         else if (section_addr_range) |section_range|
             section_range
         else blk: {
-            const mem_map = (try session.getMemMapAtAddr(allocator, rip)) orelse return;
+            const mem_map = (try session.getMemMapAtAddr(allocator, regs.rip)) orelse return;
             defer mem_map.deinit(allocator);
             break :blk mem_map.addr_range;
         };
@@ -1027,18 +1031,18 @@ fn doDisassemblyWindow(
         const proc_mem = try session.procMemFile();
         defer proc_mem.close();
 
-        try proc_mem.seekTo(block_addr_range[0]);
-        var mem_block = try allocator.alloc(u8, block_addr_range[1] - block_addr_range[0]);
+        try proc_mem.seekTo(block_addr_range.start);
+        var mem_block = try allocator.alloc(u8, block_addr_range.end - block_addr_range.start);
         defer allocator.free(mem_block);
         std.debug.assert((try proc_mem.read(mem_block)) == mem_block.len);
 
-        const text_info = try generateTextInfoForDisassembly(allocator, mem_block, block_addr_range[0]);
+        const text_info = try generateTextInfoForDisassembly(allocator, mem_block, block_addr_range.start);
         try disasm_texts.append(text_info);
         break :text_blk text_info;
     };
 
     const line_idx = loop: for (disasm_text.line_addrs, 0..) |addr, i| {
-        if (addr == rip) break :loop i;
+        if (addr == regs.rip) break :loop i;
     } else unreachable;
 
     _ = try showDisassemblyWindow(ui, "main_disasm_window", disasm_text, @as(f32, @floatFromInt(line_idx + 1)));
@@ -1140,7 +1144,7 @@ fn textDisplay(
 }
 
 const AsmTextInfo = struct {
-    addr_range: [2]usize,
+    addr_range: Session.AddrRange,
     data: []const u8,
     line_offsets: []const usize, // indices into `data`
     line_addrs: []const usize,
@@ -1230,7 +1234,7 @@ fn generateTextInfoForDisassembly(allocator: Allocator, data: []const u8, data_s
     }
 
     return AsmTextInfo{
-        .addr_range = [2]usize{ data_start_addr, data_start_addr + data_idx },
+        .addr_range = Session.AddrRange{ .start = data_start_addr, .end = data_start_addr + data_idx },
         .data = try text_bytes.toOwnedSlice(),
         .line_offsets = try line_offsets.toOwnedSlice(),
         .line_addrs = try line_addrs.toOwnedSlice(),
@@ -1351,7 +1355,7 @@ fn doVarTable(
                 for (session.elf.dwarf.units, 0..) |unit, unit_idx| {
                     for (unit.functions, 0..) |func, func_idx| {
                         if (func.low_pc == null or func.high_pc == null) continue;
-                        const addr = session.regs.rip;
+                        const addr = (try session.getRegisters()).rip;
                         if (!(addr <= func.low_pc.? and addr < func.high_pc.?)) continue;
                         // params
                         for (func.params) |variable| {
@@ -1441,6 +1445,7 @@ fn doBreakpointUI(
     num_buf: *InputBuf,
     file_buf: *InputBuf,
     func_buf: *InputBuf,
+    addr_buf: *InputBuf,
     func_search: *FuzzySearchOptions(FuncSearchCtx, 10),
 ) !void {
     const set_break_parent = ui.pushLayoutParent("set_break_parent", fill_x_size, .x);
@@ -1526,7 +1531,29 @@ fn doBreakpointUI(
     }
     ui.popParentAssert(set_break_func_parent);
 
-    // TODO: show list of current breakpoints and their status
+    {
+        const break_addr_parent = ui.addNode(.{ .no_id = true }, "", .{
+            .pref_size = fill_x_size,
+            .child_layout_axis = .x,
+        });
+        ui.pushParent(break_addr_parent);
+        defer ui.popParentAssert(break_addr_parent);
+
+        const button_sig = ui.button("Set breakpoint###break_addr");
+        ui.labelBox("Address");
+        ui.pushStyle(text_input_style);
+        const text_input_sig = ui.textInput("break_addr_input", &addr_buf.buffer, &addr_buf.len);
+        _ = ui.popStyle();
+
+        if (button_sig.clicked or text_input_sig.enter_pressed) blk: {
+            const text = addr_buf.slice();
+            if (text.len == 0) break :blk;
+            const addr = std.fmt.parseUnsigned(usize, text, 0) catch break :blk;
+            try session_cmds.append(.{ .set_break_at_addr = addr });
+        }
+    }
+
+    // show list of current breakpoints and their status
     ui.label("Breakpoints:");
     for (session.breakpoints.items) |breakpoint| {
         if (try session.elf.translateAddrToSrc(breakpoint.addr)) |src| {
