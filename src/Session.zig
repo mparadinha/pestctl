@@ -902,6 +902,20 @@ pub const WaitStatus = struct {
             .ptrace_event = if (had_event) @enumFromInt(third_byte) else null,
         };
     }
+
+    pub fn wait(pid: pid_t) WaitStatus {
+        var status: u32 = 0;
+        const wait_ret = std.os.linux.waitpid(pid, &status, 0);
+        _ = wait_ret;
+        return WaitStatus.parse(status);
+    }
+
+    pub fn get(pid: pid_t) WaitStatus {
+        var status: u32 = 0;
+        const wait_ret = std.os.linux.waitpid(pid, &status, c.WNOHANG);
+        _ = wait_ret;
+        return WaitStatus.parse(status);
+    }
 };
 
 pub fn getWaitStatus(pid: pid_t) !WaitStatus {
@@ -926,17 +940,16 @@ pub const waitpid_error = error{
     EINVAL,
 };
 
-pub fn waitpid(pid: pid_t, wstatus: *u32, options: u32) waitpid_error!pid_t {
+pub fn waitpid(pid: pid_t, wstatus: *u32, options: u32) !pid_t {
     const wait_ret = std.os.linux.waitpid(pid, wstatus, options);
     const errno = std.os.linux.getErrno(wait_ret);
-    switch (errno) {
-        .SUCCESS => {},
-        .CHILD => return waitpid_error.ECHILD,
-        .INTR => return waitpid_error.EINTR,
-        .INVAL => return waitpid_error.EINVAL,
+    return switch (errno) {
+        .SUCCESS => @intCast(wait_ret),
+        .CHILD => return error.CHILD,
+        .INTR => return error.INTR,
+        .INVAL => return error.INVAL,
         else => std.debug.panic("invalid errno={} for waitpid\n", .{errno}),
-    }
-    return @intCast(wait_ret);
+    };
 }
 
 // from the table in `man 7 signal`

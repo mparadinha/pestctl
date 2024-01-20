@@ -2,8 +2,13 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const pid_t = std.os.pid_t;
 const stringToEnum = std.meta.stringToEnum;
+const c = @import("src/c.zig");
 const Elf = @import("src/Elf.zig");
 const Dwarf = @import("src/Dwarf.zig");
+const Session = @import("src/Session.zig");
+const WaitStatus = Session.WaitStatus;
+const Signal = Session.Signal;
+const sendSignal = Session.sendSignal;
 
 pub fn main() !void {
     const allocator = std.heap.c_allocator;
@@ -41,7 +46,7 @@ pub fn main() !void {
             .quit => done = true,
             .pause => {
                 // TODO: if already running: do nothing (or else calling waitpid will hang)
-                try Signal.send(pid, .SIGSTOP);
+                try sendSignal(pid, .SIGSTOP);
                 std.debug.assert(WaitStatus.wait(pid).stop_signal.? == .SIGSTOP);
             },
             .@"continue" => {
@@ -56,7 +61,7 @@ pub fn main() !void {
             },
             .send => |arg| {
                 if (stringToEnum(Signal, arg)) |sig| {
-                    try Signal.send(pid, sig);
+                    try sendSignal(pid, sig);
                 } else std.debug.print("unknown signal '{s}'\n", .{arg});
             },
             .sig_info => {
@@ -225,45 +230,6 @@ pub const WaitStatus = struct {
         const wait_ret = std.os.linux.waitpid(pid, &status, c.WNOHANG);
         _ = wait_ret;
         return WaitStatus.parse(status);
-    }
-};
-
-// from the table in `man 7 signal`
-pub const Signal = enum(u8) {
-    SIGHUP = 1,
-    SIGINT = 2,
-    SIGQUIT = 3,
-    SIGILL = 4,
-    SIGTRAP = 5,
-    SIGABRT = 6,
-    SIGBUS = 7,
-    SIGFPE = 8,
-    SIGKILL = 9,
-    SIGUSR1 = 10,
-    SIGSEGV = 11,
-    SIGUSR2 = 12,
-    SIGPIPE = 13,
-    SIGALRM = 14,
-    SIGTERM = 15,
-    SIGSTKFLT = 16,
-    SIGCHLD = 17,
-    SIGCONT = 18,
-    SIGSTOP = 19,
-    SIGTSTP = 20,
-    SIGTTIN = 21,
-    SIGTTOU = 22,
-    SIGURG = 23,
-    SIGXCPU = 24,
-    SIGXFSZ = 25,
-    SIGVTALRM = 26,
-    SIGPROF = 27,
-    SIGWINCH = 28,
-    SIGIO = 29,
-    SIGPWR = 30,
-    SIGSYS = 31,
-
-    pub fn send(pid: pid_t, sig: Signal) !void {
-        try std.os.kill(pid, @intFromEnum(sig));
     }
 };
 
