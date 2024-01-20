@@ -1,14 +1,14 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const clamp = std.math.clamp;
 const c = @import("c.zig");
-const Window = @import("Window.zig");
-const gl = @import("gl_4v3.zig");
-const gfx = @import("graphics.zig");
-const math = @import("math.zig");
-const vec2 = math.vec2;
-const vec4 = math.vec4;
-const Font = @import("Font.zig");
-const UI = @import("UI.zig");
+const zig_ui = @import("zig-ui");
+const gl = zig_ui.gl;
+const vec2 = zig_ui.vec2;
+const vec4 = zig_ui.vec4;
+const glfw = zig_ui.glfw;
+const Window = zig_ui.Window;
+const UI = zig_ui.UI;
 const Icons = UI.Icons;
 const Size = UI.Size;
 const Session = @import("Session.zig");
@@ -17,8 +17,6 @@ const Dwarf = @import("Dwarf.zig");
 const SrcLoc = Dwarf.SrcLoc;
 const widgets = @import("app_widgets.zig");
 const FuzzyMatcher = @import("fuzzy_matching.zig").FuzzyMatcher;
-
-const glfw = @import("mach-glfw");
 
 const tracy = @import("tracy.zig");
 
@@ -1113,8 +1111,8 @@ fn textDisplay(
     const text_padd = ui.textPadding(label_node);
     var max_offset = text_size - parent_size + vec2{ 2, 2 } * text_padd;
     max_offset = vec2{ @max(max_offset[0], 0), @max(max_offset[1], 0) };
-    x_off.* = std.math.clamp(x_off.*, -max_offset[0], 0);
-    y_off.* = std.math.clamp(y_off.*, -max_offset[1], 0);
+    x_off.* = clamp(x_off.*, -max_offset[0], 0);
+    y_off.* = clamp(y_off.*, -max_offset[1], 0);
 
     label_node.rel_pos = UI.RelativePlacement.simple(vec2{
         x_off.*,

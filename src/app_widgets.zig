@@ -3,10 +3,10 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const math = @import("math.zig");
-const vec2 = math.vec2;
-const vec4 = math.vec4;
-const UI = @import("UI.zig");
+const zig_ui = @import("zig-ui");
+const vec2 = zig_ui.vec2;
+const vec4 = zig_ui.vec4;
+const UI = zig_ui.UI;
 const Size = UI.Size;
 
 // TODO: allow choosing a directory instead of a file?

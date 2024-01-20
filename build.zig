@@ -15,27 +15,20 @@ pub fn build(b: *std.build.Builder) void {
     });
     exe.linkLibC();
     {
-        const glfw_dep = b.dependency("mach_glfw", .{ .target = target, .optimize = .ReleaseSafe });
-        exe.addModule("mach-glfw", glfw_dep.module("mach-glfw"));
-        @import("mach_glfw").link(glfw_dep.builder, exe);
+        const zig_ui_dep = b.dependency("zig_ui", .{ .target = target, .optimize = optimize });
+        const zig_ui_mod = zig_ui_dep.module("zig-ui");
+        exe.linkLibC();
+        exe.addModule("zig-ui", zig_ui_mod);
+        @import("zig_ui").link(zig_ui_dep.builder, exe);
     }
     {
         const zydis_dep = b.dependency("Zydis", .{ .target = target, .optimize = .ReleaseSafe });
         exe.linkLibrary(zydis_dep.artifact("Zydis"));
     }
-    { // stb libs
-        exe.addIncludePath(.{ .path = "src" });
-        exe.addCSourceFiles(&.{"src/stb_impls.c"}, &.{""});
-    }
     { // tracy
         _ = tracy.link(b, exe, if (use_tracy) "tracy" else null);
     }
     b.installArtifact(exe);
-
-    const options = b.addOptions();
-    const this_dir = comptime std.fs.path.dirname(@src().file) orelse ".";
-    options.addOption([]const u8, "resource_dir", this_dir ++ "/resources");
-    exe.addOptions("build_opts", options);
 
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
