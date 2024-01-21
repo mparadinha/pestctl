@@ -3,8 +3,8 @@
     .version = "0.0.1",
     .dependencies = .{
         .zig_ui = .{
-            .url = "https://github.com/mparadinha/zig-ui/archive/7edc6721df4b2d8a74c73c24293a4c0188fa5e64.tar.gz",
-            .hash = "12208de7a90e03602efcccdde9f0dcf21145d7e65400a81fcfd0368d8bef0e05876a",
+            .url = "https://github.com/mparadinha/zig-ui/archive/6fd228f9a6e75cd839ecbc0629f6a2b849d0e862.tar.gz",
+            .hash = "1220aa3ca7312abb56779e0a0b45ced71e1ca2fd5c7ff4caa2edfdb229a6dfb5ad60",
         },
         .Zydis = .{
             .url = "https://github.com/mparadinha/Zydis/archive/refs/heads/master.tar.gz",

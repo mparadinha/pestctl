@@ -24,10 +24,10 @@ const app_style = .{
     .highlight_color = vec4{ 0, 0, 0.5, 1 },
 };
 const text_input_style = .{
-    .pref_size = [2]Size{ Size.percent(1, 0), Size.text_dim(1) },
+    .size = [2]Size{ Size.percent(1, 0), Size.text(1) },
     .bg_color = vec4{ 0.75, 0.75, 0.75, 1 },
 };
-const fill_x_size = Size.fillAxis(.x, Size.by_children(1));
+const fill_x_size = Size.fillAxis(.x, Size.children(1));
 
 pub const CmdlineArgs = struct {
     exec_path: ?[]const u8 = null,
@@ -98,8 +98,8 @@ pub fn main() !void {
 
     var ui = try UI.init(allocator, .{});
     defer ui.deinit();
-    var dbg_ui_view = try UI.DebugView.init(allocator);
-    defer dbg_ui_view.deinit();
+    // var dbg_ui_view = try UI.DebugView.init(allocator);
+    // defer dbg_ui_view.deinit();
 
     ui.base_style.bg_color = vec4{ 0.24, 0.27, 0.31, 1 };
     ui.base_style.border_color = vec4{ 0.5, 0.5, 0.5, 0.75 };
@@ -193,7 +193,7 @@ pub fn main() !void {
         try ui.startBuild(width, height, mouse_pos, &window.event_queue, &window);
 
         {
-            const main_bar_parent = ui.pushLayoutParent("main_bar_parent", fill_x_size, .x);
+            const main_bar_parent = ui.pushLayoutParent(.{}, "main_bar_parent", fill_x_size, .x);
             main_bar_parent.flags.draw_background = true;
             defer ui.popParentAssert(main_bar_parent);
 
@@ -216,7 +216,7 @@ pub fn main() !void {
                 const mem_stats = try getMemoryStats(allocator);
                 if (dt >= 0.020) ui.pushTmpStyle(.{ .text_color = vec4{ 1, 0, 0, 1 } });
                 ui.labelF("#nodes={}, frame_time={d:2.4}ms, mem(ram/virtual/shared): {d:.2}/{d:.2}/{d:.2}, gpa requested bytes: {d:.2}", .{
-                    ui.node_table.key_mappings.items.len,
+                    ui.node_table.count(),
                     dt * 1000,
                     std.fmt.fmtIntSizeBin(mem_stats.in_ram_size),
                     std.fmt.fmtIntSizeBin(mem_stats.virtual_size),
@@ -230,10 +230,10 @@ pub fn main() !void {
             if (ui.iconButton(UI.Icons.cancel).clicked) break;
         }
 
-        const tabs_parent = ui.pushLayoutParent("tabs_parent", Size.flexible(.percent, 1, 1), .x);
+        const tabs_parent = ui.pushLayoutParent(.{}, "tabs_parent", Size.flexible(.percent, 1, 1), .x);
 
         blk: {
-            const left_side_parent = ui.pushLayoutParentFlags(.{
+            const left_side_parent = ui.pushLayoutParent(.{
                 .draw_border = true,
                 .draw_background = true,
             }, "left_side_parent", Size.exact(.percent, 0.5, 1), .y);
@@ -242,8 +242,8 @@ pub fn main() !void {
             const session = if (session_opt) |*s| s else break :blk;
             {
                 const buttons_parent = ui.addNode(.{ .no_id = true }, "", .{
-                    .pref_size = fill_x_size,
-                    .child_layout_axis = .x,
+                    .size = fill_x_size,
+                    .layout_axis = .x,
                 });
                 ui.pushParent(buttons_parent);
                 defer ui.popParentAssert(buttons_parent);
@@ -270,7 +270,7 @@ pub fn main() !void {
         }
 
         blk: {
-            const right_side_parent = ui.pushLayoutParentFlags(.{
+            const right_side_parent = ui.pushLayoutParent(.{
                 .draw_background = true,
             }, "right_side_parent", Size.exact(.percent, 0.5, 1), .y);
             defer ui.popParentAssert(right_side_parent);
@@ -289,8 +289,8 @@ pub fn main() !void {
             const session = if (session_opt) |*s| s else break :blk;
             {
                 const buttons_parent = ui.addNode(.{ .no_id = true }, "", .{
-                    .pref_size = fill_x_size,
-                    .child_layout_axis = .x,
+                    .size = fill_x_size,
+                    .layout_axis = .x,
                 });
                 ui.pushParent(buttons_parent);
                 defer ui.popParentAssert(buttons_parent);
@@ -327,10 +327,10 @@ pub fn main() !void {
         })) {
             try session_cmds.append(.{ .dump_ui_tree = "ui_main_tree.dot" });
         }
-        if (window.event_queue.searchAndRemove(.KeyUp, .{
-            .mods = .{ .control = true, .shift = true },
-            .key = .d,
-        })) dbg_ui_view.active = !dbg_ui_view.active;
+        // if (window.event_queue.searchAndRemove(.KeyUp, .{
+        //     .mods = .{ .control = true, .shift = true },
+        //     .key = .d,
+        // })) dbg_ui_view.active = !dbg_ui_view.active;
 
         const cur_src_loc = if (session_opt) |s| s.src_loc else null;
         var focused_src_loc = cur_src_loc;
@@ -390,7 +390,9 @@ pub fn main() !void {
                 },
                 .dump_ui_tree => |path| {
                     std.debug.print("dumping root tree to {s}\n", .{path});
-                    try ui.dumpNodeTreeGraph(ui.root_node.?, path);
+                    const dump_file = try std.fs.cwd().createFile(path, .{});
+                    defer dump_file.close();
+                    try ui.dumpNodeTreeGraph(ui.root.?, dump_file);
                 },
             }
 
@@ -402,9 +404,9 @@ pub fn main() !void {
         gl.clearColor(clear_color[0], clear_color[1], clear_color[2], clear_color[3]);
         gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
         try ui.render();
-        if (dbg_ui_view.active) {
-            try dbg_ui_view.show(&ui, width, height, mouse_pos, &window.event_queue, &window, dt);
-        }
+        // if (dbg_ui_view.active) {
+        //     try dbg_ui_view.show(&ui, width, height, mouse_pos, &window.event_queue, &window, dt);
+        // }
 
         window.update();
         frame_idx += 1;
@@ -417,7 +419,7 @@ fn showProcessInfo(
     session_cmds: *std.ArrayList(SessionCmd),
     session: *Session,
 ) !void {
-    ui.pushStyle(.{ .pref_size = [2]Size{ Size.percent(1, 1), Size.text_dim(1) } });
+    ui.pushStyle(.{ .size = [2]Size{ Size.percent(1, 1), Size.text(1) } });
     ui.labelBoxF("Child pid: {}", .{session.pid});
     ui.labelBoxF("Child Status: {s}", .{@tagName(try session.getState())});
     if (session.src_loc) |loc| {
@@ -433,7 +435,7 @@ fn showProcessInfo(
         ui.labelBoxF("address range: 0x{x:0>12}-0x{x:0>12}", .{ range.start, range.end });
     }
 
-    ui.pushStyle(.{ .pref_size = [2]Size{ Size.percent(0.5, 1), Size.text_dim(1) } });
+    ui.pushStyle(.{ .size = [2]Size{ Size.percent(0.5, 1), Size.text(1) } });
     if (ui.button("Continue Running").clicked) {
         try session_cmds.append(.{ .continue_execution = {} });
     }
@@ -785,11 +787,11 @@ const FileTab = struct {
     pub fn display(self: *FileTab, ui: *UI, session_cmds: *std.ArrayList(SessionCmd)) !void {
         const trace = tracy.Zone(@src());
         defer trace.End();
-        const file_tab_node = ui.pushLayoutParentFlags(.{
+        const file_tab_node = ui.pushLayoutParent(.{
             .draw_border = true,
         }, "FileTag:top_node", Size.flexible(.percent, 1, 1), .y);
 
-        const buttons_parent = ui.pushLayoutParent("FileTab:buttons_parent", fill_x_size, .x);
+        const buttons_parent = ui.pushLayoutParent(.{}, "FileTab:buttons_parent", fill_x_size, .x);
         for (self.files.items, 0..) |file_info, i| {
             const filename = std.fs.path.basename(file_info.path);
             const highlight_color = if (file_info.focus_box) |_| app_style.highlight_color else vec4{ 1, 0, 0, 1 };
@@ -804,13 +806,13 @@ const FileTab = struct {
             const file = &self.files.items[file_idx];
 
             // line + text parent
-            const file_box_parent = ui.pushLayoutParentFlags(.{
+            const file_box_parent = ui.pushLayoutParent(.{
                 .clip_children = true,
                 .draw_border = true,
             }, "FileTab:text_box_parent", Size.flexible(.percent, 1, 1), .x);
 
-            const line_scroll_size = [2]Size{ Size.by_children(1), Size.percent(1, 0) };
-            const line_scroll_parent = ui.pushLayoutParentFlagsF(.{
+            const line_scroll_size = [2]Size{ Size.children(1), Size.percent(1, 0) };
+            const line_scroll_parent = ui.pushLayoutParentF(.{
                 .scroll_children_y = true,
                 .clip_children = true,
             }, "{s}::line_scroll_parent", .{file.path}, line_scroll_size, .y);
@@ -865,7 +867,7 @@ const FileTab = struct {
                 defer ctx_menu_trace.End();
                 ui.startCtxMenu(null);
                 defer ui.endCtxMenu();
-                const ctx_menu_rect = ui.ctx_menu_root_node.?.rect;
+                const ctx_menu_rect = ui.ctx_menu_root.?.rect;
 
                 const font_pixel_size = ui.topStyle().font_size;
                 const line_size = ui.font.getScaledMetrics(font_pixel_size).line_advance;
@@ -927,7 +929,7 @@ fn doOpenFileBox(
     src_file_buf: *InputBuf,
     src_file_search: *FuzzySearchOptions(SrcFileSearchCtx, 20),
 ) !void {
-    const open_file_parent = ui.pushLayoutParent("open_file_parent", fill_x_size, .x);
+    const open_file_parent = ui.pushLayoutParent(.{}, "open_file_parent", fill_x_size, .x);
     defer ui.popParentAssert(open_file_parent);
     {
         const open_button_sig = ui.button("Open Source File");
@@ -1072,73 +1074,39 @@ fn textDisplay(
     lock_line: ?f32,
     boxes: []const FileTab.SrcBox,
 ) !UI.Signal {
-    const parent = ui.startScrollRegion(label);
-    parent.pref_size = size;
-    const parent_sig = parent.signal;
-    const parent_size = parent.rect.size();
+    // TODO: update this to include scroll-bar when that's implemented in `zig-ui`
+    const parent = ui.pushLayoutParent(.{
+        .scroll_children_x = true,
+        .scroll_children_y = true,
+        .clip_children = true,
+    }, label, size, .y);
+    defer ui.popParentAssert(parent);
+
+    ui.label(text_info.content);
 
     const font_pixel_size = ui.topStyle().font_size;
     const line_size = ui.font.getScaledMetrics(font_pixel_size).line_advance;
 
-    const x_off = &parent.scroll_offset[0];
-    const y_off = &parent.scroll_offset[1];
-    if (lock_line) |line| y_off.* = -line_size * line + parent_size[1] / 2;
+    if (lock_line) |lock| parent.scroll_offset[1] = lock * line_size;
 
-    const total_lines = text_info.line_offsets.len;
-
-    const lines_that_fit = @trunc(parent_size[1] / line_size);
-    const cur_middle_line = @trunc(@max(0, -y_off.* + parent_size[1] / 2) / line_size);
-    const partial_start_line = @as(usize, @intFromFloat(@trunc(@max(0, cur_middle_line - lines_that_fit))));
-    const partial_end_line = @min(@as(usize, @intFromFloat(@trunc(cur_middle_line + lines_that_fit))), total_lines);
-
-    const partial_start_idx = text_info.line_offsets[partial_start_line];
-    const partial_end_idx = if (partial_end_line == total_lines)
-        text_info.content.len
-    else
-        text_info.line_offsets[partial_end_line];
-    const partial_text = text_info.content[partial_start_idx..partial_end_idx];
-
-    const label_node = ui.addNode(.{
-        .no_id = true,
-        .ignore_hash_sep = true,
-        .draw_text = true,
-        .floating_x = true,
-        .floating_y = true,
-    }, partial_text, .{});
-
-    // hack to cut off scrolling at the ends of text
-    const text_size = vec2{ label_node.text_rect.size()[0], line_size * @as(f32, @floatFromInt(total_lines)) };
-    const text_padd = ui.textPadding(label_node);
-    var max_offset = text_size - parent_size + vec2{ 2, 2 } * text_padd;
-    max_offset = vec2{ @max(max_offset[0], 0), @max(max_offset[1], 0) };
-    x_off.* = clamp(x_off.*, -max_offset[0], 0);
-    y_off.* = clamp(y_off.*, -max_offset[1], 0);
-
-    label_node.rel_pos = UI.RelativePlacement.simple(vec2{
-        x_off.*,
-        y_off.* + @as(f32, @floatFromInt(partial_start_line)) * line_size,
-    });
-
+    // TODO: use the functions that alredy exist in UI to calculate text info quickly
     for (boxes) |box| {
-        if (box.min.line == 0 and box.max.line == 0) break;
-
-        const text_y_start = parent.rect.size()[1] - y_off.*;
-        const line_y_start = @max(0, box.min.line - 1) * line_size;
-        const box_y_top = text_y_start - line_y_start - text_padd[1];
-        const box_y_size = @max(1, box.max.line - box.min.line) * line_size;
-
-        const box_node = ui.addNode(.{
+        // TODO: use correct box column for rect size/pos
+        _ = ui.addNode(.{
             .no_id = true,
             .draw_border = true,
             .floating_y = true,
-        }, "", .{});
-        box_node.pref_size = [2]Size{ Size.percent(1, 1), Size.pixels(box_y_size, 1) };
-        box_node.rel_pos.diff[1] = box_y_top - box_y_size;
+        }, "", .{
+            .size = [2]UI.Size{ UI.Size.percent(1, 0), UI.Size.pixels(line_size, 1) },
+            .rel_pos = UI.RelativePlacement{
+                .anchor = .top_right,
+                .target = .top_right,
+                .diff = vec2{ 0, line_size * box.min.line },
+            },
+        });
     }
 
-    ui.endScrollRegion(parent, 0, -max_offset[1]);
-
-    return parent_sig;
+    return parent.signal;
 }
 
 const AsmTextInfo = struct {
@@ -1286,7 +1254,7 @@ const CallStackViewer = struct {
             if (!result.found_existing) result.value_ptr.* = false;
             const is_open_ptr = result.value_ptr;
 
-            const fn_parent = ui.pushLayoutParentF("call_stack_parent_#{}", .{idx}, [2]Size{ Size.by_children(1), Size.by_children(1) }, .x);
+            const fn_parent = ui.pushLayoutParentF(.{}, "call_stack_parent_#{}", .{idx}, [2]Size{ Size.children(1), Size.children(1) }, .x);
             {
                 const fn_name = if (frame.function) |func| func.name orelse "???" else "???";
                 const icon = if (is_open_ptr.*) Icons.up_open else Icons.down_open;
@@ -1320,7 +1288,7 @@ fn doVarTable(
     var_buf: *InputBuf,
     var_search: *FuzzySearchOptions(VarSearchCtx, 10),
 ) !void {
-    const add_var_parent = ui.pushLayoutParent("add_var_parent", fill_x_size, .x);
+    const add_var_parent = ui.pushLayoutParent(.{}, "add_var_parent", fill_x_size, .x);
     {
         //const button_sig = ui.button("Add Variable");
         ui.labelBox("Add Variable");
@@ -1393,13 +1361,13 @@ fn doVarTable(
     }
     ui.popParentAssert(add_var_parent);
 
-    const vars_parent = ui.pushLayoutParent("vars_parent", fill_x_size, .y);
+    const vars_parent = ui.pushLayoutParent(.{}, "vars_parent", fill_x_size, .y);
     {
         const row_size = fill_x_size;
-        const column_box_size = [2]Size{ Size.percent(1.0 / 3.0, 1), Size.text_dim(1) };
-        const table_header_row_parent = ui.pushLayoutParent("table_header_row_parent", row_size, .x);
+        const column_box_size = [2]Size{ Size.percent(1.0 / 3.0, 1), Size.text(1) };
+        const table_header_row_parent = ui.pushLayoutParent(.{}, "table_header_row_parent", row_size, .x);
         {
-            ui.pushStyle(.{ .pref_size = column_box_size });
+            ui.pushStyle(.{ .size = column_box_size });
             ui.labelBox("Variable Name");
             ui.labelBox("Type");
             ui.labelBox("Value");
@@ -1409,11 +1377,11 @@ fn doVarTable(
 
         for (session.watched_vars.items) |var_info| {
             const var_name = var_info.name;
-            const row_parent = ui.pushLayoutParentFlagsF(.{
+            const row_parent = ui.pushLayoutParentF(.{
                 .no_id = true,
             }, "row_parent_{?s}", .{var_name}, row_size, .x);
             {
-                ui.pushStyle(.{ .pref_size = column_box_size });
+                ui.pushStyle(.{ .size = column_box_size });
                 ui.labelBoxF("{?s}", .{var_name});
                 ui.labelBoxF("{s}", .{if (var_info.type) |ty| @tagName(std.meta.activeTag(ty.*)) else "???"});
                 if (session.getVariableValue(var_info)) |value| switch (value) {
@@ -1446,7 +1414,7 @@ fn doBreakpointUI(
     addr_buf: *InputBuf,
     func_search: *FuzzySearchOptions(FuncSearchCtx, 10),
 ) !void {
-    const set_break_parent = ui.pushLayoutParent("set_break_parent", fill_x_size, .x);
+    const set_break_parent = ui.pushLayoutParent(.{}, "set_break_parent", fill_x_size, .x);
     {
         const button_sig = ui.button("Set Breakpoint");
 
@@ -1475,7 +1443,7 @@ fn doBreakpointUI(
     }
     ui.popParentAssert(set_break_parent);
 
-    const set_break_func_parent = ui.pushLayoutParent("set_break_func_parent", fill_x_size, .x);
+    const set_break_func_parent = ui.pushLayoutParent(.{}, "set_break_func_parent", fill_x_size, .x);
     {
         const button_sig = ui.button("Set Breakpoint###set_func_breakpoint");
         _ = button_sig;
@@ -1531,8 +1499,8 @@ fn doBreakpointUI(
 
     {
         const break_addr_parent = ui.addNode(.{ .no_id = true }, "", .{
-            .pref_size = fill_x_size,
-            .child_layout_axis = .x,
+            .size = fill_x_size,
+            .layout_axis = .x,
         });
         ui.pushParent(break_addr_parent);
         defer ui.popParentAssert(break_addr_parent);
@@ -1713,7 +1681,7 @@ fn FuzzySearchOptions(comptime Ctx: type, comptime max_slots: usize) type {
                 .draw_background = true,
             }, "", .{
                 .bg_color = vec4{ 0, 0, 0, 0.85 },
-                .pref_size = [2]Size{ Size.by_children(1), Size.by_children(1) },
+                .size = [2]Size{ Size.children(1), Size.children(1) },
                 .rel_pos = placement,
             });
             ui.pushParent(bg_node);
@@ -1733,8 +1701,8 @@ fn FuzzySearchOptions(comptime Ctx: type, comptime max_slots: usize) type {
                 }, "", .{}, "{s}_opt_btn_{d}", .{ label, idx }, .{
                     .border_color = vec4{ 0, 0, 0, 0 },
                     .cursor_type = .pointing_hand,
-                    .child_layout_axis = .x,
-                    .pref_size = fill_x_size,
+                    .layout_axis = .x,
+                    .size = fill_x_size,
                 });
                 ui.pushParent(button_node);
                 defer ui.popParentAssert(button_node);
@@ -1760,7 +1728,7 @@ fn FuzzySearchOptions(comptime Ctx: type, comptime max_slots: usize) type {
                 ui.pushTmpStyle(.{ .font_size = name_node.font_size * 0.8 });
                 ui.labelF("{s}", .{extra});
                 const extra_node = ui.topParent().last.?;
-                extra_node.pref_size = [2]Size{ Size.text_dim(1), Size.pixels(name_size[1], 1) };
+                extra_node.size = [2]Size{ Size.text(1), Size.pixels(name_size[1], 1) };
                 extra_node.text_color = vec4{
                     name_color[0] * 0.75,
                     name_color[1] * 0.75,
@@ -1823,9 +1791,11 @@ fn FuzzySearchOptions(comptime Ctx: type, comptime max_slots: usize) type {
                 var font = if (is_highlight) &ui.font_bold else &ui.font;
                 var text_color = if (is_highlight) draw_ctx.highlight_color else node.text_color;
 
-                const quad = font.buildQuad(char, node.font_size, &cursor) catch |err| switch (err) {
+                const quads = font.buildQuadsAt(ui.build_arena.allocator(), &.{ char, '_' }, node.font_size, cursor) catch |err| switch (err) {
                     error.OutOfMemory => return error.OutOfMemory,
                 };
+                cursor += quads[1].points[0].pos - quads[0].points[0].pos;
+                const quad = quads[0];
                 var quad_rect = UI.Rect{ .min = quad.points[0].pos, .max = quad.points[2].pos };
                 quad_rect.min += text_pos;
                 quad_rect.max += text_pos;

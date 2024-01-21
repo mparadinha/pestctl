@@ -42,19 +42,20 @@ pub const FilePicker = struct {
 
         {
             const parent = ui.pushLayoutParent(
+                .{},
                 "file picker name/attribs bar",
-                [2]Size{ Size.percent(1, 1), Size.by_children(1) },
+                [2]Size{ Size.percent(1, 1), Size.children(1) },
                 .x,
             );
             defer ui.popParentAssert(parent);
             ui.pushStyle(.{ .border_color = vec4{ 0, 0, 0, 0 } });
             defer _ = ui.popStyle();
             _ = ui.button("Name");
-            parent.last.?.pref_size[0] = Size.percent(1, 0);
+            parent.last.?.size[0] = Size.percent(1, 0);
             _ = ui.button("Size");
-            parent.last.?.pref_size[0] = Size.text_dim(1);
+            parent.last.?.size[0] = Size.text(1);
             _ = ui.button("Modified");
-            parent.last.?.pref_size[0] = Size.text_dim(1);
+            parent.last.?.size[0] = Size.text(1);
             var child = parent.first;
             while (child) |child_node| : (child = child_node.next) {
                 child_node.flags.draw_background = false;
@@ -67,7 +68,7 @@ pub const FilePicker = struct {
             }
         }
 
-        const files_parent = ui.pushLayoutParentFlags(.{
+        const files_parent = ui.pushLayoutParent(.{
             .scroll_children_x = true,
             .scroll_children_y = true,
             .clip_children = true,
@@ -144,7 +145,7 @@ pub const SourceViewer = struct {
 
     pub fn show(self: *SourceViewer, ui: *UI) !void {
         if (self.files.items.len == 0) return;
-        const scroll_parent = ui.pushLayoutParentFlags(.{
+        const scroll_parent = ui.pushLayoutParent(.{
             .draw_background = true,
             .clip_children = true,
             .scroll_children_x = true,
