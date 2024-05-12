@@ -208,7 +208,7 @@ pub fn callStackAddrs(
             .offset => |offset| blk: {
                 const reg_saved_addr = @as(usize, @intCast(@as(isize, @intCast(cfa)) + offset));
                 try proc_mem.seekTo(reg_saved_addr);
-                break :blk try proc_mem.reader().readIntLittle(usize);
+                break :blk try proc_mem.reader().readInt(usize, .little);
             },
             else => std.debug.panic("TODO: {}\n", .{std.meta.activeTag(rules.regs[frame.return_address_register])}),
         };
@@ -221,7 +221,7 @@ pub fn callStackAddrs(
                 .offset => |offset| {
                     const reg_saved_addr = @as(usize, @intCast(@as(isize, @intCast(cfa)) + offset));
                     try proc_mem.seekTo(reg_saved_addr);
-                    const reg_value = try proc_mem.reader().readIntLittle(usize);
+                    const reg_value = try proc_mem.reader().readInt(usize, .little);
                     regs.getPtr(@as(Register, @enumFromInt(i))).* = reg_value;
                 },
                 else => std.debug.panic("TODO: {}\n", .{std.meta.activeTag(reg)}),
@@ -347,19 +347,19 @@ const LengthField = struct {
 };
 
 pub fn readLengthField(reader: anytype) !LengthField {
-    const initial_len = try reader.readIntLittle(u32);
+    const initial_len = try reader.readInt(u32, .little);
     if (initial_len < 0xffff_fff0) {
         return LengthField{ .length = initial_len, .is_64 = false };
     } else {
         std.debug.assert(initial_len == 0xffff_ffff);
-        return LengthField{ .length = try reader.readIntLittle(u64), .is_64 = true };
+        return LengthField{ .length = try reader.readInt(u64, .little), .is_64 = true };
     }
 }
 
 /// some fields are 4 or 8 bytes depending on which DWARF format is used (32-bit/64-bit respectively)
 pub fn readIs64(reader: anytype, is_64: bool) !usize {
     return if (is_64)
-        @as(usize, @intCast(try reader.readIntLittle(u64)))
+        @as(usize, @intCast(try reader.readInt(u64, .little)))
     else
-        @as(usize, @intCast(try reader.readIntLittle(u32)));
+        @as(usize, @intCast(try reader.readInt(u32, .little)));
 }

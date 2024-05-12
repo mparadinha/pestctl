@@ -96,8 +96,8 @@ pub const ptrace_error = error{
     SRCH,
 };
 
-pub fn ptrace(req: PTRACE.request, pid: std.os.pid_t, _addr: ?*anyopaque, _data: ?*anyopaque) ptrace_error!usize {
-    var addr = if (_addr) |a| @intFromPtr(a) else 0;
+pub fn ptrace(req: PTRACE.request, pid: std.posix.pid_t, _addr: ?*anyopaque, _data: ?*anyopaque) ptrace_error!usize {
+    const addr = if (_addr) |a| @intFromPtr(a) else 0;
     var data = if (_data) |d| @intFromPtr(d) else 0;
 
     // both musl and glibc do this, so I'm doing it too
@@ -114,7 +114,7 @@ pub fn ptrace(req: PTRACE.request, pid: std.os.pid_t, _addr: ?*anyopaque, _data:
         data,
     );
 
-    const errno = std.os.linux.getErrno(ptrace_ret);
+    const errno = std.posix.errno(ptrace_ret);
     switch (errno) {
         .SUCCESS => {},
         .BUSY => return ptrace_error.BUSY,

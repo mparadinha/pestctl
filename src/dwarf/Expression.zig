@@ -57,21 +57,21 @@ pub fn executeOp(
     frame_base_reg_idx: usize,
 ) !void {
     switch (op) {
-        DW.OP.addr => try self.stack.push(try reader.readIntLittle(usize)),
+        DW.OP.addr => try self.stack.push(try reader.readInt(usize, .little)),
         DW.OP.deref => {
             std.debug.panic("TODO: {s}\n", .{DW.OP.asStr(op)});
             const addr = (try self.stack.pop()).generic;
             _ = addr;
             try self.stack.push(@as(usize, undefined));
         },
-        DW.OP.const1u => try self.stack.push(try reader.readIntLittle(u8)),
-        DW.OP.const1s => try self.stack.push(try reader.readIntLittle(i8)),
-        DW.OP.const2u => try self.stack.push(try reader.readIntLittle(u16)),
-        DW.OP.const2s => try self.stack.push(try reader.readIntLittle(i16)),
-        DW.OP.const4u => try self.stack.push(try reader.readIntLittle(u32)),
-        DW.OP.const4s => try self.stack.push(try reader.readIntLittle(i32)),
-        DW.OP.const8u => try self.stack.push(try reader.readIntLittle(u64)),
-        DW.OP.const8s => try self.stack.push(try reader.readIntLittle(i64)),
+        DW.OP.const1u => try self.stack.push(try reader.readInt(u8, .little)),
+        DW.OP.const1s => try self.stack.push(try reader.readInt(i8, .little)),
+        DW.OP.const2u => try self.stack.push(try reader.readInt(u16, .little)),
+        DW.OP.const2s => try self.stack.push(try reader.readInt(i16, .little)),
+        DW.OP.const4u => try self.stack.push(try reader.readInt(u32, .little)),
+        DW.OP.const4s => try self.stack.push(try reader.readInt(i32, .little)),
+        DW.OP.const8u => try self.stack.push(try reader.readInt(u64, .little)),
+        DW.OP.const8s => try self.stack.push(try reader.readInt(i64, .little)),
         DW.OP.constu => try self.stack.push(try std.leb.readULEB128(usize, reader)),
         DW.OP.consts => try self.stack.push(try std.leb.readILEB128(isize, reader)),
         DW.OP.dup => try self.stack.pushElement(try self.stack.top()),
@@ -102,7 +102,7 @@ pub fn executeOp(
         DW.OP.abs => {
             const value = (try self.stack.pop()).generic;
             const signed: isize = @bitCast(value);
-            try self.stack.push(try std.math.absInt(signed));
+            try self.stack.push(@abs(signed));
         },
         DW.OP.@"and" => {
             const value_one = (try self.stack.pop()).generic;
@@ -176,7 +176,7 @@ pub fn executeOp(
             try self.stack.push(value_two ^ value_one);
         },
         DW.OP.bra => {
-            const offset = try reader.readIntLittle(i16);
+            const offset = try reader.readInt(i16, .little);
             const stack_top = (try self.stack.pop()).generic;
             if (stack_top != 0) try reader.context.seekBy(offset);
         },
@@ -211,7 +211,7 @@ pub fn executeOp(
             try self.stack.push(@as(usize, if (value_two != value_one) 1 else 0));
         },
         DW.OP.skip => {
-            const offset = try reader.readIntLittle(i16);
+            const offset = try reader.readInt(i16, .little);
             try reader.context.seekBy(offset);
         },
         // zig fmt: off

@@ -160,7 +160,7 @@ pub const Type = union(enum) {
 /// end of the debug unit that starts at `offset`
 pub fn getSectionSize(debug_info: []const u8, offset: usize) !usize {
     var stream = std.io.fixedBufferStream(debug_info[offset..]);
-    var reader = stream.reader();
+    const reader = stream.reader();
     return (try readLengthField(reader)).fullLength();
 }
 
@@ -192,7 +192,7 @@ pub fn init(
     self.is_64 = length.is_64;
     const section_size = (try stream.getPos()) + unit_len;
 
-    self.version = try reader.readIntLittle(u16);
+    self.version = try reader.readInt(u16, .little);
     if (self.version < 4) std.debug.panic("debug_info unit @ offset=0x{x} has version={}\n", .{ offset, self.version });
 
     self.unit_type = if (self.version >= 5) try reader.readByte() else DW.UT.compile;
@@ -201,9 +201,9 @@ pub fn init(
     // WHY WOULD YOU SWITCH THE ORDER OF THESE BETWEEN VERSION!!!!!????
     if (self.version >= 5) {
         self.address_size = try reader.readByte();
-        self.abbrev_offset = if (self.is_64) try reader.readIntLittle(u64) else try reader.readIntLittle(u32);
+        self.abbrev_offset = if (self.is_64) try reader.readInt(u64, .little) else try reader.readInt(u32, .little);
     } else if (self.version == 4) {
-        self.abbrev_offset = if (self.is_64) try reader.readIntLittle(u64) else try reader.readIntLittle(u32);
+        self.abbrev_offset = if (self.is_64) try reader.readInt(u64, .little) else try reader.readInt(u32, .little);
         self.address_size = try reader.readByte();
     } else unreachable;
 
@@ -295,8 +295,8 @@ fn readAbbrevTable(self: *DebugUnit, debug_abbrev: []const u8) !void {
 
     var code = try std.leb.readULEB128(usize, reader);
     while (code != 0) : (code = try std.leb.readULEB128(u16, reader)) {
-        var tag = try std.leb.readULEB128(u16, reader);
-        var has_children = (try reader.readByte()) == DW.CHILDREN.yes;
+        const tag = try std.leb.readULEB128(u16, reader);
+        const has_children = (try reader.readByte()) == DW.CHILDREN.yes;
 
         var attribs = std.ArrayList(Attrib).init(self.allocator);
         while (true) {
@@ -328,7 +328,7 @@ fn readAbbrevTable(self: *DebugUnit, debug_abbrev: []const u8) !void {
     // these codes have no obligations as to size or order of declaration) some items
     // in the abbrev list will be garbage that we need to init to null entries
     for (self.abbrevs, 0..) |*abbrev, i| {
-        var is_undef = std.mem.indexOfScalar(usize, valid_codes.items, i) == null;
+        const is_undef = std.mem.indexOfScalar(usize, valid_codes.items, i) == null;
         if (is_undef) abbrev.* = .{
             .tag = undefined,
             .has_children = false,
@@ -339,7 +339,7 @@ fn readAbbrevTable(self: *DebugUnit, debug_abbrev: []const u8) !void {
 
 fn getCompilationDir(self: *DebugUnit, debug_str: []const u8, debug_line_str: []const u8) ![]const u8 {
     var stream = std.io.fixedBufferStream(self.entries_buf);
-    var reader = stream.reader();
+    const reader = stream.reader();
 
     const skip_info = forms.SkipInfo{
         .address_size = self.address_size,
@@ -1328,7 +1328,7 @@ fn StructFromFieldInfos(comptime field_infos: []const FieldInfo) type {
         };
     }
     const inner_constructed_type = @Type(std.builtin.Type{ .Struct = .{
-        .layout = .Auto,
+        .layout = .auto,
         .fields = &inner_fields,
         .decls = &[0]std.builtin.Type.Declaration{},
         .is_tuple = false,
@@ -1354,7 +1354,7 @@ fn StructFromFieldInfos(comptime field_infos: []const FieldInfo) type {
     };
 
     const constructed = std.builtin.Type{ .Struct = .{
-        .layout = .Auto,
+        .layout = .auto,
         .fields = &fields,
         .decls = &[0]std.builtin.Type.Declaration{},
         .is_tuple = false,

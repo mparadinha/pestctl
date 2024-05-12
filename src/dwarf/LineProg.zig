@@ -55,7 +55,7 @@ pub const State = struct {
 /// end of the .debug_line "section" that starts at `offset`
 pub fn getSectionSize(debug_line: []const u8, offset: usize) !usize {
     var stream = std.io.fixedBufferStream(debug_line[offset..]);
-    var reader = stream.reader();
+    const reader = stream.reader();
     const length = try readLengthField(reader);
     return if (length.is_64) 4 + 8 + length.length else 4 + length.length;
 }
@@ -74,12 +74,12 @@ pub fn init(allocator: Allocator, debug_line: []const u8, offset: usize, debug_l
     const section_size = (try stream.getPos()) + unit_len;
     self.raw_data = debug_line[offset .. offset + section_size];
 
-    self.version = try reader.readIntLittle(u16);
+    self.version = try reader.readInt(u16, .little);
     self.address_size = if (self.version >= 5) try reader.readByte() else 8;
     self.segment_selector_size = if (self.version >= 5) try reader.readByte() else @as(u8, 0);
     if (is_64) {
-        _ = try reader.readIntLittle(u64);
-    } else _ = try reader.readIntLittle(u32);
+        _ = try reader.readInt(u64, .little);
+    } else _ = try reader.readInt(u32, .little);
     self.min_instr_len = try reader.readByte();
     self.max_ops_per_instr = try reader.readByte();
     self.default_is_stmt = (try reader.readByte()) != 0;
@@ -140,7 +140,7 @@ pub fn init(allocator: Allocator, debug_line: []const u8, offset: usize, debug_l
         const EntryFormat = struct { content_type: u16, form: u16 };
 
         const dir_entry_format_count = try reader.readByte();
-        var dir_entry_formats = try self.allocator.alloc(EntryFormat, dir_entry_format_count);
+        const dir_entry_formats = try self.allocator.alloc(EntryFormat, dir_entry_format_count);
         defer self.allocator.free(dir_entry_formats);
         for (dir_entry_formats) |*format| {
             format.content_type = try std.leb.readULEB128(u16, reader);
@@ -153,7 +153,7 @@ pub fn init(allocator: Allocator, debug_line: []const u8, offset: usize, debug_l
             for (dir_entry_formats) |format| {
                 // TODO: use the readXXX for these forms
                 if (format.content_type == DW.LNCT.path and format.form == DW.FORM.line_strp) {
-                    const strp = if (is_64) try reader.readIntLittle(u64) else @as(u64, @intCast(try reader.readIntLittle(u32)));
+                    const strp = if (is_64) try reader.readInt(u64, .little) else @as(u64, @intCast(try reader.readInt(u32, .little)));
                     dir.* = stringFromTable(debug_line_str, strp);
                     break;
                 }
@@ -163,7 +163,7 @@ pub fn init(allocator: Allocator, debug_line: []const u8, offset: usize, debug_l
         }
 
         const file_entry_format_count = try reader.readByte();
-        var file_entry_formats = try self.allocator.alloc(EntryFormat, file_entry_format_count);
+        const file_entry_formats = try self.allocator.alloc(EntryFormat, file_entry_format_count);
         defer self.allocator.free(file_entry_formats);
         for (file_entry_formats) |*format| {
             format.content_type = try std.leb.readULEB128(u16, reader);
@@ -188,7 +188,7 @@ pub fn init(allocator: Allocator, debug_line: []const u8, offset: usize, debug_l
                             break :blk self.raw_data[str_start .. str_start + strlen];
                         },
                         DW.FORM.line_strp => blk: {
-                            const strp = if (is_64) try reader.readIntLittle(u64) else @as(u64, @intCast(try reader.readIntLittle(u32)));
+                            const strp = if (is_64) try reader.readInt(u64, .little) else @as(u64, @intCast(try reader.readInt(u32, .little)));
                             break :blk stringFromTable(debug_line_str, strp);
                         },
                         DW.FORM.strp => std.debug.panic("need to pass .debug_str in\n", .{}),
@@ -199,15 +199,15 @@ pub fn init(allocator: Allocator, debug_line: []const u8, offset: usize, debug_l
                 } else if (format.content_type == DW.LNCT.directory_index) {
                     file.dir = switch (format.form) {
                         DW.FORM.data1 => @as(usize, @intCast(try reader.readByte())),
-                        DW.FORM.data2 => @as(usize, @intCast(try reader.readIntLittle(u16))),
+                        DW.FORM.data2 => @as(usize, @intCast(try reader.readInt(u16, .little))),
                         DW.FORM.udata => try std.leb.readULEB128(usize, reader),
                         else => std.debug.panic("invalid FORM 0x{x} for directory index\n", .{format.form}),
                     };
                 } else if (format.content_type == DW.LNCT.timestamp) {
                     file.mod_time = switch (format.form) {
                         DW.FORM.udata => try std.leb.readULEB128(u64, reader),
-                        DW.FORM.data4 => @as(u64, @intCast(try reader.readIntLittle(u32))),
-                        DW.FORM.data8 => try reader.readIntLittle(u64),
+                        DW.FORM.data4 => @as(u64, @intCast(try reader.readInt(u32, .little))),
+                        DW.FORM.data8 => try reader.readInt(u64, .little),
                         DW.FORM.block => std.debug.panic("TODO: implement block for timestamp\n", .{}),
                         else => std.debug.panic("invalid FORM 0x{x} for timestamp\n", .{format.form}),
                     };
@@ -215,9 +215,9 @@ pub fn init(allocator: Allocator, debug_line: []const u8, offset: usize, debug_l
                     file.len = switch (format.form) {
                         DW.FORM.udata => try std.leb.readULEB128(u64, reader),
                         DW.FORM.data1 => @as(u64, @intCast(try reader.readByte())),
-                        DW.FORM.data2 => @as(u64, @intCast(try reader.readIntLittle(u16))),
-                        DW.FORM.data4 => @as(u64, @intCast(try reader.readIntLittle(u32))),
-                        DW.FORM.data8 => try reader.readIntLittle(u64),
+                        DW.FORM.data2 => @as(u64, @intCast(try reader.readInt(u16, .little))),
+                        DW.FORM.data4 => @as(u64, @intCast(try reader.readInt(u32, .little))),
+                        DW.FORM.data8 => try reader.readInt(u64, .little),
                         else => std.debug.panic("invalid FORM 0x{x} for file len\n", .{format.form}),
                     };
                 } else {
@@ -253,7 +253,7 @@ pub fn init(allocator: Allocator, debug_line: []const u8, offset: usize, debug_l
     self.file_line_range = .{ std.math.maxInt(u32), 0 };
     var state = self.initialState();
     var op_stream = std.io.fixedBufferStream(self.ops);
-    var op_reader = op_stream.reader();
+    const op_reader = op_stream.reader();
     while ((try op_stream.getPos()) < self.ops.len) {
         const new_row = try self.updateState(&state, op_reader);
         if (new_row) |row| {
@@ -281,7 +281,7 @@ pub fn initialState(self: LineProg) State {
 pub fn findAddrForSrc(self: LineProg, file: u32, line: u32) !?State {
     var state = self.initialState();
     var stream = std.io.fixedBufferStream(self.ops);
-    var reader = stream.reader();
+    const reader = stream.reader();
     while ((try stream.getPos()) < self.ops.len) {
         const new_row = try self.updateState(&state, reader);
         if (new_row) |row| {
@@ -296,7 +296,7 @@ pub fn findAddrRangeForSrc(self: LineProg, file: u32, line: u32) !?[2]u64 {
     var start_addr = @as(?u64, null);
     var state = self.initialState();
     var stream = std.io.fixedBufferStream(self.ops);
-    var reader = stream.reader();
+    const reader = stream.reader();
     while ((try stream.getPos()) < self.ops.len) {
         const new_row = try self.updateState(&state, reader);
         if (new_row) |row| {
@@ -312,7 +312,7 @@ pub fn findAddrRangeForSrc(self: LineProg, file: u32, line: u32) !?[2]u64 {
 pub fn findAddr(self: LineProg, addr: usize, check_stmt: bool) !?State {
     var state = self.initialState();
     var stream = std.io.fixedBufferStream(self.ops);
-    var reader = stream.reader();
+    const reader = stream.reader();
     while ((try stream.getPos()) < self.ops.len) {
         const new_row = try self.updateState(&state, reader);
         if (new_row) |row| {
@@ -342,8 +342,8 @@ pub fn updateState(self: LineProg, state: *State, reader: anytype) !?State {
             },
             DW.LNE.set_address => {
                 state.address = switch (self.address_size) {
-                    4 => try reader.readIntLittle(u32),
-                    8 => try reader.readIntLittle(u64),
+                    4 => try reader.readInt(u32, .little),
+                    8 => try reader.readInt(u64, .little),
                     else => std.debug.panic("invalid address size {}\n", .{self.address_size}),
                 };
             },
@@ -381,7 +381,7 @@ pub fn updateState(self: LineProg, state: *State, reader: anytype) !?State {
                 state.op_index = (state.op_index + operation_advance) % self.max_ops_per_instr;
             },
             DW.LNS.fixed_advance_pc => {
-                state.address += try reader.readIntLittle(u16);
+                state.address += try reader.readInt(u16, .little);
                 state.op_index = 0;
             },
             DW.LNS.set_prologue_end => state.prologue_end = true,
@@ -439,7 +439,7 @@ pub fn dump(self: LineProg) !void {
     std.debug.print("full matrix:\n", .{});
     var state = State{ .is_stmt = self.default_is_stmt };
     var stream = std.io.fixedBufferStream(self.ops);
-    var reader = stream.reader();
+    const reader = stream.reader();
     var op_idx: usize = 0;
     while ((try stream.getPos()) < self.ops.len) : (op_idx += 1) {
         const new_row = try self.updateState(&state, reader);

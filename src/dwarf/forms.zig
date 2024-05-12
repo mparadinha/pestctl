@@ -26,8 +26,8 @@ pub const ReaderType = std.io.FixedBufferStream([]const u8).Reader;
 pub fn readAddress(read_info: ReadInfo, reader: ReaderType, form: u16) !usize {
     switch (form) {
         DW.FORM.addr => switch (read_info.address_size) {
-            4 => return @as(usize, @intCast(try reader.readIntLittle(u32))),
-            8 => return @as(usize, @intCast(try reader.readIntLittle(u64))),
+            4 => return @as(usize, @intCast(try reader.readInt(u32, .little))),
+            8 => return @as(usize, @intCast(try reader.readInt(u64, .little))),
             else => std.debug.panic("DW_FORM_addr with address_size={}\n", .{read_info.address_size}),
         },
         DW.FORM.addrx, DW.FORM.addrx1, DW.FORM.addrx2, DW.FORM.addrx3, DW.FORM.addrx4 => {
@@ -44,8 +44,8 @@ pub fn readBlock(reader: ReaderType, form: u16) ![]const u8 {
     const block_len = switch (form) {
         DW.FORM.block => try std.leb.readULEB128(usize, reader),
         DW.FORM.block1 => @as(usize, @intCast(try reader.readByte())),
-        DW.FORM.block2 => @as(usize, @intCast(try reader.readIntLittle(u16))),
-        DW.FORM.block4 => @as(usize, @intCast(try reader.readIntLittle(u32))),
+        DW.FORM.block2 => @as(usize, @intCast(try reader.readInt(u16, .little))),
+        DW.FORM.block4 => @as(usize, @intCast(try reader.readInt(u32, .little))),
         else => std.debug.panic("{s} is not a valid block form\n", .{DW.FORM.asStr(form)}),
     };
     const block_start = try reader.context.getPos();
@@ -59,10 +59,10 @@ pub fn readConstant(comptime T: type, read_info: ReadInfo, reader: ReaderType, a
     const form = attrib.form;
     return switch (form) {
         DW.FORM.data1 => @as(T, @intCast(try reader.readByte())),
-        DW.FORM.data2 => @as(T, @intCast(try reader.readIntLittle(u16))),
-        DW.FORM.data4 => @as(T, @intCast(try reader.readIntLittle(u32))),
-        DW.FORM.data8 => @as(T, @intCast(try reader.readIntLittle(u64))),
-        DW.FORM.data16 => @as(T, @intCast(try reader.readIntLittle(u128))),
+        DW.FORM.data2 => @as(T, @intCast(try reader.readInt(u16, .little))),
+        DW.FORM.data4 => @as(T, @intCast(try reader.readInt(u32, .little))),
+        DW.FORM.data8 => @as(T, @intCast(try reader.readInt(u64, .little))),
+        DW.FORM.data16 => @as(T, @intCast(try reader.readInt(u128, .little))),
         DW.FORM.udata => @as(T, @intCast(try std.leb.readULEB128(u128, reader))),
         DW.FORM.sdata => @as(T, @intCast(try std.leb.readILEB128(i128, reader))),
         DW.FORM.implicit_const => @as(T, @intCast(attrib.implicit_value)),
@@ -104,14 +104,14 @@ pub fn readLinePtr(read_info: ReadInfo, reader: ReaderType, form: u16) !usize {
 pub fn readReference(read_info: ReadInfo, reader: ReaderType, form: u16) !usize {
     return switch (form) {
         DW.FORM.ref1 => @as(usize, @intCast(try reader.readByte())),
-        DW.FORM.ref2 => @as(usize, @intCast(try reader.readIntLittle(u16))),
-        DW.FORM.ref4 => @as(usize, @intCast(try reader.readIntLittle(u32))),
-        DW.FORM.ref8 => @as(usize, @intCast(try reader.readIntLittle(u64))),
+        DW.FORM.ref2 => @as(usize, @intCast(try reader.readInt(u16, .little))),
+        DW.FORM.ref4 => @as(usize, @intCast(try reader.readInt(u32, .little))),
+        DW.FORM.ref8 => @as(usize, @intCast(try reader.readInt(u64, .little))),
         DW.FORM.ref_udata => try std.leb.readULEB128(usize, reader),
         DW.FORM.ref_addr => try readIs64(reader, read_info.is_64),
-        DW.FORM.ref_sig8 => @as(usize, @intCast(try reader.readIntLittle(u64))),
-        DW.FORM.ref_sup4 => @as(usize, @intCast(try reader.readIntLittle(u32))),
-        DW.FORM.ref_sup8 => @as(usize, @intCast(try reader.readIntLittle(u64))),
+        DW.FORM.ref_sig8 => @as(usize, @intCast(try reader.readInt(u64, .little))),
+        DW.FORM.ref_sup4 => @as(usize, @intCast(try reader.readInt(u32, .little))),
+        DW.FORM.ref_sup8 => @as(usize, @intCast(try reader.readInt(u64, .little))),
         else => std.debug.panic("{s} is not a valid reference form\n", .{DW.FORM.asStr(form)}),
     };
 }
@@ -144,9 +144,9 @@ pub fn readString(read_info: ReadInfo, reader: ReaderType, form: u16) ![]const u
                 try std.leb.readULEB128(usize, reader)
             else switch (form) {
                 DW.FORM.strx1 => @as(usize, @intCast(try reader.readByte())),
-                DW.FORM.strx2 => @as(usize, @intCast(try reader.readIntLittle(u16))),
-                DW.FORM.strx3 => @as(usize, @intCast(try reader.readIntLittle(u24))),
-                DW.FORM.strx4 => @as(usize, @intCast(try reader.readIntLittle(u32))),
+                DW.FORM.strx2 => @as(usize, @intCast(try reader.readInt(u16, .little))),
+                DW.FORM.strx3 => @as(usize, @intCast(try reader.readInt(u24, .little))),
+                DW.FORM.strx4 => @as(usize, @intCast(try reader.readInt(u32, .little))),
                 else => unreachable,
             };
             const offset_section = read_info.str_offsets_table_opt orelse
@@ -156,7 +156,7 @@ pub fn readString(read_info: ReadInfo, reader: ReaderType, form: u16) ![]const u
             const size: usize = if (offset_is_64) 8 else 4;
             const offset_bytes = offset_section[size * offset_idx .. size * (offset_idx + 1)];
             var offset_stream = std.io.fixedBufferStream(offset_bytes);
-            var offset_reader = offset_stream.reader();
+            const offset_reader = offset_stream.reader();
 
             const offset = try readIs64(offset_reader, offset_is_64);
 
@@ -213,11 +213,11 @@ pub fn skip(skip_info: SkipInfo, reader: anytype, form: u16) !void {
             try reader.skipBytes(skip_len, .{});
         },
         DW.FORM.block2 => {
-            const skip_len = try reader.readIntLittle(u16);
+            const skip_len = try reader.readInt(u16, .little);
             try reader.skipBytes(skip_len, .{});
         },
         DW.FORM.block4 => {
-            const skip_len = try reader.readIntLittle(u32);
+            const skip_len = try reader.readInt(u32, .little);
             try reader.skipBytes(skip_len, .{});
         },
         // constant

@@ -48,7 +48,7 @@ pub fn init(allocator: Allocator, exec_path: []const u8) !Elf {
     self.sections = try self.allocator.alloc(Section, header.shnum);
     var sh_iter = header.section_header_iterator(file);
     for (self.sections) |*section| {
-        var shdr = (try sh_iter.next()) orelse break;
+        const shdr = (try sh_iter.next()) orelse break;
         section.name = stringFromTable(self.string_section, shdr.sh_name);
         section.size = shdr.sh_size;
         section.offset = shdr.sh_offset;
@@ -110,7 +110,7 @@ pub fn translateAddrToSrcSpecial(self: Elf, addr: usize) !?SrcLoc {
             const line_state = line_prog_blk: {
                 var state = prog.initialState();
                 var stream = std.io.fixedBufferStream(prog.ops);
-                var reader = stream.reader();
+                const reader = stream.reader();
                 var last_row = state;
                 while ((try stream.getPos()) < prog.ops.len) {
                     const new_row = try prog.updateState(&state, reader);
@@ -206,7 +206,7 @@ pub const Section = struct {
 
         const saved_filepos = try file.getPos();
 
-        var buf = try allocator.alloc(u8, self.size);
+        const buf = try allocator.alloc(u8, self.size);
         try file.seekTo(self.offset);
         const bytes_read = try file.read(buf);
         std.debug.assert(bytes_read == buf.len);

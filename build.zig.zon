@@ -3,12 +3,17 @@
     .version = "0.0.1",
     .dependencies = .{
         .zig_ui = .{
-            .url = "https://github.com/mparadinha/zig-ui/archive/6fd228f9a6e75cd839ecbc0629f6a2b849d0e862.tar.gz",
-            .hash = "1220aa3ca7312abb56779e0a0b45ced71e1ca2fd5c7ff4caa2edfdb229a6dfb5ad60",
+            .url = "https://github.com/mparadinha/zig-ui/archive/refs/heads/main.tar.gz",
+            .hash = "12201d879ea65e8c78fc44e4a4dc230883bb0a6490b62936993690b42fc182726edd",
         },
-        .Zydis = .{
-            .url = "https://github.com/mparadinha/Zydis/archive/refs/heads/master.tar.gz",
-            .hash = "12207e7a5ec3dd9c02be9efc5969927630b6bf49d603504948853fb294c3209bfc3d",
+        .zydis = .{
+            .url = "https://github.com/zyantific/zydis/archive/refs/heads/master.tar.gz",
+            .hash = "1220f78b19b94ed936500a605b4654ba0a2c8898414924b05842b0a252359cf9597d",
+        },
+        .zycore = .{
+            .url = "https://github.com/zyantific/zycore-c/archive/refs/heads/master.tar.gz",
+            .hash = "1220fa79fc07328380c20b2376c12bf3b276169b6c497912b74e9384618f66e59d12",
         },
     },
+    .paths = .{""},
 }

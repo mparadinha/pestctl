@@ -53,7 +53,7 @@ pub fn rulesForAddr(self: Frame, addr: usize) !State {
     };
 
     var initial_stream = std.io.fixedBufferStream(self.initial_ops);
-    var initial_reader = initial_stream.reader();
+    const initial_reader = initial_stream.reader();
     while ((try initial_stream.getPos()) < self.initial_ops.len) {
         const new_row = try self.updateState(&state, initial_reader, null);
         if (new_row) |row| {
@@ -64,7 +64,7 @@ pub fn rulesForAddr(self: Frame, addr: usize) !State {
     const initial_state = state;
 
     var stream = std.io.fixedBufferStream(self.ops);
-    var reader = stream.reader();
+    const reader = stream.reader();
     while ((try stream.getPos()) < self.ops.len) {
         const new_row = try self.updateState(&state, reader, initial_state);
         if (new_row) |row| {
@@ -99,10 +99,10 @@ pub fn updateState(self: Frame, state: *State, reader: anytype, initial_state: ?
         state.loc += (try reader.readByte()) * self.code_alignment_factor;
         new_state = state.*;
     } else if (instruction == DW.CFA.advance_loc2) {
-        state.loc += (try reader.readIntLittle(u16)) * self.code_alignment_factor;
+        state.loc += (try reader.readInt(u16, .little)) * self.code_alignment_factor;
         new_state = state.*;
     } else if (instruction == DW.CFA.advance_loc4) {
-        state.loc += (try reader.readIntLittle(u32)) * self.code_alignment_factor;
+        state.loc += (try reader.readInt(u32, .little)) * self.code_alignment_factor;
         new_state = state.*;
     }
     // CFA definition instructions

@@ -21,7 +21,7 @@ pub fn FuzzyMatcher(comptime Iterator: type) type {
 
         worker_thread: ?std.Thread,
         mutex: std.Thread.Mutex,
-        worker_should_stop: std.atomic.Atomic(bool),
+        worker_should_stop: std.atomic.Value(bool),
 
         const Self = @This();
 
@@ -46,7 +46,7 @@ pub fn FuzzyMatcher(comptime Iterator: type) type {
                 .search_iterator = iterator,
                 .worker_thread = null,
                 .mutex = .{},
-                .worker_should_stop = std.atomic.Atomic(bool).init(false),
+                .worker_should_stop = std.atomic.Value(bool).init(false),
             };
         }
 
@@ -76,16 +76,16 @@ pub fn FuzzyMatcher(comptime Iterator: type) type {
 
         fn stopWorkerThread(self: *Self) void {
             if (self.worker_thread) |thread| {
-                self.worker_should_stop.store(true, .Monotonic);
+                self.worker_should_stop.store(true, .monotonic);
                 thread.join();
             }
-            self.worker_should_stop.store(false, .Monotonic);
+            self.worker_should_stop.store(false, .monotonic);
         }
 
         pub fn workFn(self: *Self) !void {
             const start = std.time.nanoTimestamp();
             if (self.query.len == 0) return;
-            search_loop: while (!self.worker_should_stop.load(.Monotonic)) {
+            search_loop: while (!self.worker_should_stop.load(.monotonic)) {
                 const next_target = target: {
                     self.mutex.lock();
                     defer self.mutex.unlock();

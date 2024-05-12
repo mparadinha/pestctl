@@ -87,7 +87,7 @@ pub const FilePicker = struct {
             self.path = try std.fs.realpathAlloc(self.allocator, parent_dir);
         }
 
-        var dir = try std.fs.openIterableDirAbsolute(self.path, .{ .access_sub_paths = true });
+        var dir = try std.fs.openDirAbsolute(self.path, .{ .iterate = true });
         defer dir.close();
 
         // TODO: sort entries based on name and other attributes
@@ -167,7 +167,7 @@ pub const SourceViewer = struct {
         };
         const digits_per_line = @floor(std.math.log10(@as(f64, @floatFromInt(number_of_lines)))) + 1;
         const buffer_size = number_of_lines * (1 + @as(usize, @intFromFloat(digits_per_line)));
-        var line_number_bytes = try self.allocator.alloc(u8, buffer_size);
+        const line_number_bytes = try self.allocator.alloc(u8, buffer_size);
         defer self.allocator.free(line_number_bytes);
         var stream = std.io.fixedBufferStream(line_number_bytes);
         for (0..number_of_lines) |line_num| try stream.writer().print("{d}\n", .{line_num});

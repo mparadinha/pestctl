@@ -1,6 +1,6 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const pid_t = std.os.pid_t;
+const pid_t = std.posix.pid_t;
 const c = @import("c.zig");
 const Elf = @import("Elf.zig");
 const Dwarf = @import("Dwarf.zig");
@@ -69,7 +69,7 @@ pub fn deinit(self: *Session) void {
 }
 
 pub fn startTracing(self: *Session) !void {
-    self.pid = try std.os.fork();
+    self.pid = try std.posix.fork();
     if (self.pid == 0) {
         ptrace(.TRACEME, 0, {}) catch unreachable;
         const path_ptr = self.exec_path.ptr;
@@ -262,7 +262,7 @@ pub fn getVariableValue(self: *Session, variable: Dwarf.Variable) !Value {
                                 const max_registers = @typeInfo(Dwarf.Register).Enum.fields.len;
                                 // zig fmt: off
                                 var registers: [max_registers]usize = undefined;
-                                std.mem.copy(usize, registers[0..16], &([16]usize {
+                                @memcpy(registers[0..16], &([16]usize {
                                     regs.rax, regs.rbx, regs.rcx, regs.rdx, regs.rsi, regs.rdi, regs.rbp, regs.rsp,
                                     regs.r8, regs.r9, regs.r10, regs.r11, regs.r12, regs.r13, regs.r14, regs.r15,
                                 }));
@@ -274,7 +274,7 @@ pub fn getVariableValue(self: *Session, variable: Dwarf.Variable) !Value {
                                         const proc_mem = try self.procMemFile();
                                         defer proc_mem.close();
                                         try proc_mem.seekTo(addr);
-                                        const value = try proc_mem.reader().readIntLittle(u32);
+                                        const value = try proc_mem.reader().readInt(u32, .little);
                                         return Value{ .Uint32 = value };
                                     },
                                     .typed => @panic("TODO"),
@@ -941,8 +941,8 @@ pub const waitpid_error = error{
 };
 
 pub fn waitpid(pid: pid_t, wstatus: *u32, options: u32) !pid_t {
-    const wait_ret = std.os.linux.waitpid(pid, wstatus, options);
-    const errno = std.os.linux.getErrno(wait_ret);
+    const wait_ret = std.c.waitpid(pid, @ptrCast(wstatus), @intCast(options));
+    const errno = std.posix.errno(wait_ret);
     return switch (errno) {
         .SUCCESS => @intCast(wait_ret),
         .CHILD => return error.CHILD,
@@ -988,5 +988,5 @@ pub const Signal = enum(u8) {
 };
 
 pub fn sendSignal(pid: pid_t, sig: Signal) !void {
-    try std.os.kill(pid, @intFromEnum(sig));
+    try std.posix.kill(pid, @intFromEnum(sig));
 }

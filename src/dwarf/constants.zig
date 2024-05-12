@@ -1055,7 +1055,7 @@ pub fn dwarfString(comptime T: type, value: u16) []const u8 {
     std.debug.panic("no value 0x{x} in {s}\n", .{ value, "DW_" ++ @typeName(T) });
 }
 
-pub fn dwarfShortString(comptime T: type, value: u16) []const u8 {
+pub fn dwarfShortString(comptime T: type, value: u16) [:0]const u8 {
     @setEvalBranchQuota(10_000);
     inline for (@typeInfo(T).Struct.decls) |decl| {
         const field = @field(T, decl.name);
@@ -1152,7 +1152,7 @@ pub const Class = enum {
             DW.AT.segment => &[_]Class{ .exprloc, .loclist },
             DW.AT.specification => &[_]Class{.reference},
             DW.AT.static_link => &[_]Class{ .exprloc, .loclist },
-            DW.AT.@"type" => &[_]Class{.reference},
+            DW.AT.type => &[_]Class{.reference},
             DW.AT.use_location => &[_]Class{ .exprloc, .loclist },
             DW.AT.variable_parameter => &[_]Class{.flag},
             DW.AT.virtuality => &[_]Class{.constant},
@@ -1213,7 +1213,7 @@ pub const Class = enum {
             DW.AT.call_target_clobbered => &[_]Class{.exprloc},
             DW.AT.call_data_location => &[_]Class{.exprloc},
             DW.AT.call_data_value => &[_]Class{.exprloc},
-            DW.AT.@"noreturn" => &[_]Class{.flag},
+            DW.AT.noreturn => &[_]Class{.flag},
             DW.AT.alignment => &[_]Class{.constant},
             DW.AT.export_symbols => &[_]Class{.flag},
             DW.AT.deleted => &[_]Class{.flag},

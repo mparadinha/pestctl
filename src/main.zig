@@ -83,7 +83,7 @@ pub fn main() !void {
     //const allocator = std.heap.c_allocator;
 
     var cwd_buf: [0x4000]u8 = undefined;
-    const cwd = try std.os.getcwd(&cwd_buf);
+    const cwd = try std.posix.getcwd(&cwd_buf);
 
     const arg_slices = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, arg_slices);
@@ -94,7 +94,7 @@ pub fn main() !void {
     var window = try Window.init(allocator, width, height, "pestctl");
     window.finishSetup();
     defer window.deinit();
-    var clear_color = vec4{ 0.75, 0.36, 0.38, 1 };
+    const clear_color = vec4{ 0.75, 0.36, 0.38, 1 };
 
     var ui = try UI.init(allocator, .{});
     defer ui.deinit();
@@ -115,23 +115,24 @@ pub fn main() !void {
 
     var last_time: f32 = @floatCast(glfw.getTime());
 
-    var src_file_buf = InputBuf{};
-    var src_file_search = FuzzySearchOptions(SrcFileSearchCtx, 20).init(allocator);
-    defer src_file_search.deinit();
-    var num_buf = InputBuf{};
-    var file_buf = InputBuf{};
-    var var_buf = InputBuf{};
-    var var_search = FuzzySearchOptions(VarSearchCtx, 10).init(allocator);
-    defer var_search.deinit();
-    var func_buf = InputBuf{};
-    var func_search = FuzzySearchOptions(FuncSearchCtx, 10).init(allocator);
-    defer func_search.deinit();
-    var addr_buf = InputBuf{};
-    var mem_view_buf = InputBuf{};
-    var mem_view_addr: ?usize = null;
+    var breakpoint_widget = try BreakpointWidget.init(allocator);
+    defer breakpoint_widget.deinit();
     var file_picker: ?widgets.FilePicker = null;
     defer if (file_picker) |picker| picker.deinit();
-    var search_buf = InputBuf{};
+
+    var src_file_backing_buf: [1000]u8 = undefined;
+    var src_file_input = UI.TextInputState.init(&src_file_backing_buf, "");
+    var src_file_search = FuzzySearchOptions(SrcFileSearchCtx, 20).init(allocator);
+    defer src_file_search.deinit();
+    var var_backing_buf: [1000]u8 = undefined;
+    var var_input = UI.TextInputState.init(&var_backing_buf, "");
+    var var_search = FuzzySearchOptions(VarSearchCtx, 10).init(allocator);
+    defer var_search.deinit();
+    var mem_view_backing_buf: [1000]u8 = undefined;
+    var mem_view_input = UI.TextInputState.init(&mem_view_backing_buf, "");
+    var mem_view_addr: ?usize = null;
+    var search_backing_buf: [1000]u8 = undefined;
+    var search_text_input = UI.TextInputState.init(&search_backing_buf, "");
     var file_search_iter = try FileSearchIterator.init(allocator, cwd);
     defer file_search_iter.deinit();
     var test_search = FuzzyMatcher(FileSearchIterator).init(allocator, &file_search_iter);
@@ -258,13 +259,13 @@ pub fn main() !void {
             }
             switch (active_widget_left) {
                 .Process => try showProcessInfo(&ui, &session_cmds, session),
-                .Breakpoints => try doBreakpointUI(&frame_arena, &ui, &session_cmds, session, cwd, &num_buf, &file_buf, &func_buf, &addr_buf, &func_search),
-                .Variables => try doVarTable(&frame_arena, &ui, &session_cmds, session, &var_buf, &var_search),
+                .Breakpoints => try breakpoint_widget.show(&ui, &frame_arena, &session_cmds, session, cwd),
+                .Variables => try doVarTable(&frame_arena, &ui, &session_cmds, session, &var_input, &var_search),
                 .Registers => showRegisters(&ui, try session.getRegisters()),
                 .@"Call Stack" => try call_stack_viewer.display(&ui, session.call_stack, session.*),
                 .@"Memory Maps" => try showMemoryMaps(allocator, &ui, session),
-                .@"Memory View" => try doMemoryView(&ui, session, &mem_view_buf, &mem_view_addr),
-                .Sources => try doSourcesWidget(&frame_arena, &ui, &session_cmds, cwd, &src_file_buf, &src_file_search, &file_tab),
+                .@"Memory View" => try doMemoryView(&ui, session, &mem_view_input, &mem_view_addr),
+                .Sources => try doSourcesWidget(&frame_arena, &ui, &session_cmds, cwd, &src_file_input, &src_file_search, &file_tab),
                 .Assembly => try doDisassemblyWindow(allocator, &ui, session.*, &disasm_texts),
             }
         }
@@ -276,11 +277,9 @@ pub fn main() !void {
             defer ui.popParentAssert(right_side_parent);
             {
                 // show input box
-                ui.pushStyle(text_input_style);
-                _ = ui.textInput("asdlkfjhasdf", &search_buf.buffer, &search_buf.len);
-                _ = ui.popStyle();
+                _ = ui.lineInput("asdlkfjhasdf", UI.Size.percent(1, 0), &search_text_input);
 
-                try test_search.updateSearch(search_buf.slice());
+                try test_search.updateSearch(search_text_input.slice());
 
                 if (pickFuzzyMatches(&ui, &test_search, "test_search", null, null)) |entry|
                     std.debug.print("choose a search entry: {any}\n", .{entry});
@@ -305,13 +304,13 @@ pub fn main() !void {
             }
             switch (active_widget_right) {
                 .Process => try showProcessInfo(&ui, &session_cmds, session),
-                .Breakpoints => try doBreakpointUI(&frame_arena, &ui, &session_cmds, session, cwd, &num_buf, &file_buf, &func_buf, &addr_buf, &func_search),
-                .Variables => try doVarTable(&frame_arena, &ui, &session_cmds, session, &var_buf, &var_search),
+                .Breakpoints => try breakpoint_widget.show(&ui, &frame_arena, &session_cmds, session, cwd),
+                .Variables => try doVarTable(&frame_arena, &ui, &session_cmds, session, &var_input, &var_search),
                 .Registers => showRegisters(&ui, try session.getRegisters()),
                 .@"Call Stack" => try call_stack_viewer.display(&ui, session.call_stack, session.*),
                 .@"Memory Maps" => try showMemoryMaps(allocator, &ui, session),
-                .@"Memory View" => try doMemoryView(&ui, session, &mem_view_buf, &mem_view_addr),
-                .Sources => try doSourcesWidget(&frame_arena, &ui, &session_cmds, cwd, &src_file_buf, &src_file_search, &file_tab),
+                .@"Memory View" => try doMemoryView(&ui, session, &mem_view_input, &mem_view_addr),
+                .Sources => try doSourcesWidget(&frame_arena, &ui, &session_cmds, cwd, &src_file_input, &src_file_search, &file_tab),
                 .Assembly => try doDisassemblyWindow(allocator, &ui, session.*, &disasm_texts),
             }
         }
@@ -488,14 +487,12 @@ fn showMemoryMaps(
 fn doMemoryView(
     ui: *UI,
     session: *Session,
-    mem_view_buf: *InputBuf,
+    mem_view_input: *UI.TextInputState,
     mem_view_addr: *?usize,
 ) !void {
-    ui.pushStyle(text_input_style);
-    const sig = ui.textInput("mem_view_addr", &mem_view_buf.buffer, &mem_view_buf.len);
-    _ = ui.popStyle();
+    const sig = ui.lineInput("mem_view_addr", UI.Size.percent(1, 0), mem_view_input);
     if (sig.enter_pressed) {
-        const addr = try std.fmt.parseUnsigned(usize, mem_view_buf.slice(), 0);
+        const addr = try std.fmt.parseUnsigned(usize, mem_view_input.slice(), 0);
         mem_view_addr.* = addr;
     }
 
@@ -540,11 +537,11 @@ fn doSourcesWidget(
     ui: *UI,
     session_cmds: *std.ArrayList(SessionCmd),
     cwd: []const u8,
-    src_file_buf: *InputBuf,
+    src_file_input: *UI.TextInputState,
     src_file_search: *FuzzySearchOptions(SrcFileSearchCtx, 20),
     file_tab: *FileTab,
 ) !void {
-    try doOpenFileBox(frame_arena, ui, session_cmds, cwd, src_file_buf, src_file_search);
+    try doOpenFileBox(frame_arena, ui, session_cmds, cwd, src_file_input, src_file_search);
     // try file_viewer.show(&ui);
     try file_tab.display(ui, session_cmds);
 }
@@ -604,13 +601,13 @@ const DwarfSearchIterator = struct {
 
 const FileSearchIterator = struct {
     allocator: Allocator,
-    dir: std.fs.IterableDir,
-    walker: std.fs.IterableDir.Walker,
+    dir: std.fs.Dir,
+    walker: std.fs.Dir.Walker,
 
     pub const Context = struct {};
 
     pub fn init(allocator: Allocator, path: []const u8) !FileSearchIterator {
-        const dir = try std.fs.openIterableDirAbsolute(path, .{ .access_sub_paths = true });
+        const dir = try std.fs.openDirAbsolute(path, .{ .iterate = true });
         return .{ .allocator = allocator, .dir = dir, .walker = try dir.walk(allocator) };
     }
 
@@ -668,7 +665,7 @@ fn Buffer(comptime capacity: usize) type {
 
         pub fn write(self: *Self, buf: []const u8) void {
             std.debug.assert(self.len + buf.len <= self.buffer.len);
-            std.mem.copy(u8, self.buffer[self.len..], buf);
+            @memcpy(self.buffer[self.len..], buf);
             self.len += buf.len;
         }
     };
@@ -926,23 +923,21 @@ fn doOpenFileBox(
     ui: *UI,
     session_cmds: *std.ArrayList(SessionCmd),
     cwd: []const u8,
-    src_file_buf: *InputBuf,
+    src_file_input: *UI.TextInputState,
     src_file_search: *FuzzySearchOptions(SrcFileSearchCtx, 20),
 ) !void {
     const open_file_parent = ui.pushLayoutParent(.{}, "open_file_parent", fill_x_size, .x);
     defer ui.popParentAssert(open_file_parent);
     {
         const open_button_sig = ui.button("Open Source File");
-        ui.pushStyle(text_input_style);
-        const text_input_sig = ui.textInput("textinput", &src_file_buf.buffer, &src_file_buf.len);
-        _ = ui.popStyle();
+        const text_input_sig = ui.lineInput("textinput", UI.Size.percent(1, 0), src_file_input);
+        const src_file_slice = src_file_input.slice();
         if (open_button_sig.clicked or text_input_sig.enter_pressed) {
-            try session_cmds.append(.{ .open_src_file = src_file_buf.slice() });
+            try session_cmds.append(.{ .open_src_file = src_file_slice });
         }
-        if (text_input_sig.focused and src_file_buf.len > 0) {
+        if (text_input_sig.focused and src_file_slice.len > 0) {
             const text_input_node = ui.topParent().last.?;
-            const input = src_file_buf.slice();
-
+            const input = src_file_slice;
             if (!std.mem.eql(u8, input, src_file_search.target)) {
                 try src_file_search.resetSearch(input);
 
@@ -953,7 +948,7 @@ fn doOpenFileBox(
                 } else "";
                 const full_dir_path = try std.fs.path.join(frame_arena.allocator(), &.{ cwd, inner_dir });
 
-                var dir = try std.fs.openIterableDirAbsolute(full_dir_path, .{ .access_sub_paths = true });
+                var dir = try std.fs.openDirAbsolute(full_dir_path, .{ .iterate = true });
                 defer dir.close();
                 var dir_iter = dir.iterate();
                 while (try dir_iter.next()) |entry| {
@@ -1032,7 +1027,7 @@ fn doDisassemblyWindow(
         defer proc_mem.close();
 
         try proc_mem.seekTo(block_addr_range.start);
-        var mem_block = try allocator.alloc(u8, block_addr_range.end - block_addr_range.start);
+        const mem_block = try allocator.alloc(u8, block_addr_range.end - block_addr_range.start);
         defer allocator.free(mem_block);
         std.debug.assert((try proc_mem.read(mem_block)) == mem_block.len);
 
@@ -1122,6 +1117,50 @@ const AsmTextInfo = struct {
     }
 };
 
+// HACK: zig for some reason can't translate this macro, which is used internally by some
+// error code defines
+fn ZYAN_MAKE_STATUS(@"error": u32, module: u32, code: u32) u32 {
+    return ((@"error" & 0x01) << 31) |
+        ((module & 0x7FF) << 20) |
+        (code & 0xFFFFF);
+}
+// copied from the `cimport.zig` for zydis
+pub const ZYAN_MODULE_ZYCORE = 0x001;
+pub const ZYAN_MODULE_ZYDIS = 0x002;
+pub const ZYAN_MODULE_ARGPARSE = 0x003;
+pub const ZYAN_STATUS_SUCCESS = ZYAN_MAKE_STATUS(0, ZYAN_MODULE_ZYCORE, 0x00);
+pub const ZYAN_STATUS_FAILED = ZYAN_MAKE_STATUS(1, ZYAN_MODULE_ZYCORE, 0x01);
+pub const ZYAN_STATUS_TRUE = ZYAN_MAKE_STATUS(0, ZYAN_MODULE_ZYCORE, 0x02);
+pub const ZYAN_STATUS_FALSE = ZYAN_MAKE_STATUS(0, ZYAN_MODULE_ZYCORE, 0x03);
+pub const ZYAN_STATUS_INVALID_ARGUMENT = ZYAN_MAKE_STATUS(1, ZYAN_MODULE_ZYCORE, 0x04);
+pub const ZYAN_STATUS_INVALID_OPERATION = ZYAN_MAKE_STATUS(1, ZYAN_MODULE_ZYCORE, 0x05);
+pub const ZYAN_STATUS_ACCESS_DENIED = ZYAN_MAKE_STATUS(1, ZYAN_MODULE_ZYCORE, 0x06);
+pub const ZYAN_STATUS_NOT_FOUND = ZYAN_MAKE_STATUS(1, ZYAN_MODULE_ZYCORE, 0x07);
+pub const ZYAN_STATUS_OUT_OF_RANGE = ZYAN_MAKE_STATUS(1, ZYAN_MODULE_ZYCORE, 0x08);
+pub const ZYAN_STATUS_INSUFFICIENT_BUFFER_SIZE = ZYAN_MAKE_STATUS(1, ZYAN_MODULE_ZYCORE, 0x09);
+pub const ZYAN_STATUS_NOT_ENOUGH_MEMORY = ZYAN_MAKE_STATUS(1, ZYAN_MODULE_ZYCORE, 0x0A);
+pub const ZYAN_STATUS_BAD_SYSTEMCALL = ZYAN_MAKE_STATUS(1, ZYAN_MODULE_ZYCORE, 0x0B);
+pub const ZYAN_STATUS_OUT_OF_RESOURCES = ZYAN_MAKE_STATUS(1, ZYAN_MODULE_ZYCORE, 0x0C);
+pub const ZYAN_STATUS_MISSING_DEPENDENCY = ZYAN_MAKE_STATUS(1, ZYAN_MODULE_ZYCORE, 0x0D);
+pub const ZYAN_STATUS_ARG_NOT_UNDERSTOOD = ZYAN_MAKE_STATUS(1, ZYAN_MODULE_ARGPARSE, 0x00);
+pub const ZYAN_STATUS_TOO_FEW_ARGS = ZYAN_MAKE_STATUS(1, ZYAN_MODULE_ARGPARSE, 0x01);
+pub const ZYAN_STATUS_TOO_MANY_ARGS = ZYAN_MAKE_STATUS(1, ZYAN_MODULE_ARGPARSE, 0x02);
+pub const ZYAN_STATUS_ARG_MISSES_VALUE = ZYAN_MAKE_STATUS(1, ZYAN_MODULE_ARGPARSE, 0x03);
+pub const ZYAN_STATUS_REQUIRED_ARG_MISSING = ZYAN_MAKE_STATUS(1, ZYAN_MODULE_ARGPARSE, 0x04);
+pub const ZYDIS_STATUS_NO_MORE_DATA = ZYAN_MAKE_STATUS(1, ZYAN_MODULE_ZYDIS, 0x00);
+pub const ZYDIS_STATUS_DECODING_ERROR = ZYAN_MAKE_STATUS(1, ZYAN_MODULE_ZYDIS, 0x01);
+pub const ZYDIS_STATUS_INSTRUCTION_TOO_LONG = ZYAN_MAKE_STATUS(1, ZYAN_MODULE_ZYDIS, 0x02);
+pub const ZYDIS_STATUS_BAD_REGISTER = ZYAN_MAKE_STATUS(1, ZYAN_MODULE_ZYDIS, 0x03);
+pub const ZYDIS_STATUS_ILLEGAL_LOCK = ZYAN_MAKE_STATUS(1, ZYAN_MODULE_ZYDIS, 0x04);
+pub const ZYDIS_STATUS_ILLEGAL_LEGACY_PFX = ZYAN_MAKE_STATUS(1, ZYAN_MODULE_ZYDIS, 0x05);
+pub const ZYDIS_STATUS_ILLEGAL_REX = ZYAN_MAKE_STATUS(1, ZYAN_MODULE_ZYDIS, 0x06);
+pub const ZYDIS_STATUS_INVALID_MAP = ZYAN_MAKE_STATUS(1, ZYAN_MODULE_ZYDIS, 0x07);
+pub const ZYDIS_STATUS_MALFORMED_EVEX = ZYAN_MAKE_STATUS(1, ZYAN_MODULE_ZYDIS, 0x08);
+pub const ZYDIS_STATUS_MALFORMED_MVEX = ZYAN_MAKE_STATUS(1, ZYAN_MODULE_ZYDIS, 0x09);
+pub const ZYDIS_STATUS_INVALID_MASK = ZYAN_MAKE_STATUS(1, ZYAN_MODULE_ZYDIS, 0x0A);
+pub const ZYDIS_STATUS_SKIP_TOKEN = ZYAN_MAKE_STATUS(0, ZYAN_MODULE_ZYDIS, 0x0B);
+pub const ZYDIS_STATUS_IMPOSSIBLE_INSTRUCTION = ZYAN_MAKE_STATUS(1, ZYAN_MODULE_ZYDIS, 0x0C);
+
 /// don't forget to call `AsmTextInfo.deinit` when done with it
 fn generateTextInfoForDisassembly(allocator: Allocator, data: []const u8, data_start_addr: usize) !AsmTextInfo {
     const fn_zone = tracy.Zone(@src());
@@ -1147,22 +1186,22 @@ fn generateTextInfoForDisassembly(allocator: Allocator, data: []const u8, data_s
         );
         if (!c.ZYAN_SUCCESS(disassemble_result)) {
             const error_str = switch (disassemble_result) {
-                c.ZYDIS_STATUS_NO_MORE_DATA => "ZYDIS_STATUS_NO_MORE_DATA",
-                c.ZYDIS_STATUS_DECODING_ERROR => "ZYDIS_STATUS_DECODING_ERROR",
-                c.ZYDIS_STATUS_INSTRUCTION_TOO_LONG => "ZYDIS_STATUS_INSTRUCTION_TOO_LONG",
-                c.ZYDIS_STATUS_BAD_REGISTER => "ZYDIS_STATUS_BAD_REGISTER",
-                c.ZYDIS_STATUS_ILLEGAL_LOCK => "ZYDIS_STATUS_ILLEGAL_LOCK",
-                c.ZYDIS_STATUS_ILLEGAL_LEGACY_PFX => "ZYDIS_STATUS_ILLEGAL_LEGACY_PFX",
-                c.ZYDIS_STATUS_ILLEGAL_REX => "ZYDIS_STATUS_ILLEGAL_REX",
-                c.ZYDIS_STATUS_INVALID_MAP => "ZYDIS_STATUS_INVALID_MAP",
-                c.ZYDIS_STATUS_MALFORMED_EVEX => "ZYDIS_STATUS_MALFORMED_EVEX",
-                c.ZYDIS_STATUS_MALFORMED_MVEX => "ZYDIS_STATUS_MALFORMED_MVEX",
-                c.ZYDIS_STATUS_INVALID_MASK => "ZYDIS_STATUS_INVALID_MASK",
-                c.ZYDIS_STATUS_SKIP_TOKEN => "ZYDIS_STATUS_SKIP_TOKEN",
-                c.ZYDIS_STATUS_IMPOSSIBLE_INSTRUCTION => "ZYDIS_STATUS_IMPOSSIBLE_INSTRUCTION",
+                ZYDIS_STATUS_NO_MORE_DATA => "ZYDIS_STATUS_NO_MORE_DATA",
+                ZYDIS_STATUS_DECODING_ERROR => "ZYDIS_STATUS_DECODING_ERROR",
+                ZYDIS_STATUS_INSTRUCTION_TOO_LONG => "ZYDIS_STATUS_INSTRUCTION_TOO_LONG",
+                ZYDIS_STATUS_BAD_REGISTER => "ZYDIS_STATUS_BAD_REGISTER",
+                ZYDIS_STATUS_ILLEGAL_LOCK => "ZYDIS_STATUS_ILLEGAL_LOCK",
+                ZYDIS_STATUS_ILLEGAL_LEGACY_PFX => "ZYDIS_STATUS_ILLEGAL_LEGACY_PFX",
+                ZYDIS_STATUS_ILLEGAL_REX => "ZYDIS_STATUS_ILLEGAL_REX",
+                ZYDIS_STATUS_INVALID_MAP => "ZYDIS_STATUS_INVALID_MAP",
+                ZYDIS_STATUS_MALFORMED_EVEX => "ZYDIS_STATUS_MALFORMED_EVEX",
+                ZYDIS_STATUS_MALFORMED_MVEX => "ZYDIS_STATUS_MALFORMED_MVEX",
+                ZYDIS_STATUS_INVALID_MASK => "ZYDIS_STATUS_INVALID_MASK",
+                ZYDIS_STATUS_SKIP_TOKEN => "ZYDIS_STATUS_SKIP_TOKEN",
+                ZYDIS_STATUS_IMPOSSIBLE_INSTRUCTION => "ZYDIS_STATUS_IMPOSSIBLE_INSTRUCTION",
                 else => std.debug.panic("unknown error code: 0x{x}\n", .{disassemble_result}),
             };
-            if (disassemble_result == c.ZYDIS_STATUS_NO_MORE_DATA) break :asm_loop;
+            if (disassemble_result == ZYDIS_STATUS_NO_MORE_DATA) break :asm_loop;
             std.debug.panic("zyan status code 0x{x}: {s}\n", .{ disassemble_result, error_str });
         }
 
@@ -1285,24 +1324,23 @@ fn doVarTable(
     ui: *UI,
     session_cmds: *std.ArrayList(SessionCmd),
     session: *Session,
-    var_buf: *InputBuf,
+    var_input: *UI.TextInputState,
     var_search: *FuzzySearchOptions(VarSearchCtx, 10),
 ) !void {
     const add_var_parent = ui.pushLayoutParent(.{}, "add_var_parent", fill_x_size, .x);
     {
         //const button_sig = ui.button("Add Variable");
         ui.labelBox("Add Variable");
-        ui.pushStyle(text_input_style);
-        const text_input_sig = ui.textInput("add_var_textinput", &var_buf.buffer, &var_buf.len);
-        _ = ui.popStyle();
+        const text_input_sig = ui.lineInput("add_var_textinput", UI.Size.percent(1, 0), var_input);
         //if (button_sig.clicked or text_input_sig.enter_pressed) {
         //    try session_cmds.append(.{ .add_watched_variable = var_buf.slice() });
         //}
-        if (text_input_sig.focused and var_buf.len > 0) {
+        const var_slice = var_input.slice();
+        if (text_input_sig.focused and var_slice.len > 0) {
             const text_input_node = ui.topParent().last.?;
 
-            if (!std.mem.eql(u8, var_buf.slice(), var_search.target)) {
-                try var_search.resetSearch(var_buf.slice());
+            if (!std.mem.eql(u8, var_slice, var_search.target)) {
+                try var_search.resetSearch(var_slice);
                 // here we only shows/score variables that would be possible to choose
                 // (why? a debug build of the zig compiler has ~700k variables)
                 // always add all the globals
@@ -1402,134 +1440,148 @@ fn doVarTable(
     ui.popParentAssert(vars_parent);
 }
 
-fn doBreakpointUI(
-    frame_arena: *std.heap.ArenaAllocator,
-    ui: *UI,
-    session_cmds: *std.ArrayList(SessionCmd),
-    session: *Session,
-    cwd: []const u8,
-    num_buf: *InputBuf,
-    file_buf: *InputBuf,
-    func_buf: *InputBuf,
-    addr_buf: *InputBuf,
-    func_search: *FuzzySearchOptions(FuncSearchCtx, 10),
-) !void {
-    const set_break_parent = ui.pushLayoutParent(.{}, "set_break_parent", fill_x_size, .x);
-    {
-        const button_sig = ui.button("Set Breakpoint");
+const BreakpointWidget = struct {
+    allocator: Allocator,
+    line_num_input: UI.TextInputState,
+    filename_input: UI.TextInputState,
+    function_input: UI.TextInputState,
+    addr_input: UI.TextInputState,
+    func_search: FuzzySearchOptions(FuncSearchCtx, 10),
 
-        ui.labelBox("Line Number");
-        ui.pushStyle(text_input_style);
-        const line_sig = ui.textInput("src_linenum_textinput", &num_buf.buffer, &num_buf.len);
-        _ = ui.popStyle();
-
-        ui.labelBox("File Name");
-        ui.pushStyle(text_input_style);
-        const file_sig = ui.textInput("src_filename_textinput", &file_buf.buffer, &file_buf.len);
-        _ = ui.popStyle();
-
-        if (button_sig.clicked or line_sig.enter_pressed or file_sig.enter_pressed) blk: {
-            const line = std.fmt.parseUnsigned(u32, num_buf.slice(), 0) catch |err| {
-                std.debug.print("{s}: couldn't parse break line number: '{s}'\n", .{ @errorName(err), num_buf.slice() });
-                break :blk;
-            };
-            try session_cmds.append(.{ .set_break_at_src = .{
-                .dir = try std.fs.path.join(frame_arena.allocator(), &.{ cwd, "src" }),
-                .file = file_buf.slice(),
-                .line = line,
-                .column = 0,
-            } });
-        }
+    pub fn init(allocator: Allocator) !BreakpointWidget {
+        return .{
+            .allocator = allocator,
+            .line_num_input = UI.TextInputState.init(try allocator.alloc(u8, 1000), ""),
+            .filename_input = UI.TextInputState.init(try allocator.alloc(u8, 1000), ""),
+            .function_input = UI.TextInputState.init(try allocator.alloc(u8, 1000), ""),
+            .addr_input = UI.TextInputState.init(try allocator.alloc(u8, 1000), ""),
+            .func_search = FuzzySearchOptions(FuncSearchCtx, 10).init(allocator),
+        };
     }
-    ui.popParentAssert(set_break_parent);
 
-    const set_break_func_parent = ui.pushLayoutParent(.{}, "set_break_func_parent", fill_x_size, .x);
-    {
-        const button_sig = ui.button("Set Breakpoint###set_func_breakpoint");
-        _ = button_sig;
+    pub fn deinit(self: BreakpointWidget) void {
+        self.allocator.free(self.line_num_input.buffer);
+        self.allocator.free(self.filename_input.buffer);
+        self.allocator.free(self.function_input.buffer);
+        self.allocator.free(self.addr_input.buffer);
+        self.func_search.deinit();
+    }
 
-        ui.labelBox("Function");
-        ui.pushStyle(text_input_style);
-        const text_input_sig = ui.textInput("src_funcname", &func_buf.buffer, &func_buf.len);
-        _ = ui.popStyle();
+    pub fn show(
+        self: *BreakpointWidget,
+        ui: *UI,
+        frame_arena: *std.heap.ArenaAllocator,
+        session_cmds: *std.ArrayList(SessionCmd),
+        session: *Session,
+        cwd: []const u8,
+    ) !void {
+        {
+            const set_break_p = ui.pushLayoutParent(.{}, "set_break_parent", fill_x_size, .x);
+            defer ui.popParentAssert(set_break_p);
 
-        //if (button_sig.clicked or func_sig.enter_pressed) {
-        if (text_input_sig.focused and func_buf.len > 0) {
-            const text_input_node = ui.topParent().last.?;
+            const button_sig = ui.button("Set Breakpoint");
+            ui.labelBox("Line Number");
+            const line_sig = ui.lineInput("line_num_textinput", UI.Size.percent(1, 0), &self.line_num_input);
+            ui.labelBox("File Name");
+            const file_sig = ui.lineInput("filename_textinput", UI.Size.percent(1, 0), &self.filename_input);
 
-            if (!std.mem.eql(u8, func_buf.slice(), func_search.target)) {
-                try func_search.resetSearch(func_buf.slice());
-                for (session.elf.dwarf.units, 0..) |unit, unit_idx| {
-                    for (unit.functions, 0..) |func, func_idx| {
-                        if (func.name == null) continue;
-                        func_search.addEntry(func.name.?, .{
-                            .name = func.name.?,
-                            .loc = if (func.decl_coords) |coords|
-                                coords.toSrcLoc(session.elf.dwarf.line_progs[unit_idx])
-                            else
-                                null,
-                            .unit_idx = unit_idx,
-                            .func_idx = func_idx,
-                        });
+            if (button_sig.clicked or line_sig.enter_pressed or file_sig.enter_pressed) blk: {
+                const line_num = self.line_num_input.slice();
+                const line = std.fmt.parseUnsigned(u32, line_num, 0) catch |err| {
+                    std.debug.print("{s}: couldn't parse break line number: '{s}'\n", .{ @errorName(err), line_num });
+                    break :blk;
+                };
+                try session_cmds.append(.{ .set_break_at_src = .{
+                    .dir = try std.fs.path.join(frame_arena.allocator(), &.{ cwd, "src" }),
+                    .file = self.filename_input.slice(),
+                    .line = line,
+                    .column = 0,
+                } });
+            }
+        }
+
+        {
+            const set_break_func_p = ui.pushLayoutParent(.{}, "set_break_func_parent", fill_x_size, .x);
+            defer ui.popParentAssert(set_break_func_p);
+
+            ui.labelBox("Function");
+            const text_input_sig = ui.lineInput("src_funcname", UI.Size.percent(1, 0), &self.function_input);
+            const function_slice = self.function_input.slice();
+            if (text_input_sig.focused and function_slice.len > 0) {
+                const text_input_node = ui.topParent().last.?;
+
+                if (!std.mem.eql(u8, function_slice, self.func_search.target)) {
+                    try self.func_search.resetSearch(function_slice);
+                    for (session.elf.dwarf.units, 0..) |unit, unit_idx| {
+                        for (unit.functions, 0..) |func, func_idx| {
+                            if (func.name == null) continue;
+                            self.func_search.addEntry(func.name.?, .{
+                                .name = func.name.?,
+                                .loc = if (func.decl_coords) |coords|
+                                    coords.toSrcLoc(session.elf.dwarf.line_progs[unit_idx])
+                                else
+                                    null,
+                                .unit_idx = unit_idx,
+                                .func_idx = func_idx,
+                            });
+                        }
+                    }
+                }
+                const choice = try self.func_search.present(
+                    frame_arena,
+                    ui,
+                    "break_func_chooser",
+                    UI.RelativePlacement.absolute(.{ .btm_left = text_input_node.rect.get(.top_left) }),
+                    true,
+                );
+                if (choice) |func_ctx| {
+                    const func = session.elf.dwarf.units[func_ctx.unit_idx].functions[func_ctx.func_idx];
+                    if (func.low_pc) |addr| {
+                        try session_cmds.append(.{ .set_break_at_addr = addr });
+                    } else if (func.decl_coords) |coords| {
+                        const src = coords.toSrcLoc(session.elf.dwarf.line_progs[func_ctx.unit_idx]);
+                        try session_cmds.append(.{ .set_break_at_src = src });
+                    } else {
+                        // TODO: search the ELF symbol table, might have the function addr
+                        std.debug.print("couldn't find enough information to set a breakpoint on function '{s}'\n", .{func.name.?});
                     }
                 }
             }
-            const choice = try func_search.present(
-                frame_arena,
-                ui,
-                "break_func_chooser",
-                UI.RelativePlacement.absolute(.{ .btm_left = text_input_node.rect.get(.top_left) }),
-                true,
-            );
-            if (choice) |func_ctx| {
-                const func = session.elf.dwarf.units[func_ctx.unit_idx].functions[func_ctx.func_idx];
-                if (func.low_pc) |addr| {
-                    try session_cmds.append(.{ .set_break_at_addr = addr });
-                } else if (func.decl_coords) |coords| {
-                    const src = coords.toSrcLoc(session.elf.dwarf.line_progs[func_ctx.unit_idx]);
-                    try session_cmds.append(.{ .set_break_at_src = src });
-                } else {
-                    // TODO: search the ELF symbol table, might have the function addr
-                    std.debug.print("couldn't find enough information to set a breakpoint on function '{s}'\n", .{func.name.?});
-                }
+        }
+
+        {
+            const break_addr_parent = ui.addNode(.{ .no_id = true }, "", .{
+                .size = fill_x_size,
+                .layout_axis = .x,
+            });
+            ui.pushParent(break_addr_parent);
+            defer ui.popParentAssert(break_addr_parent);
+
+            const button_sig = ui.button("Set breakpoint###break_addr");
+            ui.labelBox("Address");
+            const text_input_sig = ui.lineInput("break_addr_input", UI.Size.percent(1, 0), &self.addr_input);
+
+            const addr_slice = self.addr_input.slice();
+            if (button_sig.clicked or text_input_sig.enter_pressed) blk: {
+                const text = addr_slice;
+                if (text.len == 0) break :blk;
+                const addr = std.fmt.parseUnsigned(usize, text, 0) catch break :blk;
+                try session_cmds.append(.{ .set_break_at_addr = addr });
+            }
+        }
+
+        // show list of current breakpoints and their status
+        ui.label("Breakpoints:");
+        for (session.breakpoints.items) |breakpoint| {
+            if (try session.elf.translateAddrToSrc(breakpoint.addr)) |src| {
+                // TODO: show the src path relative to current dir?
+                ui.labelF("0x{x:0>8} {s}:{}", .{ breakpoint.addr, src.file, src.line });
+            } else {
+                ui.labelF("0x{x:0>8}", .{breakpoint.addr});
             }
         }
     }
-    ui.popParentAssert(set_break_func_parent);
-
-    {
-        const break_addr_parent = ui.addNode(.{ .no_id = true }, "", .{
-            .size = fill_x_size,
-            .layout_axis = .x,
-        });
-        ui.pushParent(break_addr_parent);
-        defer ui.popParentAssert(break_addr_parent);
-
-        const button_sig = ui.button("Set breakpoint###break_addr");
-        ui.labelBox("Address");
-        ui.pushStyle(text_input_style);
-        const text_input_sig = ui.textInput("break_addr_input", &addr_buf.buffer, &addr_buf.len);
-        _ = ui.popStyle();
-
-        if (button_sig.clicked or text_input_sig.enter_pressed) blk: {
-            const text = addr_buf.slice();
-            if (text.len == 0) break :blk;
-            const addr = std.fmt.parseUnsigned(usize, text, 0) catch break :blk;
-            try session_cmds.append(.{ .set_break_at_addr = addr });
-        }
-    }
-
-    // show list of current breakpoints and their status
-    ui.label("Breakpoints:");
-    for (session.breakpoints.items) |breakpoint| {
-        if (try session.elf.translateAddrToSrc(breakpoint.addr)) |src| {
-            // TODO: show the src path relative to current dir?
-            ui.labelF("0x{x:0>8} {s}:{}", .{ breakpoint.addr, src.file, src.line });
-        } else {
-            ui.labelF("0x{x:0>8}", .{breakpoint.addr});
-        }
-    }
-}
+};
 
 const SrcFileSearchCtx = struct {
     name: []const u8,
@@ -1655,7 +1707,7 @@ fn FuzzySearchOptions(comptime Ctx: type, comptime max_slots: usize) type {
             const trace = tracy.Zone(@src());
             defer trace.End();
 
-            var allocator = arena.allocator();
+            const allocator = arena.allocator();
             const filled_slots = self.slots[0..self.slots_filled];
             var clicked_option: ?usize = null;
 
@@ -1765,9 +1817,9 @@ fn FuzzySearchOptions(comptime Ctx: type, comptime max_slots: usize) type {
                 // conjunction with vec4
                 // break :ctx @ptrCast(*align(1) const CustomDrawMatchHighlightCtx, ctx_bytes.ptr).*;
                 var rawbuf: [@sizeOf(CustomDrawMatchHighlightCtx) + 32]u8 = undefined;
-                var align_amount = 32 - (@intFromPtr(&rawbuf[0]) % 32);
-                var buf = rawbuf[align_amount .. align_amount + @sizeOf(CustomDrawMatchHighlightCtx)];
-                std.mem.copy(u8, buf, ctx_bytes);
+                const align_amount = 32 - (@intFromPtr(&rawbuf[0]) % 32);
+                const buf = rawbuf[align_amount .. align_amount + @sizeOf(CustomDrawMatchHighlightCtx)];
+                @memcpy(buf, ctx_bytes);
                 break :ctx @as(*align(32) const CustomDrawMatchHighlightCtx, @ptrFromInt(@intFromPtr(buf.ptr))).*;
             } else @panic("forgot to set the draw ctx");
 
@@ -1789,7 +1841,7 @@ fn FuzzySearchOptions(comptime Ctx: type, comptime max_slots: usize) type {
                     break :matches false;
                 };
                 var font = if (is_highlight) &ui.font_bold else &ui.font;
-                var text_color = if (is_highlight) draw_ctx.highlight_color else node.text_color;
+                const text_color = if (is_highlight) draw_ctx.highlight_color else node.text_color;
 
                 const quads = font.buildQuadsAt(ui.build_arena.allocator(), &.{ char, '_' }, node.font_size, cursor) catch |err| switch (err) {
                     error.OutOfMemory => return error.OutOfMemory,
