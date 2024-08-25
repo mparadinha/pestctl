@@ -1,3 +1,5 @@
+Moved to https://codeberg.org/parada/pestctl
+
 # pestctl
 A low barrier to entry, visual debugger for Linux
 
